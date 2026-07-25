@@ -1097,6 +1097,12 @@ struct RichMarkdownView: View {
 }
 
 #if os(macOS)
+final class NonScrollingWKWebView: WKWebView {
+    override func scrollWheel(with event: NSEvent) {
+        nextResponder?.scrollWheel(with: event)
+    }
+}
+
 struct RenderedMarkdownWebView: NSViewRepresentable {
     let html: String
     @Binding var height: CGFloat
@@ -1106,7 +1112,7 @@ struct RenderedMarkdownWebView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> WKWebView {
-        let webView = WKWebView()
+        let webView = NonScrollingWKWebView()
         webView.navigationDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
         return webView
