@@ -37,6 +37,9 @@ test("workspace server protects APIs with CODMES_SERVER_TOKEN and exposes manage
     const workspace = await fetchJson(`${baseUrl}/api/workspace`, { token });
     assert.equal(workspace.runtime.owner, "codmes");
 
+    const documentJobs = await fetchJson(`${baseUrl}/api/document-jobs`, { token });
+    assert.deepEqual(documentJobs.jobs, []);
+
     await fs.writeFile(path.join(workspaceRoot, "Notes", "auth-note.md"), "# Token Test\n", "utf8");
     const rebuilt = await fetchJson(`${baseUrl}/api/index/rebuild`, { token, method: "POST" });
     assert.equal(rebuilt.ok, true);

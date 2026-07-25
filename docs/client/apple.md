@@ -46,6 +46,15 @@ streaming한다. PDF를 포함해 server에서 받은 파일은 local disk cache
 cache 한도는 설정에서 1~50GB로 조절하며, 한도를 넘으면 오래 사용하지 않은
 파일부터 제거한다.
 
+Notes PDF upload가 완료되면 `WorkspaceStore`는 `/api/document-jobs`를 polling한다.
+active job이 없을 때는 2초, 있을 때는 1초 간격이다. `RootView`의 server 분석
+icon/popover는 이 목록만 사용하며 client `uploadItems`와 분리한다.
+
+전역 검색 PDF 결과의 thumbnail은 server PNG를 사용한다. 결과를 선택한 뒤 iOS
+PDF overlay가 그리는 노란 focus box는 server `target.bbox.normalized`를 page
+overlay 크기로 변환한다. 따라서 검색어 폭과 OCR baseline 보정은 server response
+단계에서 끝나 있어야 한다.
+
 세부 사항과 플랫폼 차이는 [Notes와 PDF 문서](../features/notes.md)를 참고한다.
 
 ## 빌드

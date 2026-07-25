@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -36,7 +37,9 @@ const DOCUMENT_EXTENSIONS = new Set([
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const WORKER_PATH = path.resolve(__dirname, "..", "workers", "document-ingest", "extract_document.py");
-const DOCUMENT_INGEST_CACHE_VERSION = 2;
+const VISION_OCR_PATH = path.resolve(__dirname, "..", "workers", "document-ingest", "ocr_vision.swift");
+const PDF_NORMALIZER_PATH = path.resolve(__dirname, "..", "workers", "document-ingest", "normalize_pdf.py");
+const DOCUMENT_INGEST_CACHE_VERSION = 3;
 
 export function isDocumentIngestFile(relativePath) {
   return DOCUMENT_EXTENSIONS.has(path.extname(String(relativePath || "")).toLowerCase());
@@ -68,6 +71,10 @@ export function documentIngestCachePath(workspaceRoot, relativePath, _stat = nul
 
 export function documentIngestMarkdownPath(workspaceRoot, relativePath, _stat = null) {
   return path.join(documentIngestCacheDirectory(workspaceRoot, relativePath), "content.md");
+}
+
+export function documentOriginalBackupPath(workspaceRoot, relativePath) {
+  return path.join(documentStateDirectory(workspaceRoot, relativePath), "source", "original.pdf");
 }
 
 export async function ensureDocumentStateManifest(workspaceRoot, relativePath) {
@@ -198,7 +205,7 @@ export async function extractAndCacheDocumentText(workspaceRoot, absolutePath, r
   return String(result.text || "");
 }
 
-export async function extractAndCacheDocument(workspaceRoot, absolutePath, relativePath, stat = null) {
+export async function extractAndCacheDocument(workspaceRoot, absolutePath, relativePath, stat = null, options = {}) {
   const fileStat = stat || await fs.stat(absolutePath);
   const cachePath = documentIngestCachePath(workspaceRoot, relativePath, fileStat);
   const markdownPath = documentIngestMarkdownPath(workspaceRoot, relativePath, fileStat);
@@ -214,11 +221,12 @@ export async function extractAndCacheDocument(workspaceRoot, absolutePath, relat
   await fs.rm(path.dirname(cachePath), { recursive: true, force: true });
 
   const result = await runDocumentWorker({ absolutePath, relativePath });
-  const extracted = await maybeEnhanceWithVlmOcr(
+  const extracted = await maybeEnhanceWithOcr(
     workspaceRoot,
     absolutePath,
     relativePath,
-    normalizeWorkerResult(result, relativePath)
+    normalizeWorkerResult(result, relativePath),
+    options
   );
   const normalized = {
     ...extracted,
@@ -228,6 +236,121 @@ export async function extractAndCacheDocument(workspaceRoot, absolutePath, relat
   await fs.writeFile(cachePath, JSON.stringify(normalized, null, 2) + "\n", "utf8");
   await fs.writeFile(markdownPath, documentMarkdown(normalized), "utf8");
   return normalized;
+}
+
+export async function normalizePdfBinaryTextLayer(workspaceRoot, absolutePath, relativePath, options = {}) {
+  if (path.extname(String(relativePath || "")).toLowerCase() !== ".pdf") {
+    return { normalized: false, reason: "not-pdf", pages: [] };
+  }
+  options.onProgress?.({
+    stage: "inspecting",
+    stageLabel: "PDF 텍스트 검사 중",
+    progress: 0.04
+  });
+  const document = await extractAndCacheDocument(workspaceRoot, absolutePath, relativePath, null, {
+    onProgress: ({ completed, total }) => options.onProgress?.({
+      stage: "ocr",
+      stageLabel: "OCR 좌표 분석 중",
+      progress: 0.08 + 0.57 * completed / Math.max(1, total),
+      completedUnits: completed,
+      totalUnits: total
+    })
+  });
+  let positionedBlocks = (document.blocks || []).filter((block) => (
+    String(block.source || "").includes("ocr")
+    && Array.isArray(block.metadata?.lines)
+    && block.metadata.lines.length
+  ));
+  const ocrPages = Array.from(new Set((document.blocks || [])
+    .filter((block) => String(block.source || "").includes("ocr"))
+    .map((block) => Number(block.page))
+    .filter((page) => Number.isFinite(page) && page > 0)))
+    .sort((a, b) => a - b);
+  if (!positionedBlocks.length && ocrPages.length && process.platform === "darwin") {
+    const highestKnownPage = Math.max(
+      ...((document.blocks || []).map((block) => Number(block.page)).filter(Number.isFinite)),
+      ...ocrPages
+    );
+    const requestedPages = highestKnownPage > 0 && ocrPages.length / highestKnownPage >= 0.25
+      ? []
+      : ocrPages;
+    const native = await runNativeVisionOcr({
+      absolutePath,
+      relativePath,
+      pages: requestedPages,
+      dpi: "150",
+      onProgress: ({ completed, total }) => options.onProgress?.({
+        stage: "ocr",
+        stageLabel: "OCR 좌표 분석 중",
+        progress: 0.08 + 0.57 * completed / Math.max(1, total),
+        completedUnits: completed,
+        totalUnits: total
+      })
+    });
+    positionedBlocks = native.blocks;
+  }
+  if (!positionedBlocks.length) {
+    return {
+      normalized: false,
+      reason: ocrPages.length ? "ocr-has-no-coordinates" : "text-layer-ok",
+      pages: []
+    };
+  }
+
+  const temporaryPath = path.join(
+    path.dirname(absolutePath),
+    `.${path.basename(absolutePath)}.codmes-ocr-${crypto.randomUUID()}.tmp`
+  );
+  try {
+    options.onProgress?.({
+      stage: "rewriting",
+      stageLabel: "PDF 텍스트 레이어 작성 중",
+      progress: 0.66,
+      completedUnits: 0,
+      totalUnits: null
+    });
+    const result = await writePdfOcrTextLayer(absolutePath, temporaryPath, positionedBlocks, {
+      onProgress: ({ completed, total }) => options.onProgress?.({
+        stage: "rewriting",
+        stageLabel: "PDF 텍스트 레이어 작성 중",
+        progress: 0.66 + 0.27 * completed / Math.max(1, total),
+        completedUnits: completed,
+        totalUnits: total
+      })
+    });
+    const backupPath = documentOriginalBackupPath(workspaceRoot, relativePath);
+    await fs.mkdir(path.dirname(backupPath), { recursive: true });
+    try {
+      await fs.link(absolutePath, backupPath);
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        await fs.copyFile(absolutePath, backupPath, fsConstants.COPYFILE_EXCL).catch((copyError) => {
+          if (copyError?.code !== "EEXIST") throw copyError;
+        });
+      }
+    }
+    await fs.rename(temporaryPath, absolutePath);
+    await fs.rm(documentIngestCacheDirectory(workspaceRoot, relativePath), { recursive: true, force: true });
+    await ensureDocumentStateManifest(workspaceRoot, relativePath);
+    options.onProgress?.({
+      stage: "verifying",
+      stageLabel: "PDF 검증 중",
+      progress: 0.94,
+      completedUnits: result.pageCount || null,
+      totalUnits: result.pageCount || null
+    });
+    return {
+      normalized: true,
+      reason: "embedded-ocr-text-layer",
+      pages: result.normalizedPages || [],
+      pageCount: result.pageCount || null,
+      extractedChars: result.extractedChars || 0,
+      backupPath: path.relative(workspaceRoot, backupPath).replace(/\\/g, "/")
+    };
+  } catch (error) {
+    await fs.rm(temporaryPath, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 async function ensureDocumentMarkdown(markdownPath, document) {
@@ -393,20 +516,44 @@ async function documentWorkerPython() {
   }
 }
 
-async function maybeEnhanceWithVlmOcr(workspaceRoot, absolutePath, relativePath, document) {
+async function maybeEnhanceWithOcr(workspaceRoot, absolutePath, relativePath, document, options = {}) {
   const config = await readVlmSearchConfig(workspaceRoot);
-  if (!config.enabled) return document;
-  if (!shouldRunVlmOcr(relativePath, document, config)) return document;
+  const ocrPages = pagesNeedingOcr(relativePath, document, config);
+  if (ocrPages === null) return document;
 
   const warnings = [...(document.warnings || [])];
+  if (!config.enabled && config.nativeEnabled && process.platform === "darwin") {
+    try {
+      const native = await runNativeVisionOcr({
+        absolutePath,
+        relativePath,
+        pages: ocrPages,
+        dpi: config.dpi,
+        onProgress: options.onProgress
+      });
+      warnings.push(...native.warnings);
+      if (native.blocks.length) {
+        return mergeOcrBlocks(document, native.blocks, ocrPages, warnings, "vision-ocr");
+      }
+      warnings.push("Native Vision OCR returned no text.");
+    } catch (error) {
+      warnings.push(`Native Vision OCR skipped: ${error.message}`);
+    }
+    return { ...document, warnings };
+  }
+  if (!config.enabled) {
+    warnings.push("OCR is required for this PDF, but no local or VLM OCR engine is available.");
+    return { ...document, warnings };
+  }
+
   const vlmBlocks = [];
   try {
-    const inputs = await buildVlmInputs(workspaceRoot, absolutePath, relativePath, config);
+    const inputs = await buildVlmInputs(workspaceRoot, absolutePath, relativePath, config, ocrPages);
     const prompt = buildVlmOcrPrompt({
       language: config.language || "auto",
       output: "markdown"
     });
-    for (const input of inputs) {
+    for (const [inputIndex, input] of inputs.entries()) {
       const text = await callConfiguredVlm(config, {
         prompt,
         imageBase64: input.base64,
@@ -431,6 +578,11 @@ async function maybeEnhanceWithVlmOcr(workspaceRoot, absolutePath, relativePath,
           thinking: "off"
         }
       });
+      options.onProgress?.({
+        completed: inputIndex + 1,
+        total: inputs.length,
+        page: input.page
+      });
     }
   } catch (error) {
     warnings.push(`VLM OCR skipped: ${error.message}`);
@@ -439,15 +591,7 @@ async function maybeEnhanceWithVlmOcr(workspaceRoot, absolutePath, relativePath,
   if (!vlmBlocks.length) {
     return { ...document, warnings };
   }
-  const existingText = String(document.text || "").trim();
-  const vlmText = vlmBlocks.map((block) => block.text).join("\n\n").trim();
-  return {
-    ...document,
-    text: [existingText, vlmText].filter(Boolean).join("\n\n").trim(),
-    blocks: [...(document.blocks || []), ...vlmBlocks],
-    warnings,
-    extractor: `${document.extractor || "codmes-document-worker"}+vlm-ocr`
-  };
+  return mergeOcrBlocks(document, vlmBlocks, ocrPages, warnings, "vlm-ocr");
 }
 
 async function readAnnotationsForDocument(workspaceRoot, relativePath) {
@@ -539,15 +683,58 @@ function annotationBlock(relativePath, object, text, source, metadata = {}) {
   };
 }
 
-function shouldRunVlmOcr(relativePath, document, config) {
+function pagesNeedingOcr(relativePath, document, config) {
   const kind = kindForRelativePath(relativePath);
-  if (kind === "image") return true;
-  if (kind !== "pdf") return false;
+  if (kind === "image") return [];
+  if (kind !== "pdf") return null;
   const minTextChars = Number.parseInt(String(config.minTextChars || "80"), 10);
-  return String(document.text || "").trim().length < Math.max(0, minTextChars);
+  const text = String(document.text || "").trim();
+  if (!text) return [];
+  if (config.enabled && text.length < Math.max(0, minTextChars)) return [];
+  const pageText = new Map();
+  for (const block of document.blocks || []) {
+    const page = Number(block.page);
+    if (!Number.isFinite(page) || page < 1) continue;
+    pageText.set(page, [pageText.get(page), block.text].filter(Boolean).join("\n"));
+  }
+  if (!pageText.size) return pdfTextNeedsOcr(text) ? [] : null;
+  const pages = Array.from(pageText)
+    .filter(([, value]) => pdfTextNeedsOcr(value))
+    .map(([page]) => page)
+    .sort((a, b) => a - b);
+  if (pages.length / pageText.size >= 0.25) {
+    return Array.from(pageText.keys()).sort((a, b) => a - b);
+  }
+  return pages.length ? pages : null;
 }
 
-async function buildVlmInputs(workspaceRoot, absolutePath, relativePath, config) {
+export function pdfTextNeedsOcr(value) {
+  const text = String(value || "").normalize("NFC");
+  const characters = Array.from(text).filter((character) => !/\s/u.test(character));
+  if (characters.length < 20) return false;
+  let cjkIdeographs = 0;
+  let privateOrInvalid = 0;
+  for (const character of characters) {
+    const code = character.codePointAt(0);
+    if (
+      (code >= 0x3400 && code <= 0x4dbf)
+      || (code >= 0x4e00 && code <= 0x9fff)
+      || (code >= 0xf900 && code <= 0xfaff)
+    ) cjkIdeographs += 1;
+    if (
+      character === "\uFFFD"
+      || (code >= 0xe000 && code <= 0xf8ff)
+      || (code < 0x20 && !["\n", "\r", "\t"].includes(character))
+    ) privateOrInvalid += 1;
+  }
+  const suspiciousFSeparators = (text.match(/[\p{Script=Hangul}\p{Script=Han}]f(?=[\p{Script=Hangul}\p{Script=Han}\s])/gu) || []).length;
+  const length = characters.length;
+  return privateOrInvalid / length >= 0.005
+    || cjkIdeographs / length >= 0.08
+    || suspiciousFSeparators / length >= 0.025;
+}
+
+async function buildVlmInputs(workspaceRoot, absolutePath, relativePath, config, pages = []) {
   const kind = kindForRelativePath(relativePath);
   if (kind === "image") {
     const data = await fs.readFile(absolutePath);
@@ -560,12 +747,12 @@ async function buildVlmInputs(workspaceRoot, absolutePath, relativePath, config)
     }];
   }
   if (kind === "pdf") {
-    return await renderPdfPageImagesForVlm(workspaceRoot, absolutePath, relativePath, config);
+    return await renderPdfPageImagesForVlm(workspaceRoot, absolutePath, relativePath, config, pages);
   }
   return [];
 }
 
-async function renderPdfPageImagesForVlm(workspaceRoot, absolutePath, relativePath, config) {
+async function renderPdfPageImagesForVlm(workspaceRoot, absolutePath, relativePath, config, pages = []) {
   const python = await documentWorkerPython();
   const maxPages = clampNumber(config.maxPages, 1, 200, 40);
   const dpi = clampNumber(config.dpi, 96, 240, 150);
@@ -574,12 +761,15 @@ async function renderPdfPageImagesForVlm(workspaceRoot, absolutePath, relativePa
   await fs.mkdir(renderDir, { recursive: true });
   const script = `
 import fitz, json, os, sys
-pdf_path, out_dir, max_pages, dpi = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+pdf_path, out_dir, max_pages, dpi, requested = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
 doc = fitz.open(pdf_path)
 items = []
 matrix = fitz.Matrix(dpi / 72, dpi / 72)
+requested_pages = {int(value) for value in requested.split(",") if value}
 for index, page in enumerate(doc, start=1):
-    if index > max_pages:
+    if requested_pages and index not in requested_pages:
+        continue
+    if len(items) >= max_pages:
         break
     pix = page.get_pixmap(matrix=matrix, alpha=False)
     out = os.path.join(out_dir, f"page-{index:04d}.png")
@@ -590,7 +780,7 @@ print(json.dumps(items))
 `;
   const stdout = [];
   const stderr = [];
-  const child = spawn(python, ["-c", script, absolutePath, renderDir, String(maxPages), String(dpi)], {
+  const child = spawn(python, ["-c", script, absolutePath, renderDir, String(maxPages), String(dpi), pages.join(",")], {
     stdio: ["ignore", "pipe", "pipe"],
     env: process.env
   });
@@ -616,6 +806,151 @@ print(json.dumps(items))
     });
   }
   return inputs;
+}
+
+async function runNativeVisionOcr({ absolutePath, relativePath, pages, dpi, onProgress }) {
+  const kind = kindForRelativePath(relativePath);
+  const stdout = [];
+  const stderr = progressLineCollector(onProgress);
+  const child = spawn("/usr/bin/swift", [
+    VISION_OCR_PATH,
+    absolutePath,
+    pages.join(","),
+    String(clampNumber(dpi, 96, 240, 150))
+  ], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: process.env
+  });
+  child.stdout.on("data", (chunk) => stdout.push(chunk));
+  child.stderr.on("data", (chunk) => stderr.write(chunk));
+  const code = await new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", resolve);
+  });
+  const err = stderr.end();
+  if (code !== 0) throw new Error(err || `Vision OCR exited with ${code}.`);
+  const result = JSON.parse(Buffer.concat(stdout).toString("utf8") || "{}");
+  return {
+    blocks: (Array.isArray(result.blocks) ? result.blocks : [])
+      .map((block, index) => ({
+        id: `vision-ocr-page-${Number(block.page) || index + 1}`,
+        path: relativePath,
+        kind,
+        source: "vision-ocr",
+        page: Number(block.page) || null,
+        text: String(block.text || "").normalize("NFC").trim(),
+        bbox: null,
+        confidence: null,
+        metadata: {
+          engine: "apple-vision",
+          deterministic: true,
+          languages: ["ko-KR", "en-US"],
+          lines: (Array.isArray(block.lines) ? block.lines : [])
+            .map((line) => ({
+              text: String(line.text || "").normalize("NFC").trim(),
+              bbox: normalizeOcrBox(line.bbox)
+            }))
+            .filter((line) => line.text && line.bbox)
+        }
+      }))
+      .filter((block) => block.text),
+    warnings: (Array.isArray(result.warnings) ? result.warnings : []).map(String)
+  };
+}
+
+export function normalizeOcrBox(value) {
+  const numbers = ["x", "y", "width", "height"].map((key) => Number(value?.[key]));
+  if (!numbers.every(Number.isFinite)) return null;
+  return {
+    x: clampDecimal(numbers[0], 0, 1, 0),
+    y: clampDecimal(numbers[1], 0, 1, 0),
+    width: clampDecimal(numbers[2], 0, 1, 0),
+    height: clampDecimal(numbers[3], 0, 1, 0)
+  };
+}
+
+export async function writePdfOcrTextLayer(inputPath, outputPath, blocks, options = {}) {
+  const python = await documentWorkerPython();
+  const stdout = [];
+  const stderr = progressLineCollector(options.onProgress);
+  const child = spawn(python, [PDF_NORMALIZER_PATH, inputPath, outputPath, "150"], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: process.env
+  });
+  child.stdout.on("data", (chunk) => stdout.push(chunk));
+  child.stderr.on("data", (chunk) => stderr.write(chunk));
+  child.stdin.end(JSON.stringify({
+    blocks: blocks.map((block) => ({
+      page: block.page,
+      text: block.text,
+      lines: block.metadata?.lines || []
+    }))
+  }));
+  const code = await new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", resolve);
+  });
+  const err = stderr.end();
+  if (code !== 0) throw new Error(err || `PDF OCR normalization exited with ${code}.`);
+  return JSON.parse(Buffer.concat(stdout).toString("utf8") || "{}");
+}
+
+function progressLineCollector(onProgress) {
+  let pending = "";
+  const messages = [];
+  const consume = (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    try {
+      const value = JSON.parse(trimmed);
+      if (value?.type === "progress") {
+        onProgress?.({
+          completed: Number(value.completed) || 0,
+          total: Number(value.total) || 0,
+          page: Number(value.page) || null
+        });
+        return;
+      }
+    } catch {}
+    messages.push(trimmed);
+  };
+  return {
+    write(chunk) {
+      pending += chunk.toString("utf8");
+      const lines = pending.split(/\r?\n/);
+      pending = lines.pop() || "";
+      lines.forEach(consume);
+    },
+    end() {
+      consume(pending);
+      pending = "";
+      return messages.join("\n");
+    }
+  };
+}
+
+function mergeOcrBlocks(document, ocrBlocks, pages, warnings, engine) {
+  const selectedPages = new Set(pages);
+  const replaceAllPdfText = pages.length === 0;
+  const retained = (document.blocks || []).filter((block) => {
+    if (document.kind === "image" && replaceAllPdfText) return false;
+    if (!String(block.source || "").startsWith("pdf-")) return true;
+    if (replaceAllPdfText) return false;
+    return !selectedPages.has(Number(block.page));
+  });
+  const blocks = [...retained, ...ocrBlocks].sort((a, b) => (
+    (Number(a.page) || Number.MAX_SAFE_INTEGER) - (Number(b.page) || Number.MAX_SAFE_INTEGER)
+    || String(a.id || "").localeCompare(String(b.id || ""))
+  ));
+  const text = blocks.map((block) => String(block.text || "").trim()).filter(Boolean).join("\n\n").trim();
+  return {
+    ...document,
+    text,
+    markdown: text,
+    blocks,
+    warnings,
+    extractor: `${document.extractor || "codmes-document-worker"}+${engine}`
+  };
 }
 
 function documentVlmRenderDirectory(workspaceRoot, relativePath) {
@@ -793,6 +1128,9 @@ async function readVlmSearchConfig(workspaceRoot) {
     dpi: env.VLM_RENDER_DPI || process.env.CODMES_VLM_RENDER_DPI || "150",
     minTextChars: env.VLM_MIN_TEXT_CHARS || process.env.CODMES_VLM_MIN_TEXT_CHARS || "80",
     language: env.VLM_LANGUAGE || process.env.CODMES_VLM_LANGUAGE || "auto",
+    nativeEnabled: !["false", "0", "no", "off"].includes(
+      String(env.NATIVE_OCR_ENABLED || process.env.CODMES_NATIVE_OCR_ENABLED || "true").toLowerCase()
+    ),
     useOllamaNative: ["true", "1", "yes", "on"].includes(String(env.VLM_OLLAMA_NATIVE || process.env.CODMES_VLM_OLLAMA_NATIVE || "").toLowerCase())
   };
 }
@@ -835,6 +1173,12 @@ function imageMimeForPath(relativePath) {
 
 function clampNumber(value, min, max, fallback) {
   const number = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, number));
+}
+
+function clampDecimal(value, min, max, fallback) {
+  const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   return Math.min(max, Math.max(min, number));
 }

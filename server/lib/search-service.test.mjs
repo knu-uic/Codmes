@@ -13,7 +13,11 @@ import {
   searchWorkspace,
   updateSearchIndex
 } from "./search-service.mjs";
-import { annotationsPathForDocument, documentIngestCacheDirectory } from "./document-ingest.mjs";
+import {
+  annotationsPathForDocument,
+  documentIngestCacheDirectory,
+  documentOriginalBackupPath
+} from "./document-ingest.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -62,8 +66,26 @@ test("reports secondary workspace scan search status", async () => {
   assert.equal(status.provider, "workspace-scan");
   assert.equal(status.available, true);
   assert.equal(status.indexed, false);
+  assert.equal(status.maxFileBytes, 1024 * 1024 * 1024);
   assert.ok(status.searchableExtensions.includes(".md"));
   assert.ok(status.searchableExtensions.includes(".pdf"));
+});
+
+test("reports metadata for search indexes larger than the status parse limit", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "search-status-large-"));
+  const indexPath = path.join(root, ".codmes", "index", "search.json");
+  await fs.mkdir(path.dirname(indexPath), { recursive: true });
+  await fs.writeFile(indexPath, JSON.stringify({
+    builtAt: "2026-07-25T00:00:00.000Z",
+    itemCount: 42,
+    chunkCount: 50598,
+    padding: "x".repeat(10 * 1024 * 1024)
+  }), "utf8");
+
+  const status = searchStatus(root);
+  assert.equal(status.itemCount, 42);
+  assert.equal(status.chunkCount, 50598);
+  assert.equal(status.builtAt, "2026-07-25T00:00:00.000Z");
 });
 
 test("builds and searches the native Codmes search index", async () => {
@@ -191,6 +213,49 @@ test("global search keeps PDF filename matches and separate content occurrences"
   assert.equal(filenameResult.results[0].kind, "note_file");
   assert.equal(filenameResult.results[0].target.path, "Notes/workbook_sw.pdf");
   assert.equal(filenameResult.results[0].target.page, null);
+});
+
+test("global search returns a visual keyword box for OCR-normalized PDFs", async () => {
+  const root = await fixtureWorkspace();
+  const relativePath = "Notes/ocr-book.pdf";
+  const indexPath = path.join(root, ".codmes", "index", "search.json");
+  await fs.mkdir(path.dirname(indexPath), { recursive: true });
+  await fs.writeFile(indexPath, JSON.stringify({
+    builtAt: new Date(0).toISOString(),
+    items: [{ path: relativePath, kind: "pdf", modifiedAt: new Date(0).toISOString() }],
+    chunks: [{
+      id: "ocr-title",
+      path: relativePath,
+      kind: "pdf",
+      page: 1,
+      chunkIndex: 0,
+      text: "김종현 지음",
+      bbox: {
+        unit: "pdf-point",
+        x: 400,
+        y: 607,
+        width: 66,
+        height: 13,
+        pageWidth: 530,
+        pageHeight: 738,
+        normalized: { x: 0.75, y: 0.82, width: 0.12, height: 0.018 }
+      }
+    }]
+  }), "utf8");
+  const backupPath = documentOriginalBackupPath(root, relativePath);
+  await fs.mkdir(path.dirname(backupPath), { recursive: true });
+  await fs.writeFile(backupPath, "original", "utf8");
+
+  const result = await globalSearch(root, { query: "김종현", surface: "notes" });
+  const box = result.results[0].target.bbox;
+  assert.equal(box.x, 400);
+  assert.equal(box.width, 33);
+  assert.equal(box.y, 596.34);
+  assert.equal(box.height, 15.86);
+  assert.equal(box.normalized.x, 0.75);
+  assert.equal(box.normalized.width, 0.06);
+  assert.equal(box.normalized.y, 0.80524);
+  assert.ok(Math.abs(box.normalized.height - 0.02196) < 1e-10);
 });
 
 test("search normalizes composed Korean queries against decomposed PDF paths and text", async () => {

@@ -21,8 +21,11 @@ import {
   getDocumentIngestMetadata,
   isDocumentIngestFile,
   legacyAnnotationsPathForDocument,
+  normalizeOcrBox,
+  pdfTextNeedsOcr,
   pruneDocumentIngestCacheFiles,
-  removeDocumentIngestCacheFiles
+  removeDocumentIngestCacheFiles,
+  writePdfOcrTextLayer
 } from "./document-ingest.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -61,7 +64,7 @@ test("document ingest stores structured PDF tables and a Markdown sidecar", asyn
   await createTablePdf(pdfPath);
 
   const result = await extractAndCacheDocument(root, pdfPath, relativePath);
-  assert.equal(result.schemaVersion, 2);
+  assert.equal(result.schemaVersion, 3);
   assert.ok(result.tables.length >= 1);
   const table = result.tables.find((item) => item.headers.includes("Event"));
   assert.ok(table);
@@ -100,7 +103,7 @@ test("document ingest migrates the current legacy hash cache into its document f
   const markdown = await fs.readFile(documentIngestMarkdownPath(root, relativePath), "utf8");
   const stat = await fs.stat(pdfPath);
   const oldKey = crypto.createHash("sha256")
-    .update(`v2\n${relativePath}\n${stat.size}:${stat.mtimeMs}`)
+    .update(`v3\n${relativePath}\n${stat.size}:${stat.mtimeMs}`)
     .digest("hex");
   const oldDirectory = path.join(root, ".codmes", "index", "documents");
   const oldJsonPath = path.join(oldDirectory, `${oldKey}.json`);
@@ -215,6 +218,40 @@ test("document ingest adds VLM OCR blocks for image-only PDF pages", async () =>
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("detects corrupted Korean PDF character maps without flagging normal Korean", () => {
+  assert.equal(pdfTextNeedsOcr("컴퓨터구조론 저자 김종현 연세대학교 전기공학과에서 연구했습니다."), false);
+  assert.equal(pdfTextNeedsOcr("킚s 퍟D 좷둄 젨잂f뾥慧 䞲E 젮잂퐉셊씏D 뾥f킚s 퍟f씏D 괱"), true);
+});
+
+test("preserves fractional Vision OCR coordinates", () => {
+  assert.deepEqual(
+    normalizeOcrBox({ x: 0.127, y: 0.234, width: 0.456, height: 0.078 }),
+    { x: 0.127, y: 0.234, width: 0.456, height: 0.078 }
+  );
+});
+
+test("writes positioned Korean OCR text into the PDF binary", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "document-ingest-pdf-layer-"));
+  const inputPath = path.join(root, "input.pdf");
+  const outputPath = path.join(root, "output.pdf");
+  await createMinimalPdf(inputPath, "visible source page");
+  await writePdfOcrTextLayer(inputPath, outputPath, [{
+    page: 1,
+    text: "김종현",
+    metadata: {
+      lines: [{
+        text: "김종현",
+        bbox: { x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
+      }]
+    }
+  }]);
+  const { stdout } = await execFileAsync(
+    process.env.CODMES_PYTHON || ".codmes-runtime/bin/python",
+    ["-c", "import fitz,sys; d=fitz.open(sys.argv[1]); print(d[0].get_text())", outputPath]
+  );
+  assert.match(stdout, /김종현/);
 });
 
 test("document ingest sends image files through configured VLM OCR", async () => {

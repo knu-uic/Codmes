@@ -42,6 +42,7 @@ final class WorkspaceStore: ObservableObject {
     @Published var selectedHermesProjectId = "__all__"
     @Published var conversationFolders: [ConversationFolder] = []
     @Published var uploadItems: [UploadItem] = []
+    @Published var documentJobs: [DocumentJob] = []
     @Published var agentTasks: [AgentTaskSummary] = []
     @Published var codeTasks: [AgentTaskSummary] = []
     @Published var selectedCodeTask: CodeTaskRecord?
@@ -87,6 +88,37 @@ final class WorkspaceStore: ObservableObject {
 
     var localFileCacheLimitBytes: Int64 {
         Int64(localFileCacheLimitGB) * 1_024 * 1_024 * 1_024
+    }
+
+    var activeDocumentJobs: [DocumentJob] {
+        documentJobs.filter(\.isRunning)
+    }
+
+    var documentJobProgress: Double {
+        guard !activeDocumentJobs.isEmpty else { return 0 }
+        return activeDocumentJobs.map(\.progress).reduce(0, +) / Double(activeDocumentJobs.count)
+    }
+
+    func refreshDocumentJobs() async {
+        guard let api else {
+            documentJobs = []
+            return
+        }
+        do {
+            documentJobs = try await api.documentJobs()
+        } catch {
+            if !isWorkspaceConnected {
+                documentJobs = []
+            }
+        }
+    }
+
+    func monitorDocumentJobs() async {
+        while !Task.isCancelled {
+            await refreshDocumentJobs()
+            let interval: UInt64 = activeDocumentJobs.isEmpty ? 2_000_000_000 : 1_000_000_000
+            try? await Task.sleep(nanoseconds: interval)
+        }
     }
 
     func setLocalFileCacheLimitGB(_ value: Int) {
@@ -218,6 +250,7 @@ final class WorkspaceStore: ObservableObject {
             await refreshApprovals()
             connectionStep = "Loading agent tasks"
             await refreshAgentTasks()
+            await refreshDocumentJobs()
             statusMessage = "Connected"
             isWorkspaceConnected = true
             connectionStep = "Ready"

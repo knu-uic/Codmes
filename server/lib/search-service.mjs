@@ -1,10 +1,11 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileKind, resolveWorkspacePath } from "./path-utils.mjs";
 import {
   extractAndCacheDocument,
   extractDocumentAnnotationBlocks,
+  documentOriginalBackupPath,
   isDocumentIngestFile,
   pruneDocumentIngestCacheFiles,
   removeDocumentIngestCacheFiles
@@ -13,7 +14,7 @@ import { searchConversationIndex } from "./runtime/conversation-index.mjs";
 
 const DEFAULT_MAX_RESULTS = 20;
 const DEFAULT_MAX_SCAN_FILES = 1000;
-const DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024;
+const DEFAULT_MAX_FILE_BYTES = 1024 * 1024 * 1024;
 const DEFAULT_CHUNK_CHARS = 1800;
 const DEFAULT_CHUNK_OVERLAP = 220;
 
@@ -78,7 +79,7 @@ export function searchStatus(workspaceRoot) {
     try {
       const stat = statSync(filePath);
       indexBytes = stat.size;
-      const index = JSON.parse(requireTextSync(filePath));
+      const index = readSearchIndexMetadataSync(filePath);
       builtAt = index.builtAt || null;
       itemCount = Number(index.itemCount || 0);
       chunkCount = Number(index.chunkCount || 0);
@@ -102,6 +103,7 @@ export function searchStatus(workspaceRoot) {
     itemCount,
     chunkCount,
     indexBytes,
+    maxFileBytes: configuredMaxFileBytes(),
     searchableExtensions: Array.from(SEARCHABLE_EXTENSIONS).sort()
   };
 }
@@ -119,7 +121,10 @@ export async function searchWorkspace(workspaceRoot, request = {}) {
   }
   const maxScanFiles = clampNumber(request.maxScanFiles, 10, 5000, DEFAULT_MAX_SCAN_FILES);
   const candidates = filterCandidates(
-    await listSearchableFiles(workspaceRoot, scopePath, { maxScanFiles }),
+    await listSearchableFiles(workspaceRoot, scopePath, {
+      maxScanFiles,
+      maxFileBytes: configuredMaxFileBytes(request.maxFileBytes)
+    }),
     request
   );
   const results = [];
@@ -219,7 +224,10 @@ export async function buildSearchIndex(workspaceRoot, options = {}) {
   const maxScanFiles = clampNumber(options.maxScanFiles, 10, 20000, 10000);
   const filesByPath = new Map();
   for (const root of roots) {
-    const files = await listSearchableFiles(workspaceRoot, root, { maxScanFiles });
+    const files = await listSearchableFiles(workspaceRoot, root, {
+      maxScanFiles,
+      maxFileBytes: configuredMaxFileBytes(options.maxFileBytes)
+    });
     for (const file of files) filesByPath.set(file.path, file);
   }
   const files = Array.from(filesByPath.values()).sort((a, b) => a.path.localeCompare(b.path));
@@ -275,7 +283,10 @@ export async function updateSearchIndex(workspaceRoot, changedPaths = [], option
       continue;
     }
     if (stat.isDirectory()) {
-      const files = await listSearchableFiles(workspaceRoot, rel, { maxScanFiles: 5000 });
+      const files = await listSearchableFiles(workspaceRoot, rel, {
+        maxScanFiles: 5000,
+        maxFileBytes: configuredMaxFileBytes(options.maxFileBytes)
+      });
       const livePaths = new Set(files.map((file) => file.path));
       for (const pathKey of Array.from(itemByPath.keys())) {
         if (pathKey.startsWith(`${rel}/`) && !livePaths.has(pathKey)) {
@@ -292,7 +303,7 @@ export async function updateSearchIndex(workspaceRoot, changedPaths = [], option
       }
       continue;
     }
-    if (!isSearchableTextFile(rel) || stat.size > DEFAULT_MAX_FILE_BYTES) {
+    if (!isSearchableTextFile(rel) || stat.size > configuredMaxFileBytes(options.maxFileBytes)) {
       itemByPath.delete(rel);
       chunksByPath.delete(rel);
       continue;
@@ -400,7 +411,7 @@ async function searchGlobalFileIndex(workspaceRoot, request) {
     const item = itemByPath.get(chunk.path) || {};
     const match = matchGlobalChunk(chunk, query);
     if (!match.matched) continue;
-    matches.push(toGlobalFileResult(chunk, item, resultSurface, match));
+    matches.push(toGlobalFileResult(workspaceRoot, chunk, item, resultSurface, match));
   }
   return dedupeGlobalResults(matches);
 }
@@ -493,7 +504,7 @@ async function readConversationSessionsById(workspaceRoot) {
   return sessions;
 }
 
-function toGlobalFileResult(chunk, item, surface, match) {
+function toGlobalFileResult(workspaceRoot, chunk, item, surface, match) {
   const page = normalizedPage(chunk.page);
   return {
     id: stableResultId("file", chunk.id || chunk.path, page ?? "", chunk.chunkIndex ?? ""),
@@ -511,7 +522,7 @@ function toGlobalFileResult(chunk, item, surface, match) {
       messageId: null,
       projectId: null,
       line: null,
-      bbox: chunk.bbox || null
+      bbox: searchFocusBoundingBox(workspaceRoot, chunk, match)
     }
   };
 }
@@ -560,7 +571,51 @@ function matchGlobalChunk(chunk, query) {
   const index = exactIndex >= 0 ? exactIndex : firstTokenIndex(lowerText, tokens);
   return {
     matched: true,
-    snippet: index >= 0 ? snippet(text, index, query.length) : chunk.path
+    snippet: index >= 0 ? snippet(text, index, query.length) : chunk.path,
+    exactIndex,
+    exactLength: exactIndex >= 0 ? phrase.length : 0
+  };
+}
+
+function searchFocusBoundingBox(workspaceRoot, chunk, match) {
+  const bbox = chunk.bbox || null;
+  if (
+    !bbox
+    || String(chunk.kind || "").toLowerCase() !== "pdf"
+    || !Number.isInteger(match?.exactIndex)
+    || match.exactIndex < 0
+    || !Number.isFinite(match?.exactLength)
+    || match.exactLength <= 0
+    || !existsSync(documentOriginalBackupPath(workspaceRoot, chunk.path))
+  ) {
+    return bbox;
+  }
+  const text = String(chunk.text || "").normalize("NFC");
+  if (!text || /[\r\n]/.test(text)) return bbox;
+  const startFraction = Math.max(0, Math.min(1, match.exactIndex / text.length));
+  const widthFraction = Math.max(0, Math.min(1 - startFraction, match.exactLength / text.length));
+  if (widthFraction <= 0) return bbox;
+
+  const adjust = (box) => {
+    if (!box || ![box.x, box.y, box.width, box.height].every((value) => Number.isFinite(Number(value)))) {
+      return box;
+    }
+    const x = Number(box.x);
+    const y = Number(box.y);
+    const width = Number(box.width);
+    const height = Number(box.height);
+    const visualY = Math.max(0, y - height * 0.82);
+    return {
+      ...box,
+      x: x + width * startFraction,
+      y: visualY,
+      width: width * widthFraction,
+      height: height * 1.22
+    };
+  };
+  return {
+    ...adjust(bbox),
+    normalized: adjust(bbox.normalized)
   };
 }
 
@@ -804,7 +859,7 @@ async function listSearchableFiles(workspaceRoot, relativePath, options) {
       }
       return;
     }
-    if (stat.size > DEFAULT_MAX_FILE_BYTES) return;
+    if (stat.size > configuredMaxFileBytes(options.maxFileBytes)) return;
     const rel = path.relative(workspaceRoot, absolutePath).replace(/\\/g, "/");
     if (!isSearchableTextFile(rel)) return;
     results.push({
@@ -819,6 +874,14 @@ async function listSearchableFiles(workspaceRoot, relativePath, options) {
     if (error?.code !== "ENOENT") throw error;
   });
   return results;
+}
+
+function configuredMaxFileBytes(value) {
+  const configured = Number.parseInt(
+    String(value || process.env.CODMES_SEARCH_MAX_FILE_BYTES || DEFAULT_MAX_FILE_BYTES),
+    10
+  );
+  return Number.isSafeInteger(configured) && configured > 0 ? configured : DEFAULT_MAX_FILE_BYTES;
 }
 
 function shouldSkipDirectoryEntry(workspaceRoot, parentAbsolutePath, entryName) {
@@ -1047,10 +1110,33 @@ function stableResultId(...parts) {
   return stableChunkId(...parts).replace(/^chunk-/, "result-");
 }
 
-function requireTextSync(filePath) {
-  return statSync(filePath).size > 10 * 1024 * 1024
-    ? "{}"
-    : readFileSync(filePath, "utf8");
+function readSearchIndexMetadataSync(filePath) {
+  const size = statSync(filePath).size;
+  if (size <= 10 * 1024 * 1024) return JSON.parse(readFileSync(filePath, "utf8"));
+  const descriptor = openSync(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(Math.min(size, 128 * 1024));
+    const bytesRead = readSync(descriptor, buffer, 0, buffer.length, 0);
+    const header = buffer.subarray(0, bytesRead).toString("utf8");
+    return {
+      builtAt: jsonHeaderString(header, "builtAt"),
+      itemCount: jsonHeaderNumber(header, "itemCount"),
+      chunkCount: jsonHeaderNumber(header, "chunkCount")
+    };
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function jsonHeaderString(header, key) {
+  const match = header.match(new RegExp(`"${key}"\\s*:\\s*("(?:[^"\\\\]|\\\\.)*")`));
+  if (!match) return null;
+  try { return JSON.parse(match[1]); } catch { return null; }
+}
+
+function jsonHeaderNumber(header, key) {
+  const match = header.match(new RegExp(`"${key}"\\s*:\\s*(\\d+)`));
+  return match ? Number.parseInt(match[1], 10) : 0;
 }
 
 function scoreHit(text, query, index) {

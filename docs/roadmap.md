@@ -6,7 +6,7 @@
 
 - embedding 생성과 vector 저장소
 - lexical + vector hybrid ranking
-- OCR 결과의 안정적인 bbox와 선택 가능한 text overlay
+- OCR query bbox의 word/glyph 단위 정밀화와 다양한 font 회귀 검증
 - handwriting stroke OCR
 
 ## Notes와 PDF

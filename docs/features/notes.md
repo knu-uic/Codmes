@@ -17,12 +17,40 @@ iOS/iPadOS와 macOS 차이를 구분한다.
 ```text
 .codmes/documents/<name>--<path-hash>/
 |- manifest.json
+|- source/
+|  `- original.pdf
 |- annotations.json
 `- index/
    |- extraction.json
    |- content.md
    `- annotation-ocr/
 ```
+
+`source/original.pdf`는 OCR binary 정규화가 실제로 필요했던 PDF에만 생성되는 최초
+업로드 binary 백업이다. 현재 Notes의 PDF 경로에는 검사·정규화가 끝난 적용본이
+있다.
+
+## PDF 업로드와 server 분석
+
+파일 선택, 읽기, chunk 전송과 upload progress는 client 작업이다. server가 최종
+binary를 Notes 경로에 저장한 뒤에는 별도의 document job으로 PDF를 검사한다.
+따라서 upload progress와 PDF 분석 progress는 같은 상태가 아니다.
+
+- 업로드 UI는 기존 전송 진행률만 표시한다.
+- PDF 분석은 `inspecting → ocr → rewriting → verifying → indexing` 순서로 진행한다.
+- Notes 상단 분석 icon은 실행 중인 server job이 있을 때만 나타난다.
+- 새 job이 시작되면 popover를 잠시 자동으로 열고, 닫힌 뒤에는 icon을 눌러 현재
+  파일명, 단계, page 수/진행률을 다시 볼 수 있다.
+- 마지막 실행 job이 완료되거나 실패하면 active 목록과 icon을 숨긴다.
+
+서버 job은 현재 process memory에 최대 20개를 보관한다. 서버를 재시작하면 이전
+완료 이력은 복원하지 않으며, UI는 실행 중인 job만 보여준다. 업로드 후 검사가
+실패해도 파일 자체는 남고 가능한 범위에서 검색 index 갱신을 시도한다.
+
+정상 text PDF는 binary를 바꾸지 않는다. 손상된 문자 map 또는 OCR이 필요한
+스캔 page는 rasterized page와 invisible OCR text layer가 포함된 새 PDF binary로
+교체한다. 다른 PDF reader에서도 OCR text 선택과 복사가 가능하며, 최초 binary는
+document state의 `source/original.pdf`에서 보존한다.
 
 ## File tree
 
@@ -73,6 +101,13 @@ queue를 관리한다.
 client thumbnail memory cache는 최대 64개, 약 24MB다. 이 제한은 전체 PDF page
 수를 자르는 것이 아니다. memory에서 제거된 thumbnail은 필요할 때 disk/server
 cache 또는 PDF 원본에서 다시 읽는다.
+
+전역 검색의 PDF 본문 결과는 일반 page sidebar thumbnail과 목적이 다르다.
+`/api/pdf-thumbnail`에 검색 결과 bbox와 query를 전달해 해당 문장 주변을 crop한
+PNG를 받고, 실제 query 위치에 주황색 highlight를 넣는다. 결과를 선택해 PDF를
+열면 같은 visual bbox로 노란 focus box를 표시한다. 두 UI가 동일한 raw OCR line
+box를 공유하지 않으므로 renderer와 search response의 좌표 보정을 함께 유지해야
+한다.
 
 ## 대용량 PDF streaming과 file cache
 
@@ -251,10 +286,15 @@ file이다. 현재 LLM이 이 Markdown file을 직접 읽지는 않는다.
 - OCR text가 있는 image object: `annotation-image-ocr`
 - PDF 원문: `pdf-text` 또는 document extractor block
 - VLM으로 읽은 page image: `vlm-ocr`
+- Apple Vision으로 읽은 page image: `vision-ocr`
 
 같은 image content hash는 OCR cache를 재사용한다. 위치나 크기만 바뀌면 OCR을
 다시 하지 않고 page/bbox metadata만 갱신한다. handwriting stroke는 현재 검색
 대상이 아니다.
+
+검색 query와 text는 NFC로 비교하며 기본 검색 파일 상한은 1GB다. OCR 정규화 PDF
+결과는 exact query 폭과 실제 raster glyph의 세로 영역으로 `target.bbox`를
+보정하므로, 문장 전체가 아니라 검색어 위치에 focus box가 표시된다.
 
 ## 관련 코드
 

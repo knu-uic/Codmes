@@ -31,6 +31,11 @@ struct WorkspaceAPI {
         try await get("/api/health")
     }
 
+    func documentJobs() async throws -> [DocumentJob] {
+        let response: DocumentJobsResponse = try await get("/api/document-jobs")
+        return response.jobs
+    }
+
     func tree(root: String, path: String = "", recursive: Bool = false) async throws -> TreeResponse {
         var components = try components("/api/tree")
         components.queryItems = [
@@ -64,7 +69,8 @@ struct WorkspaceAPI {
         var components = try components("/api/pdf-thumbnail")
         var queryItems = [
             URLQueryItem(name: "path", value: path),
-            URLQueryItem(name: "page", value: String(page))
+            URLQueryItem(name: "page", value: String(page)),
+            URLQueryItem(name: "renderVersion", value: "9")
         ]
         if let crop {
             queryItems.append(contentsOf: [

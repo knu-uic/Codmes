@@ -156,6 +156,31 @@ struct UploadChunkResponse: Codable {
     let size: Int64
 }
 
+struct DocumentJobsResponse: Codable {
+    let jobs: [DocumentJob]
+}
+
+struct DocumentJob: Codable, Identifiable, Equatable {
+    let id: String
+    let kind: String
+    let path: String
+    let title: String
+    let status: String
+    let stage: String
+    let stageLabel: String
+    let progress: Double
+    let completedUnits: Int?
+    let totalUnits: Int?
+    let startedAt: String
+    let updatedAt: String
+    let completedAt: String?
+    let message: String?
+
+    var isRunning: Bool {
+        status == "running"
+    }
+}
+
 struct PDFAnnotationDocument: Codable {
     var schemaVersion: Int
     var documentPath: String

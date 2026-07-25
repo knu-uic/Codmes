@@ -31,10 +31,18 @@ import {
   documentStateDirectory,
   ensureDocumentStateManifest,
   legacyAnnotationsPathForDocument,
+  normalizePdfBinaryTextLayer,
   removeDocumentIngestCacheFiles
 } from "./lib/document-ingest.mjs";
 import { readAuditSummary } from "./lib/runtime/audit-log.mjs";
+import {
+  finishDocumentJob,
+  listDocumentJobs,
+  startDocumentJob,
+  updateDocumentJob
+} from "./lib/document-jobs.mjs";
 import { createCodmesPdfPackage, readCodmesPdfPackage } from "./lib/codmes-pdf-package.mjs";
+import { pdfThumbnailCacheFileName } from "./lib/pdf-thumbnail.mjs";
 import {
   BUILTIN_PROVIDERS,
   listCredentialStatus,
@@ -361,6 +369,9 @@ async function handleRequest(req, res) {
     }
     if (req.method === "GET" && url.pathname === "/api/search/status") {
       return sendJson(res, searchStatus(WORKSPACE_ROOT));
+    }
+    if (req.method === "GET" && url.pathname === "/api/document-jobs") {
+      return sendJson(res, { jobs: listDocumentJobs({ includeCompleted: true }) });
     }
     if (req.method === "GET" && url.pathname === "/api/global-search") {
       return sendJson(res, await runGlobalSearch(url));
@@ -1160,9 +1171,16 @@ async function streamPdfArtifact(res, artifactPath) {
 }
 
 async function renderPdfThumbnail(absolutePath, relativePath, stat, page, crop, highlightQuery, scale, signal) {
-  const cropKey = crop ? `${crop.x}:${crop.y}:${crop.width}:${crop.height}` : "cover";
-  const key = Buffer.from(`pdf-preview-v6\n${relativePath}\n${stat.size}:${stat.mtimeMs}\n${page}\n${cropKey}\n${highlightQuery.toLocaleLowerCase()}\n${scale}`, "utf8").toString("base64url");
-  const outputPath = path.join(WORKSPACE_ROOT, ".codmes", "index", "thumbnails", `${key}.png`);
+  const fileName = pdfThumbnailCacheFileName({
+    relativePath,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    page,
+    crop,
+    highlightQuery,
+    scale
+  });
+  const outputPath = path.join(WORKSPACE_ROOT, ".codmes", "index", "thumbnails", fileName);
   try {
     await fs.access(outputPath);
     return outputPath;
@@ -1197,10 +1215,21 @@ if highlight_query:
         else:
             selected_matches = [matches[0]]
         for match in selected_matches:
-            annotation = page.add_highlight_annot(match)
-            annotation.set_colors(stroke=(1.0, 0.55, 0.16))
-            annotation.set_opacity(0.45)
-            annotation.update()
+            visual_top = match.y0 - match.height * 0.82
+            visual_bottom = visual_top + match.height * 1.22
+            highlight_rect = fitz.Rect(
+                max(page_rect.x0, match.x0 - 1.5),
+                max(page_rect.y0, visual_top - 0.5),
+                min(page_rect.x1, match.x1 + 1.5),
+                min(page_rect.y1, visual_bottom + 0.5),
+            )
+            page.draw_rect(
+                highlight_rect,
+                color=None,
+                fill=(1.0, 0.55, 0.16),
+                fill_opacity=0.34,
+                overlay=True,
+            )
 if crop_values:
     x, y, width, height = crop_values
     center_x = x + width / 2
@@ -1372,8 +1401,9 @@ async function uploadFile(req) {
   await assertPathAvailable(absolutePath);
   await fs.mkdir(path.dirname(absolutePath), { recursive: true });
   await fs.writeFile(absolutePath, Buffer.from(body.dataBase64, "base64"), { flag: "wx" });
-  await refreshSearchIndexPaths([relativePath]);
-  return { ok: true, path: relativePath };
+  const documentJob = queueUploadedNotesPdfProcessing(relativePath, absolutePath);
+  if (!documentJob) await refreshSearchIndexPaths([relativePath]);
+  return { ok: true, path: relativePath, documentJob };
 }
 
 async function replaceBinaryFile(req) {
@@ -1386,8 +1416,9 @@ async function replaceBinaryFile(req) {
   const stat = await fs.stat(absolutePath);
   if (stat.isDirectory()) throw Object.assign(new Error("Cannot replace a folder."), { status: 400 });
   await fs.writeFile(absolutePath, Buffer.from(body.dataBase64, "base64"));
-  await refreshSearchIndexPaths([relativePath]);
-  return { ok: true, path: relativePath };
+  const documentJob = queueUploadedNotesPdfProcessing(relativePath, absolutePath);
+  if (!documentJob) await refreshSearchIndexPaths([relativePath]);
+  return { ok: true, path: relativePath, documentJob };
 }
 
 async function importCodmesPdf(req) {
@@ -1411,13 +1442,15 @@ async function importCodmesPdf(req) {
     await ensureDocumentStateManifest(WORKSPACE_ROOT, target.relativePath);
   }
 
-  await refreshSearchIndexPaths([target.relativePath]);
+  const documentJob = queueUploadedNotesPdfProcessing(target.relativePath, target.absolutePath);
+  if (!documentJob) await refreshSearchIndexPaths([target.relativePath]);
   return {
     ok: true,
     path: target.relativePath,
     requestedPath: requested.relativePath,
     renamed: target.relativePath !== requested.relativePath,
-    annotationsImported: Boolean(annotations)
+    annotationsImported: Boolean(annotations),
+    documentJob
   };
 }
 
@@ -1459,6 +1492,7 @@ async function importCodmesPdfPackage(req) {
   const requested = resolveWorkspacePath(WORKSPACE_ROOT, ensurePdfExtension(requestedName));
   const target = await availableWorkspaceFilePath(requested.relativePath);
   const stateDirectory = documentStateDirectory(WORKSPACE_ROOT, target.relativePath);
+  let documentJob = null;
   try {
     await fs.rm(stateDirectory, { recursive: true, force: true });
     await fs.mkdir(path.dirname(target.absolutePath), { recursive: true });
@@ -1468,7 +1502,8 @@ async function importCodmesPdfPackage(req) {
     await fs.mkdir(path.dirname(targetAnnotationPath), { recursive: true });
     await fs.writeFile(targetAnnotationPath, JSON.stringify(annotations, null, 2) + "\n", "utf8");
     await ensureDocumentStateManifest(WORKSPACE_ROOT, target.relativePath);
-    await refreshSearchIndexPaths([target.relativePath]);
+    documentJob = queueUploadedNotesPdfProcessing(target.relativePath, target.absolutePath);
+    if (!documentJob) await refreshSearchIndexPaths([target.relativePath]);
   } catch (error) {
     await fs.rm(target.absolutePath, { force: true }).catch(() => {});
     await fs.rm(stateDirectory, { recursive: true, force: true }).catch(() => {});
@@ -1479,7 +1514,8 @@ async function importCodmesPdfPackage(req) {
     path: target.relativePath,
     requestedPath: requested.relativePath,
     renamed: target.relativePath !== requested.relativePath,
-    annotationsImported: true
+    annotationsImported: true,
+    documentJob
   };
 }
 
@@ -1560,8 +1596,56 @@ async function completeChunkedUpload(req) {
   await fs.mkdir(path.dirname(absolutePath), { recursive: true });
   await fs.copyFile(uploadTempPath(uploadId), absolutePath, fsConstants.COPYFILE_EXCL);
   await cleanupUpload(uploadId);
-  await refreshSearchIndexPaths([relativePath]);
-  return { ok: true, uploadId, path: relativePath };
+  const documentJob = queueUploadedNotesPdfProcessing(relativePath, absolutePath);
+  if (!documentJob) await refreshSearchIndexPaths([relativePath]);
+  return { ok: true, uploadId, path: relativePath, documentJob };
+}
+
+function queueUploadedNotesPdfProcessing(relativePath, absolutePath) {
+  const normalized = String(relativePath || "").replace(/\\/g, "/");
+  if (!normalized.toLowerCase().startsWith("notes/") || path.extname(normalized).toLowerCase() !== ".pdf") {
+    return null;
+  }
+  const job = startDocumentJob({ path: normalized });
+  const run = async () => {
+    try {
+      const result = await normalizePdfBinaryTextLayer(WORKSPACE_ROOT, absolutePath, normalized, {
+        onProgress: (progress) => updateDocumentJob(job.id, progress)
+      });
+      updateDocumentJob(job.id, {
+        stage: "indexing",
+        stageLabel: "검색 인덱스 갱신 중",
+        progress: 0.96,
+        completedUnits: null,
+        totalUnits: null
+      });
+      await refreshSearchIndexPaths([normalized]);
+      finishDocumentJob(job.id, {
+        status: "completed",
+        message: result.normalized
+          ? `${result.pages?.length || 0}개 페이지를 정규화했습니다.`
+          : "기존 PDF 텍스트 레이어가 정상입니다."
+      });
+    } catch (error) {
+      console.warn(`[codmes] PDF text-layer normalization failed for ${normalized}: ${error?.message || error}`);
+      await refreshSearchIndexPaths([normalized]).catch(() => {});
+      finishDocumentJob(job.id, {
+        status: "failed",
+        message: String(error?.message || error)
+      });
+    }
+  };
+  setImmediate(() => {
+    run().catch((error) => {
+      finishDocumentJob(job.id, { status: "failed", message: String(error?.message || error) });
+    });
+  });
+  return {
+    id: job.id,
+    status: job.status,
+    path: job.path,
+    title: job.title
+  };
 }
 
 async function cancelChunkedUpload(req) {

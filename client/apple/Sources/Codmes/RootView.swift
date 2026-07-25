@@ -12,6 +12,9 @@ struct RootView: View {
     @State private var showingGlobalSearch = false
     @State private var showingSettings = false
     @State private var isMacSidebarVisible = true
+    @State private var showingDocumentJobs = false
+    @State private var seenDocumentJobIds = Set<String>()
+    @State private var documentJobsAutoDismissTask: Task<Void, Never>?
 
     var body: some View {
         #if os(macOS)
@@ -75,6 +78,10 @@ struct RootView: View {
                             .help(isChatPanelVisible ? "Hide chat panel" : "Show chat panel")
                         }
 
+                        if activeSurfaceId == "notes", !store.activeDocumentJobs.isEmpty {
+                            documentJobsButton
+                        }
+
                         Button {
                             store.selectedPDFFocus = nil
                             showingGlobalSearch = true
@@ -105,6 +112,15 @@ struct RootView: View {
         .task(id: activeSurfaceTaskKey) {
             store.activeChatSurface = activeSurfaceId
             await autoRefreshVisibleFileTree()
+        }
+        .task {
+            await store.monitorDocumentJobs()
+        }
+        .onChange(of: store.activeDocumentJobs.map(\.id)) { _, ids in
+            updateDocumentJobsPresentation(ids)
+        }
+        .onDisappear {
+            documentJobsAutoDismissTask?.cancel()
         }
         #else
         iOSRootView
@@ -217,6 +233,15 @@ struct RootView: View {
             store.activeChatSurface = activeSurfaceId
             await autoRefreshVisibleFileTree()
         }
+        .task {
+            await store.monitorDocumentJobs()
+        }
+        .onChange(of: store.activeDocumentJobs.map(\.id)) { _, ids in
+            updateDocumentJobsPresentation(ids)
+        }
+        .onDisappear {
+            documentJobsAutoDismissTask?.cancel()
+        }
     }
 
     private var iOSMainContent: some View {
@@ -281,6 +306,10 @@ struct RootView: View {
                     Spacer(minLength: 8)
 
                     HStack(spacing: compact ? 0 : 8) {
+                        if activeSurfaceId == "notes", !store.activeDocumentJobs.isEmpty {
+                            documentJobsButton
+                        }
+
                         Button {
                             store.selectedPDFFocus = nil
                             showingGlobalSearch = true
@@ -642,6 +671,42 @@ struct RootView: View {
     }
     #endif
 
+    private var documentJobsButton: some View {
+        Button {
+            documentJobsAutoDismissTask?.cancel()
+            showingDocumentJobs.toggle()
+        } label: {
+            ServerAnalysisProgressIcon(progress: store.documentJobProgress)
+                .frame(width: 28, height: 28)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .contentShape(Rectangle())
+        .help("Server PDF analysis")
+        .accessibilityLabel("Server PDF analysis in progress")
+        .popover(isPresented: $showingDocumentJobs, arrowEdge: .top) {
+            DocumentJobsPopover(jobs: store.activeDocumentJobs)
+        }
+    }
+
+    private func updateDocumentJobsPresentation(_ ids: [String]) {
+        guard !ids.isEmpty else {
+            showingDocumentJobs = false
+            documentJobsAutoDismissTask?.cancel()
+            return
+        }
+        let newIds = Set(ids).subtracting(seenDocumentJobIds)
+        seenDocumentJobIds.formUnion(ids)
+        guard !newIds.isEmpty, activeSurfaceId == "notes" else { return }
+        showingDocumentJobs = true
+        documentJobsAutoDismissTask?.cancel()
+        documentJobsAutoDismissTask = Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled else { return }
+            showingDocumentJobs = false
+        }
+    }
+
     private func selectSection(_ section: WorkspaceSection) {
         selectedPluginSurfaceId = nil
         selection = section
@@ -735,6 +800,72 @@ struct RootView: View {
             .background(isSelected ? Color.secondary.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct ServerAnalysisProgressIcon: View {
+    let progress: Double
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(.secondary.opacity(0.28), style: StrokeStyle(lineWidth: 2.2, dash: [4, 3]))
+
+            Circle()
+                .trim(from: 0, to: min(max(progress, 0.04), 1))
+                .stroke(
+                    Color.accentColor,
+                    style: StrokeStyle(lineWidth: 2.4, lineCap: .round)
+                )
+                .rotationEffect(.degrees(-90))
+
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 10, weight: .semibold))
+        }
+        .padding(3)
+    }
+}
+
+private struct DocumentJobsPopover: View {
+    let jobs: [DocumentJob]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("서버 PDF 분석 중")
+                .font(.headline)
+
+            ForEach(jobs) { job in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(job.title)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    HStack {
+                        Text(job.stageLabel)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Spacer()
+
+                        if let completed = job.completedUnits, let total = job.totalUnits, total > 0 {
+                            Text("\(completed)/\(total)")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("\(Int(job.progress * 100))%")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    ProgressView(value: job.progress)
+                        .progressViewStyle(.linear)
+                }
+            }
+        }
+        .padding(16)
+        .frame(width: 320)
     }
 }
 

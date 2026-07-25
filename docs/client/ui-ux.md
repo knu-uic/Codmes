@@ -1,5 +1,11 @@
 # UI와 UX 원칙
 
+화면과 데이터 처리처럼 공통으로 사용할 수 있는 부분은 SwiftUI로 함께 만들고,
+mouse·keyboard가 필요한 macOS 기능은 AppKit으로, touch·Apple Pencil이 필요한
+iPhone·iPad 기능은 UIKit으로 따로 구현합니다. Notes와 PDF의 annotation data는
+특정 앱에만 묶이지 않도록 만들어, 추후 Windows나 Android 앱에서도 그대로
+사용할 수 있게 합니다.
+
 ## 전체 구조
 
 - 첫 화면은 실제 Chat, Notes, Code 작업 화면이다.
@@ -20,7 +26,19 @@
 - iOS 검색은 작업 화면을 완전히 교체하지 않는 popup 형태를 사용한다.
 - 결과는 document 단위로 묶고 filename 일치를 가장 먼저 보여준다.
 - PDF document 안에서는 page 순서로 배치하며 같은 page의 여러 결과를 보존한다.
-- thumbnail에 검색어 위치를 highlight하고 선택하면 해당 PDF page로 이동한다.
+- PDF 본문 결과는 해당 text 주변을 crop한 PNG thumbnail에 검색어를 주황색으로
+  highlight한다.
+- 결과를 선택하면 해당 PDF page로 이동하고 같은 검색어 영역에 노란 focus box를
+  표시한다. line 전체 box나 raw PDF font metric box를 그대로 사용하지 않는다.
+
+## 서버 문서 작업
+
+- upload progress는 client의 파일 전송 상태이고 PDF 분석 progress는 server
+  document job 상태다. 하나의 progress UI로 합치지 않는다.
+- Notes 상단의 분석 icon은 `running` server job이 있을 때만 표시한다.
+- 새 분석이 시작되면 popover를 3초간 자동 표시하고 이후 icon으로 다시 열 수 있다.
+- popover는 파일명, 현재 단계, page 단위 진행률 또는 percent를 표시한다.
+- 실행 중인 job이 없어지면 popover와 icon을 함께 숨긴다.
 
 ## PDF
 

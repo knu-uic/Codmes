@@ -31,6 +31,7 @@
 | GET | `/api/pdf/metadata` | PDF page 수와 streaming metadata |
 | GET | `/api/pdf/skeleton` | page 수를 유지한 작은 skeleton PDF |
 | GET | `/api/pdf/page` | 지정한 PDF page fragment |
+| GET | `/api/document-jobs` | 서버 PDF 검사·OCR·정규화 작업 상태 |
 
 업로드:
 
@@ -40,6 +41,33 @@
 - `POST /api/file/upload/chunk`
 - `POST /api/file/upload/complete`
 - `POST /api/file/upload/cancel`
+
+Notes PDF의 저장/업로드 완료 응답에는 작업을 시작한 경우 다음 요약이
+`documentJob`으로 포함된다.
+
+```json
+{
+  "id": "job-id",
+  "status": "running",
+  "path": "Notes/example.pdf",
+  "title": "example.pdf"
+}
+```
+
+파일 저장이 끝났다는 응답이며 OCR과 검색 index 갱신 완료를 뜻하지 않는다.
+`GET /api/document-jobs`는 최근 최대 20개 job을 반환한다. 각 job에는 `kind`,
+`status`, `stage`, `stageLabel`, `progress`, `completedUnits`, `totalUnits`,
+`startedAt`, `updatedAt`, `completedAt`, `message`가 있다.
+
+`GET /api/pdf-thumbnail` query:
+
+- `path`, `page`
+- 선택적인 normalized crop `x`, `y`, `width`, `height`
+- 선택적인 `highlight`: PDF 안에서 다시 찾을 검색어
+- 선택적인 `scale`
+
+응답은 PNG다. render identity는 PDF 크기/mtime, page, crop, query, scale과
+renderer version을 포함하며 SHA-256 파일명으로 cache한다.
 
 Codmes PDF package:
 
@@ -73,6 +101,11 @@ PUT /api/file/annotations?path=Notes/example.pdf
 다음 묶음을 읽는다. 전체 결과를 100개에서 잘라내지는 않는다. UI 결과는 문서별로
 묶고 문서는 파일명 일치와 일치 page/횟수로 정렬하며, 문서 내부 PDF 결과는 page
 순서를 사용한다.
+
+PDF 본문 결과의 `target`에는 `path`, 1-based `page`, 선택적인 `bbox`가 있다.
+`bbox`는 PDF point 값과 `normalized` 값을 함께 가질 수 있다. OCR 정규화 PDF의
+exact query 결과는 line 전체가 아니라 query 폭과 실제 화면 glyph 위치로 보정된
+box를 반환하므로 client는 추가 baseline 보정 없이 `normalized` 값을 사용한다.
 
 ## Provider, model, auth
 
