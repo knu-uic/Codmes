@@ -730,21 +730,28 @@ private func collectHermesModels(from object: Any, provider: String?, into model
         return
     }
     guard let dict = object as? [String: Any] else { return }
-    let nextProvider = stringValue(dict["provider"])
+    let rawProvider = stringValue(dict["provider"])
         ?? stringValue(dict["provider_id"])
         ?? stringValue(dict["providerId"])
-        ?? stringValue(dict["name"]).flatMap { dict["models"] != nil ? $0 : nil }
-        ?? provider
-    if let model = stringValue(dict["model"])
+    let nameString = stringValue(dict["name"])
+    let hasModels = dict["models"] != nil
+    let providerFromName = hasModels ? nameString : nil
+    let nextProvider = rawProvider ?? providerFromName ?? provider
+
+    let rawModel = stringValue(dict["model"])
         ?? stringValue(dict["model_id"])
         ?? stringValue(dict["modelId"])
-        ?? stringValue(dict["id"]).flatMap({ dict["models"] == nil ? $0 : nil }) {
-        let label = stringValue(dict["label"])
+    let idString = stringValue(dict["id"])
+    let modelFromId = !hasModels ? idString : nil
+
+    if let model = rawModel ?? modelFromId {
+        let rawLabel = stringValue(dict["label"])
             ?? stringValue(dict["display_name"])
             ?? stringValue(dict["displayName"])
-            ?? stringValue(dict["name"]).flatMap { $0 == nextProvider ? nil : $0 }
-            ?? nextProvider.map { "\($0) / \(model)" }
-            ?? model
+        let nameLabel = (nameString != nil && nameString != nextProvider) ? nameString : nil
+        let formattedFallback: String? = nextProvider.map { "\($0) / \(model)" }
+        let label: String = rawLabel ?? nameLabel ?? formattedFallback ?? model
+
         models.append(HermesModelOption(label: label, provider: nextProvider, model: model))
     }
     for key in ["models", "options", "model_options", "modelOptions", "items", "providers"] {
