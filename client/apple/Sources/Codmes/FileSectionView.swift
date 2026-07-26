@@ -77,124 +77,7 @@ struct FileBrowserPane: View {
             if showsHeader {
                 HeaderView(title: title, subtitle: headerSubtitle)
             }
-            if isSelectingItems {
-                HStack(spacing: 8) {
-                    Button {
-                        clearTreeSelection()
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .buttonStyle(.plain)
-                    .frame(width: 30, height: 30)
-                    .help("Cancel selection")
-
-                    Text("\(selectedTreePaths.count) selected")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-
-                    Image(systemName: "house")
-                        .foregroundStyle(dropTargetPath == workspaceRootName ? Color.accentColor : Color.primary.opacity(0.72))
-
-                    Spacer()
-
-                    Button {
-                        beginCopy(items: selectedTreeItems)
-                    } label: {
-                        Image(systemName: "doc.on.doc")
-                    }
-                    .buttonStyle(.plain)
-                    .frame(width: 30, height: 30)
-                    .disabled(selectedTreePaths.isEmpty)
-                    .help("Copy selected items")
-
-                    Button(role: .destructive) {
-                        itemsToDelete = selectedTreeItems
-                    } label: {
-                        Image(systemName: "trash")
-                    }
-                    .buttonStyle(.plain)
-                    .frame(width: 30, height: 30)
-                    .disabled(selectedTreePaths.isEmpty)
-                    .help("Delete selected items")
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(.quaternary.opacity(0.10))
-                .overlay(alignment: .bottom) {
-                    Rectangle()
-                        .fill(.quaternary.opacity(0.35))
-                        .frame(height: 1)
-                }
-                .background(rootDropBackground)
-                .overlay { rootDropBorder }
-                .contentShape(Rectangle())
-                .dropDestination(for: FileTreeDragItem.self, action: dropIntoRoot, isTargeted: updateRootDropTarget)
-            } else {
-                HStack(spacing: 8) {
-                Button {
-                    newItemName = root == "code" ? "Untitled.swift" : "Untitled.md"
-                    newItemKind = .file
-                } label: {
-                    Image(systemName: "doc.badge.plus")
-                }
-                .buttonStyle(.plain)
-                .frame(width: 30, height: 30)
-                .contentShape(Rectangle())
-                .help("New file")
-
-                Button {
-                    newItemName = "New Folder"
-                    newItemKind = .folder
-                } label: {
-                    Image(systemName: "folder.badge.plus")
-                }
-                .buttonStyle(.plain)
-                .frame(width: 30, height: 30)
-                .contentShape(Rectangle())
-                .help("New folder")
-
-                Button {
-                    isImportingFile = true
-                } label: {
-                    Image(systemName: "paperclip")
-                }
-                .buttonStyle(.plain)
-                .frame(width: 30, height: 30)
-                .contentShape(Rectangle())
-                .help("Attach or import file")
-
-                Button {
-                    store.selectFolder(root: root, item: nil)
-                } label: {
-                    Image(systemName: "house")
-                }
-                .buttonStyle(.plain)
-                .frame(width: 30, height: 30)
-                .contentShape(Rectangle())
-                .foregroundStyle(dropTargetPath == workspaceRootName ? Color.accentColor : Color.primary)
-                .help("Use root folder")
-
-                Text(store.currentPath(for: root).isEmpty ? "/" : store.currentPath(for: root))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
-                Spacer()
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(.quaternary.opacity(0.10))
-                .overlay(alignment: .bottom) {
-                    Rectangle()
-                        .fill(.quaternary.opacity(0.35))
-                        .frame(height: 1)
-                }
-                .background(rootDropBackground)
-                .overlay { rootDropBorder }
-                .contentShape(Rectangle())
-                .dropDestination(for: FileTreeDragItem.self, action: dropIntoRoot, isTargeted: updateRootDropTarget)
-            }
+            browserToolbar
 
             UploadStatusPanel(root: root)
 
@@ -328,6 +211,151 @@ struct FileBrowserPane: View {
             if isSelectingItems, selectedTreePaths.isEmpty {
                 clearTreeSelection()
             }
+        }
+    }
+
+    @ViewBuilder
+    private var browserToolbar: some View {
+        if isSelectingItems {
+            HStack(spacing: 8) {
+                Button {
+                    clearTreeSelection()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .frame(width: 30, height: 30)
+                .help("Cancel selection")
+
+                Text("\(selectedTreePaths.count) selected")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Image(systemName: "house")
+                    .foregroundStyle(dropTargetPath == workspaceRootName ? Color.accentColor : Color.primary.opacity(0.72))
+
+                Spacer()
+
+                Button {
+                    beginCopy(items: selectedTreeItems)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .buttonStyle(.plain)
+                .frame(width: 30, height: 30)
+                .disabled(selectedTreePaths.isEmpty)
+                .help("Copy selected items")
+
+                Button(role: .destructive) {
+                    itemsToDelete = selectedTreeItems
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.plain)
+                .frame(width: 30, height: 30)
+                .disabled(selectedTreePaths.isEmpty)
+                .help("Delete selected items")
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(.quaternary.opacity(0.10))
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(.quaternary.opacity(0.35))
+                    .frame(height: 1)
+            }
+            .background(rootDropBackground)
+            .overlay { rootDropBorder }
+            .contentShape(Rectangle())
+            .dropDestination(for: FileTreeDragItem.self, action: dropIntoRoot, isTargeted: updateRootDropTarget)
+        } else {
+            HStack(spacing: 8) {
+                Button {
+                    newItemName = root == "code" ? "Untitled.swift" : "Untitled.md"
+                    newItemKind = .file
+                } label: {
+                    Image(systemName: "doc.badge.plus")
+                }
+                .buttonStyle(.plain)
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
+                .help("New file")
+
+                Button {
+                    newItemName = "New Folder"
+                    newItemKind = .folder
+                } label: {
+                    Image(systemName: "folder.badge.plus")
+                }
+                .buttonStyle(.plain)
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
+                .help("New folder")
+
+                Button {
+                    isImportingFile = true
+                } label: {
+                    Image(systemName: "paperclip")
+                }
+                .buttonStyle(.plain)
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
+                .help("Attach or import file")
+
+                Image(systemName: "house")
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
+                .foregroundStyle(dropTargetPath == workspaceRootName ? Color.accentColor : Color.primary)
+                .onTapGesture {
+                    store.selectFolder(root: root, item: nil)
+                }
+                .accessibilityAddTraits(.isButton)
+                .help("Use root folder")
+                #if os(macOS)
+                .onDrop(
+                    of: [.utf8PlainText],
+                    delegate: MacOSRootDropDelegate(
+                        dropTargetPath: $dropTargetPath,
+                        rootPath: workspaceRootName,
+                        movePathsToRoot: { paths in
+                            _ = moveDraggedItems(paths, into: nil)
+                        }
+                    )
+                )
+                #endif
+
+                Text(store.currentPath(for: root).isEmpty ? "/" : store.currentPath(for: root))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+                    .contentShape(Rectangle())
+                    #if os(macOS)
+                    .onDrop(
+                        of: [.utf8PlainText],
+                        delegate: MacOSRootDropDelegate(
+                            dropTargetPath: $dropTargetPath,
+                            rootPath: workspaceRootName,
+                            movePathsToRoot: { paths in
+                                _ = moveDraggedItems(paths, into: nil)
+                            }
+                        )
+                    )
+                    #endif
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(.quaternary.opacity(0.10))
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(.quaternary.opacity(0.35))
+                    .frame(height: 1)
+            }
+            .background(rootDropBackground)
+            .overlay { rootDropBorder }
+            .contentShape(Rectangle())
+            .dropDestination(for: FileTreeDragItem.self, action: dropIntoRoot, isTargeted: updateRootDropTarget)
         }
     }
 
@@ -503,34 +531,7 @@ struct FileBrowserPane: View {
                     .frame(width: 22, height: 30)
             }
 
-            Button {
-                if isSelectingItems {
-                    toggleTreeSelection(item)
-                } else if item.isDirectory {
-                    store.selectFolder(root: root, item: item)
-                    toggleFolder(item)
-                } else {
-                    open(item)
-                }
-            } label: {
-                HStack(spacing: 7) {
-                    Image(systemName: item.isDirectory && expandedFolderPaths.contains(item.path) ? "folder.fill" : icon(for: item))
-                        .foregroundStyle(item.isDirectory ? Color.primary.opacity(0.82) : Color.secondary)
-                        .frame(width: 18)
-                    Text(item.name)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    if store.loadingRawFile?.path == item.path, store.rawFileLoadError == nil {
-                        ProgressView()
-                            .controlSize(.small)
-                            .frame(width: 16, height: 16)
-                    }
-                    Spacer(minLength: 4)
-                }
-                .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            treeItemButton(for: item)
 
             Menu {
                 itemManagementMenu(item)
@@ -545,28 +546,130 @@ struct FileBrowserPane: View {
             .tint(.primary)
         }
         .contentShape(Rectangle())
-        .draggable(dragItem(for: item)) {
-            Label(dragPreviewTitle(for: item), systemImage: dragPreviewIcon(for: item))
-                .font(.callout.weight(.medium))
+
+        row
+    }
+
+    @ViewBuilder
+    private func treeItemButton(for item: WorkspaceItem) -> some View {
+        if item.isDirectory {
+            #if os(macOS)
+            treeItemButtonBase(for: item)
+                .onDrop(
+                    of: [.utf8PlainText],
+                    isTargeted: Binding(
+                        get: { dropTargetPath == item.path },
+                        set: { updateFolderDropTarget($0, item: item) }
+                    ),
+                    perform: { providers in
+                        moveDroppedProviders(providers, into: item)
+                    }
+                )
+            #else
+            treeItemButtonBase(for: item)
+                .dropDestination(for: FileTreeDragItem.self, action: { items, _ in
+                    moveDraggedItems(items.first?.paths ?? [], into: item)
+                }, isTargeted: { isTargeted in
+                    updateFolderDropTarget(isTargeted, item: item)
+                })
+            #endif
+        } else {
+            treeItemButtonBase(for: item)
+        }
+    }
+
+    private func treeItemButtonBase(for item: WorkspaceItem) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: item.isDirectory && expandedFolderPaths.contains(item.path) ? "folder.fill" : icon(for: item))
+                .foregroundStyle(item.isDirectory ? Color.primary.opacity(0.82) : Color.secondary)
+                .frame(width: 18)
+            Text(item.name)
                 .lineLimit(1)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .truncationMode(.middle)
+            if store.loadingRawFile?.path == item.path, store.rawFileLoadError == nil {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 16, height: 16)
+            }
+            Spacer(minLength: 4)
+        }
+        .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if isSelectingItems {
+                toggleTreeSelection(item)
+            } else if item.isDirectory {
+                store.selectFolder(root: root, item: item)
+                toggleFolder(item)
+            } else {
+                open(item)
+            }
+        }
+        .accessibilityAddTraits(.isButton)
+        #if os(macOS)
+        .onDrag {
+            macOSDragProvider(for: item)
+        } preview: {
+            dragPreview(for: item)
+        }
+        #else
+        .draggable(dragItem(for: item)) {
+            dragPreview(for: item)
+        }
+        #endif
+    }
+
+    private func updateFolderDropTarget(_ isTargeted: Bool, item: WorkspaceItem) {
+        if isTargeted {
+            dropTargetPath = item.path
+        } else if dropTargetPath == item.path {
+            dropTargetPath = nil
+        }
+    }
+
+    #if os(macOS)
+    private func macOSDragProvider(for item: WorkspaceItem) -> NSItemProvider {
+        let data = (try? JSONEncoder().encode(dragItem(for: item))) ?? Data()
+        let payload = String(data: data, encoding: .utf8) ?? ""
+        let provider = NSItemProvider(object: payload as NSString)
+        provider.registerDataRepresentation(
+            forTypeIdentifier: UTType.codmesWorkspaceItem.identifier,
+            visibility: .all
+        ) { completion in
+            completion(data, nil)
+            return nil
+        }
+        return provider
+    }
+
+    private func moveDroppedProviders(_ providers: [NSItemProvider], into folder: WorkspaceItem?) -> Bool {
+        guard let provider = providers.first(where: {
+            $0.canLoadObject(ofClass: NSString.self)
+        }) else {
+            return false
         }
 
-        if item.isDirectory {
-            row.dropDestination(for: FileTreeDragItem.self, action: { items, _ in
-                moveDraggedItems(items.first?.paths ?? [], into: item)
-            }, isTargeted: { isTargeted in
-                if isTargeted {
-                    dropTargetPath = item.path
-                } else if dropTargetPath == item.path {
-                    dropTargetPath = nil
-                }
-            })
-        } else {
-            row
+        provider.loadObject(ofClass: NSString.self) { object, _ in
+            guard let payload = object as? String,
+                  let data = payload.data(using: .utf8),
+                  let item = try? JSONDecoder().decode(FileTreeDragItem.self, from: data) else {
+                return
+            }
+            Task { @MainActor in
+                _ = moveDraggedItems(item.paths, into: folder)
+            }
         }
+        return true
+    }
+    #endif
+
+    private func dragPreview(for item: WorkspaceItem) -> some View {
+        Label(dragPreviewTitle(for: item), systemImage: dragPreviewIcon(for: item))
+            .font(.callout.weight(.medium))
+            .lineLimit(1)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private func rowBackground(for item: WorkspaceItem) -> Color {
@@ -743,6 +846,45 @@ private extension UTType {
     static let codmesWorkspaceItem = UTType(exportedAs: "com.codmes.workspace-item")
 }
 
+#if os(macOS)
+private struct MacOSRootDropDelegate: DropDelegate {
+    @Binding var dropTargetPath: String?
+    let rootPath: String
+    let movePathsToRoot: @MainActor ([String]) -> Void
+
+    func dropEntered(info _: DropInfo) {
+        dropTargetPath = rootPath
+    }
+
+    func dropExited(info _: DropInfo) {
+        if dropTargetPath == rootPath {
+            dropTargetPath = nil
+        }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let provider = info.itemProviders(for: [.utf8PlainText]).first else {
+            return false
+        }
+
+        provider.loadObject(ofClass: NSString.self) { object, _ in
+            guard let payload = object as? String,
+                  let data = payload.data(using: .utf8),
+                  let dragItem = try? JSONDecoder().decode(MacOSWorkspaceDragPayload.self, from: data) else {
+                return
+            }
+            Task { @MainActor in
+                movePathsToRoot(dragItem.paths)
+            }
+        }
+        return true
+    }
+}
+
+private struct MacOSWorkspaceDragPayload: Decodable, Sendable {
+    let paths: [String]
+}
+#endif
 
 private struct UploadStatusPanel: View {
     @EnvironmentObject private var store: WorkspaceStore
