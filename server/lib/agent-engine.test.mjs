@@ -6,8 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { WorkspaceAgentEngine, WorkspaceAgentStateStore } from "./agent-engine.mjs";
 import { OpenAICompatibleRuntime } from "./runtime/openai-compatible-runtime.mjs";
-import { setCredentialValue, setDefaultModel, writeRuntimeConfig } from "./runtime/config-store.mjs";
-import { writeSecurityConfig } from "./runtime/security-policy.mjs";
+import { setCredentialValue, setDefaultModel, setMcpCredential, writeRuntimeConfig } from "./runtime/config-store.mjs";
+import { checkAction, writeSecurityConfig } from "./runtime/security-policy.mjs";
 
 test("workspace agent engine resolves context and records task state", async () => {
   const root = await fixtureWorkspace();
@@ -172,7 +172,7 @@ test("workspace agent engine stores approval_required task and resumes approved 
     message: "dangerous tool please"
   });
 
-  assert.equal(result.status, "approval_required");
+  assert.equal(result.status, "approval_required", JSON.stringify(result));
   assert.match(result.approvalId, /^approval-/);
 
   const task = await engine.readTask(result.taskId);
@@ -266,6 +266,48 @@ test("MCP dangerous tool call creates approval_required task and approved inbox 
   assert.deepEqual(resumedTask.result.result.output, [{ type: "text", text: "delete_file called 1" }]);
   assert.equal(modelRequestCount, 1);
 
+  runtime.close();
+});
+
+test("remote Chat MCP keeps bearer out of approval state and calls exactly once only after approval", async () => {
+  const root = await fixtureWorkspace();
+  await setDefaultModel(root, "custom", "demo-model");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_BASE_URL", "http://model.test/v1");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_API_KEY", "test-key");
+  await setMcpCredential(root, "knu-rag", "remote-bearer-secret");
+  await writeRuntimeConfig(root, { defaultModel: { provider: "custom", model: "demo-model" }, mcpServers: [{ name: "knu-rag", transport: "streamable_http", url: "https://example.test/api/mcp/", credential_id: "knu-rag", surfaces: ["chat"], enabled: true }] });
+  await writeSecurityConfig(root, { approvalMode: "manual", allowShell: true, allowedCommands: [], deniedCommands: [], requireApproval: ["mcp.tool.call"] });
+  assert.equal((await checkAction(root, { type: "mcp.tool.call" })).status, "approve");
+  let calls = 0;
+  let modelRequests = 0;
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: root,
+    mcpClientFactory: () => ({ status: "stopped", async start() { this.status = "running"; }, async listTools() { return [{ name: "search_knu_notices", inputSchema: { type: "object" } }]; }, async callTool() { calls += 1; return { content: [{ type: "text", text: "notice" }] }; }, stop() {} }),
+    fetchImpl: async () => {
+      modelRequests += 1;
+      const chunks = modelRequests === 1
+        ? ['data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_knu","type":"function","function":{"name":"mcp__knu_rag__search_knu_notices","arguments":"{\\"query\\":\\"registration\\"}"}}]}}]}\n\n', "data: [DONE]\n\n"]
+        : ['data: {"choices":[{"delta":{"content":"notice found"}}]}\n\n', "data: [DONE]\n\n"];
+      return { ok: true, headers: { get: () => "text/event-stream" }, body: streamChunks(chunks) };
+    }
+  });
+  const engine = new WorkspaceAgentEngine({ workspaceRoot: root }, runtime);
+  const session = await engine.createSession({});
+  const result = await engine.submitPrompt({ sessionId: session.sessionId, message: "공지 찾아줘", surface: "chat", approved: false });
+  assert.equal(result.status, "approval_required", JSON.stringify(result));
+  assert.equal(calls, 0);
+  const task = await engine.readTask(result.taskId);
+  assert.equal(task.pendingState.type, "mcp.tool.call");
+  assert.equal(JSON.stringify(task).includes("remote-bearer-secret"), false);
+  await engine.respondToWorkspaceApproval(result.approvalId, { approved: true });
+  assert.equal(calls, 1);
+  modelRequests = 0;
+  const rejectedSession = await engine.createSession({});
+  const rejected = await engine.submitPrompt({ sessionId: rejectedSession.sessionId, message: "공지 찾아줘", surface: "chat", approved: false });
+  assert.equal(rejected.status, "approval_required");
+  assert.equal(calls, 1);
+  await engine.respondToWorkspaceApproval(rejected.approvalId, { approved: false, reason: "not now" });
+  assert.equal(calls, 1);
   runtime.close();
 });
 

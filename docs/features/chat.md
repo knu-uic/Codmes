@@ -25,6 +25,15 @@ project/folder에 속하거나 고정된 session, 진행 중 task, approval 대�
 Apple client의 `LiveChatClient`가 `/api/live` WebSocket을 사용한다. model output,
 reasoning, tool event, approval과 완료 event가 같은 연결을 통해 전달된다.
 
+## KNU notice evidence tools
+
+When the server config enables `knu-rag` for the `chat` surface, the model sees
+the remote notice tools as `mcp__knu_rag__search_knu_notices` and
+`mcp__knu_rag__get_knu_notice_detail`. Every `mcp.tool.call` follows the normal
+approval inbox: rejecting sends no remote request; approving resumes exactly the
+stored call. The bearer is never included in prompts, tool schemas, events,
+approval records, or tool results.
+
 ## Context와 tool
 
 mention으로 file, folder 또는 Workspace를 현재 대화 context에 넣을 수 있다. 작은

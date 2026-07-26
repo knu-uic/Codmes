@@ -15,7 +15,10 @@ import {
   setDefaultModel,
   readRuntimeConfig,
   ensureRuntimeConfig,
-  writeRuntimeConfig
+  writeRuntimeConfig,
+  getMcpCredentialStatus,
+  removeMcpCredential,
+  setMcpCredential
 } from "../server/lib/runtime/config-store.mjs";
 import { createModelTuiLaunch } from "../server/lib/runtime/model-config-tui.mjs";
 import { migrateWorkspaceStateSync } from "../server/lib/runtime/state-dir.mjs";
@@ -152,7 +155,7 @@ Usage:
   codmes auth [list|set|remove] [...]                      (Interactive auth manager if no subcommand)
   codmes sessions [list|rename|export|prune|delete]        (Interactive session browser if no subcommand)
   codmes tools [list|enable|disable] <name>
-  codmes mcp [list|add|remove|enable|disable] <name> [...]
+  codmes mcp [list|add|remove|enable|disable|credential] <name> [...]
   codmes skills [list|show|enable|disable|add|remove] <name>
   codmes security [show|set-approval-mode|allow-command|deny-command|list] [...]
   codmes doctor [--deep]                                   (Diagnostics helper)
@@ -1415,8 +1418,25 @@ async function runMcp(args) {
   codmes mcp remove <name> [--root PATH]
   codmes mcp enable <name> [--root PATH]
   codmes mcp disable <name> [--root PATH]
+  codmes mcp credential <set|status|remove> <credential-id> [--from-env NAME] [--root PATH]
 `);
     return;
+  }
+
+  if (subcommand === "credential") {
+    const action = name;
+    const credentialId = command;
+    if (!credentialId) throw new Error("Usage: codmes mcp credential <set|status|remove> <credential-id>");
+    if (action === "status") { printJson({ credentialId, configured: await getMcpCredentialStatus(root, credentialId) }); return; }
+    if (action === "remove") { printJson(await removeMcpCredential(root, credentialId)); return; }
+    if (action === "set") {
+      const fromEnv = stringOption(options["from-env"]);
+      const token = fromEnv ? process.env[fromEnv] : await readStdinSecret();
+      if (!token) throw new Error(fromEnv ? `Environment variable '${fromEnv}' is empty.` : "No token received on stdin.");
+      printJson(await setMcpCredential(root, credentialId, token));
+      return;
+    }
+    throw new Error("Usage: codmes mcp credential <set|status|remove> <credential-id>");
   }
 
   const config = await readRuntimeConfig(root);
@@ -1429,7 +1449,8 @@ async function runMcp(args) {
     } else {
       for (const mcp of mcpServers) {
         const status = mcp.enabled !== false ? "\x1b[32menabled\x1b[0m" : "\x1b[31mdisabled\x1b[0m";
-        console.log(`- ${mcp.name} [${status}] (${mcp.command} ${mcp.args?.join(" ") || ""})`);
+        const endpoint = mcp.transport === "streamable_http" ? `${mcp.url} (credential: ${mcp.credential_id})` : `${mcp.command} ${mcp.args?.join(" ") || ""}`;
+        console.log(`- ${mcp.name} [${status}] (${endpoint})`);
       }
     }
     return;
@@ -1480,6 +1501,13 @@ async function runMcp(args) {
   }
 
   throw new Error(`Unknown mcp subcommand: ${subcommand}`);
+}
+
+async function readStdinSecret() {
+  if (process.stdin.isTTY) throw new Error("Provide the token on stdin or use --from-env NAME.");
+  let value = "";
+  for await (const chunk of process.stdin) value += chunk;
+  return value.trim();
 }
 
 async function runDoctor(args) {

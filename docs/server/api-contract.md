@@ -176,3 +176,17 @@ box를 반환하므로 client는 추가 baseline 보정 없이 `normalized` 값�
 
 동적 endpoint의 허용 method와 body schema를 변경할 때는 서버 route test와
 `WorkspaceAPI.swift` 호출부를 함께 수정한다.
+
+## Remote MCP (KNU RAG)
+
+`/api/mcp` accepts legacy local `stdio` entries and remote entries shaped as
+`{name, transport:"streamable_http", url, credential_id, surfaces:["chat"], enabled}`.
+Remote URLs must be absolute HTTPS URLs with no userinfo, query, or fragment.
+The KNU Tailscale URL is configured on the central Codmes server; Apple clients
+never call it directly. Its Tailnet identity must be allowed by ACL to reach
+the central KNU MCP service. A separately deployed Codmes server must point
+`url` at its own reachable MCP server.
+Responses expose only `credentialConfigured`; they never return the bearer.
+Provision or rotate it on the server with `codmes mcp credential set knu-rag`
+(token on stdin) or `--from-env NAME`, inspect with `status`, and remove with
+`remove`. The Apple app never receives or stores this credential.

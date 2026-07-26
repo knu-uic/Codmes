@@ -883,13 +883,19 @@ struct MCPServersResponse: Codable {
 struct MCPServerConfig: Codable, Identifiable, Hashable {
     var id: String { name }
     let name: String
-    let command: String
+    let transport: String?
+    let command: String?
     let args: [String]?
     let enabled: Bool?
     let env: [String: String]?
     let scopePath: String?
+    let url: String?
+    let credentialId: String?
+    let surfaces: [String]?
+    let credentialConfigured: Bool?
 
     var isEnabled: Bool { enabled ?? true }
+    var isRemote: Bool { transport == "streamable_http" }
     var argsText: String { (args ?? []).joined(separator: " ") }
     var envText: String {
         (env ?? [:])
@@ -897,15 +903,23 @@ struct MCPServerConfig: Codable, Identifiable, Hashable {
             .map { "\($0.key)=\($0.value)" }
             .joined(separator: "\n")
     }
+
+    enum CodingKeys: String, CodingKey { case name, transport, command, args, enabled, env, scopePath, url, credentialId = "credential_id", surfaces, credentialConfigured }
 }
 
 struct MCPServerUpdateBody: Encodable {
     let name: String?
-    let command: String
-    let args: [String]
+    let transport: String
+    let command: String?
+    let args: [String]?
     let enabled: Bool
-    let env: [String: String]
-    let scopePath: String
+    let env: [String: String]?
+    let scopePath: String?
+    let url: String?
+    let credentialId: String?
+    let surfaces: [String]?
+
+    enum CodingKeys: String, CodingKey { case name, transport, command, args, enabled, env, scopePath, url, credentialId = "credential_id", surfaces }
 }
 
 struct SearchConfigResponse: Codable {

@@ -415,7 +415,7 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
-    func saveMCPServer(name: String, command: String, argsText: String, envText: String, scopePath: String, enabled: Bool, editingExisting: Bool) async {
+    func saveMCPServer(name: String, transport: String, command: String, argsText: String, envText: String, scopePath: String, url: String, credentialId: String, enabled: Bool, editingExisting: Bool) async {
         guard let api else { return }
         let cleanedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -423,7 +423,7 @@ final class WorkspaceStore: ObservableObject {
             mcpSetupMessage = "MCP name is required."
             return
         }
-        guard !cleanedCommand.isEmpty else {
+        guard transport == "streamable_http" || !cleanedCommand.isEmpty else {
             mcpSetupMessage = "MCP command is required."
             return
         }
@@ -431,11 +431,15 @@ final class WorkspaceStore: ObservableObject {
             let updatesExistingServer = editingExisting || mcpServers.contains(where: { $0.name == cleanedName })
             let body = MCPServerUpdateBody(
                 name: updatesExistingServer ? nil : cleanedName,
-                command: cleanedCommand,
-                args: splitShellLikeArgs(argsText),
+                transport: transport,
+                command: transport == "stdio" ? cleanedCommand : nil,
+                args: transport == "stdio" ? splitShellLikeArgs(argsText) : nil,
                 enabled: enabled,
-                env: parseEnvLines(envText),
-                scopePath: scopePath.trimmingCharacters(in: .whitespacesAndNewlines)
+                env: transport == "stdio" ? parseEnvLines(envText) : nil,
+                scopePath: transport == "stdio" ? scopePath.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
+                url: transport == "streamable_http" ? url.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
+                credentialId: transport == "streamable_http" ? credentialId.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
+                surfaces: transport == "streamable_http" ? ["chat"] : nil
             )
             if updatesExistingServer {
                 _ = try await api.updateMCPServer(name: cleanedName, body: body)

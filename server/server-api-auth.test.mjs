@@ -329,6 +329,21 @@ test("workspace server protects APIs with CODMES_SERVER_TOKEN and exposes manage
     assert.equal(updatedMcp.server.scopePath, "Notes/Research");
     assert.equal(updatedMcp.server.env.EXAMPLE_MCP_MODE, "demo");
     assert.deepEqual(updatedMcp.server.args, ["start", "--scope", "Notes"]);
+    const remoteMcp = await fetchJson(`${baseUrl}/api/mcp`, {
+      token,
+      method: "POST",
+      body: {
+        name: "knu-rag",
+        transport: "streamable_http",
+        url: "https://macbookair.tail649ef4.ts.net/api/mcp/",
+        credential_id: "knu-rag",
+        surfaces: ["chat"]
+      }
+    });
+    assert.equal(remoteMcp.server.transport, "streamable_http");
+    assert.equal(remoteMcp.server.credentialConfigured, false);
+    assert.equal(Object.hasOwn(remoteMcp.server, "token"), false);
+    assert.equal(JSON.stringify(remoteMcp).includes("bearer"), false);
     const listedMcp = await fetchJson(`${baseUrl}/api/mcp`, { token });
     assert.equal(typeof listedMcp.servers.find((server) => server.name === "test_mcp").enabled, "boolean");
     const disabled = await fetchJson(`${baseUrl}/api/mcp/test_mcp/disable`, { token, method: "POST" });

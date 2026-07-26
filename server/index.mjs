@@ -52,6 +52,8 @@ import {
   providerEnvKeys,
   readCredentials,
   readRuntimeConfig,
+  getMcpCredentialStatus,
+  normalizeMcpServerConfig,
   removeProviderCredentialEntry,
   removeCredentialValue,
   selectProviderCredentialEntry,
@@ -1964,24 +1966,15 @@ async function updateSecurity(req) {
 
 async function listMcpServers() {
   const config = await readRuntimeConfig(WORKSPACE_ROOT);
-  return { servers: (config.mcpServers || []).map(normalizeMcpServer) };
+  return { servers: await Promise.all((config.mcpServers || []).map(normalizeMcpServer)) };
 }
 
 async function addMcpServer(req) {
   const body = await readJsonBody(req);
   const name = safeMcpName(body.name);
-  const command = String(body.command || "").trim();
-  if (!command) throw Object.assign(new Error("Missing MCP command."), { status: 400 });
   const config = await readRuntimeConfig(WORKSPACE_ROOT);
   const servers = config.mcpServers || [];
-  const next = {
-    name,
-    command,
-    args: Array.isArray(body.args) ? body.args.map(String) : [],
-    enabled: body.enabled !== false,
-    env: sanitizeStringMap(body.env),
-    scopePath: String(body.scopePath || body.scope_path || "").trim()
-  };
+  const next = normalizeMcpRequest({ ...body, name });
   const existingIndex = servers.findIndex((server) => server.name === name);
   if (existingIndex !== -1) {
     servers[existingIndex] = {
@@ -1989,11 +1982,11 @@ async function addMcpServer(req) {
       ...next
     };
     await writeRuntimeConfig(WORKSPACE_ROOT, { ...config, mcpServers: servers });
-    return { ok: true, created: false, server: normalizeMcpServer(servers[existingIndex]) };
+    return { ok: true, created: false, server: await normalizeMcpServer(servers[existingIndex]) };
   }
   servers.push(next);
   await writeRuntimeConfig(WORKSPACE_ROOT, { ...config, mcpServers: servers });
-  return { ok: true, created: true, server: normalizeMcpServer(servers.at(-1)) };
+  return { ok: true, created: true, server: await normalizeMcpServer(servers.at(-1)) };
 }
 
 async function updateMcpServer(name, req) {
@@ -2005,20 +1998,10 @@ async function updateMcpServer(name, req) {
   if (index === -1) throw Object.assign(new Error(`MCP server not found: ${target}`), { status: 404 });
 
   const current = servers[index];
-  const next = {
-    ...current,
-    command: body.command !== undefined ? String(body.command || "").trim() : current.command,
-    args: body.args !== undefined ? (Array.isArray(body.args) ? body.args.map(String) : []) : (current.args || []),
-    enabled: body.enabled !== undefined ? body.enabled !== false : current.enabled !== false,
-    env: body.env !== undefined ? sanitizeStringMap(body.env) : sanitizeStringMap(current.env),
-    scopePath: body.scopePath !== undefined || body.scope_path !== undefined
-      ? String(body.scopePath || body.scope_path || "").trim()
-      : String(current.scopePath || current.scope_path || "").trim()
-  };
-  if (!next.command) throw Object.assign(new Error("Missing MCP command."), { status: 400 });
+  const next = normalizeMcpRequest({ ...current, ...body, name: current.name });
   servers[index] = next;
   await writeRuntimeConfig(WORKSPACE_ROOT, { ...config, mcpServers: servers });
-  return { ok: true, server: normalizeMcpServer(next) };
+  return { ok: true, server: await normalizeMcpServer(next) };
 }
 
 async function setMcpEnabled(name, enabled) {
@@ -2029,7 +2012,7 @@ async function setMcpEnabled(name, enabled) {
   if (!server) throw Object.assign(new Error(`MCP server not found: ${target}`), { status: 404 });
   server.enabled = enabled;
   await writeRuntimeConfig(WORKSPACE_ROOT, { ...config, mcpServers: servers });
-  return { ok: true, server: normalizeMcpServer(server) };
+  return { ok: true, server: await normalizeMcpServer(server) };
 }
 
 async function removeMcpServer(name) {
@@ -2562,16 +2545,17 @@ function safeMcpName(value) {
   return name;
 }
 
-function normalizeMcpServer(server = {}) {
-  return {
-    ...server,
-    name: String(server.name || ""),
-    command: String(server.command || ""),
-    args: Array.isArray(server.args) ? server.args.map(String) : [],
-    enabled: parseLooseBoolean(server.enabled, true),
-    env: sanitizeStringMap(server.env),
-    scopePath: String(server.scopePath || server.scope_path || "").trim()
-  };
+function normalizeMcpRequest(server) {
+  try { return normalizeMcpServerConfig(server); }
+  catch (error) { throw Object.assign(error, { status: 400 }); }
+}
+
+async function normalizeMcpServer(server = {}) {
+  const normalized = normalizeMcpRequest(server);
+  if (normalized.transport === "streamable_http") {
+    return { ...normalized, credentialConfigured: await getMcpCredentialStatus(WORKSPACE_ROOT, normalized.credential_id) };
+  }
+  return normalized;
 }
 
 function parseLooseBoolean(value, fallback = false) {

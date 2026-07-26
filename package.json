@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@hermes/ink": "file:vendor/hermes-ui-tui/packages/hermes-ink",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@nanostores/react": "^1.1.0",
     "fflate": "^0.8.3",
     "ink": "^6.8.0",

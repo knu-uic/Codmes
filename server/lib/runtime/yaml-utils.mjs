@@ -17,6 +17,7 @@ export function parseConfigYaml(content) {
   let inDeniedCommands = false;
   let inRequireApproval = false;
   let inMcpEnv = false;
+  let inMcpSurfaces = false;
   let currentCustomProvider = null;
   let currentMcpServer = null;
 
@@ -101,6 +102,7 @@ export function parseConfigYaml(content) {
         }
         currentMcpServer = { args: [], env: {} };
         inMcpEnv = false;
+        inMcpSurfaces = false;
         const rest = trimmed.slice(1).trim();
         const colonIdx = rest.indexOf(":");
         if (colonIdx !== -1) {
@@ -114,11 +116,18 @@ export function parseConfigYaml(content) {
         if (trimmed.startsWith("env:")) {
           currentMcpServer.env = currentMcpServer.env || {};
           inMcpEnv = true;
+          inMcpSurfaces = false;
         } else if (trimmed.startsWith("args:")) {
           currentMcpServer.args = currentMcpServer.args || [];
           inMcpEnv = false;
+          inMcpSurfaces = false;
+        } else if (trimmed.startsWith("surfaces:")) {
+          currentMcpServer.surfaces = currentMcpServer.surfaces || [];
+          inMcpEnv = false;
+          inMcpSurfaces = true;
         } else if (trimmed.startsWith("-")) {
-          currentMcpServer.args.push(stripQuotes(trimmed.slice(1).trim()));
+          if (inMcpSurfaces) currentMcpServer.surfaces.push(stripQuotes(trimmed.slice(1).trim()));
+          else currentMcpServer.args.push(stripQuotes(trimmed.slice(1).trim()));
         } else {
           const colonIdx = trimmed.indexOf(":");
           if (colonIdx !== -1) {
@@ -132,6 +141,7 @@ export function parseConfigYaml(content) {
             } else if (k === "enabled") {
               currentMcpServer[k] = parseBooleanString(v, true);
             } else if (k !== "args") {
+              inMcpSurfaces = false;
               currentMcpServer[k] = v;
             }
           }
@@ -262,7 +272,10 @@ export function stringifyConfigYaml(content, { model, custom_providers, disabled
     resultLines.push("mcp_servers:");
     for (const mcp of mcp_servers) {
       resultLines.push(`  - name: ${mcp.name}`);
+      if (mcp.transport && mcp.transport !== "stdio") resultLines.push(`    transport: ${mcp.transport}`);
       if (mcp.command) resultLines.push(`    command: ${mcp.command}`);
+      if (mcp.url) resultLines.push(`    url: ${mcp.url}`);
+      if (mcp.credential_id) resultLines.push(`    credential_id: ${mcp.credential_id}`);
       if (mcp.enabled !== undefined) resultLines.push(`    enabled: ${mcp.enabled}`);
       if (mcp.scopePath || mcp.scope_path) resultLines.push(`    scope_path: ${mcp.scopePath || mcp.scope_path}`);
       if (mcp.env && Object.keys(mcp.env).length > 0) {
@@ -278,6 +291,10 @@ export function stringifyConfigYaml(content, { model, custom_providers, disabled
         for (const arg of mcp.args) {
           resultLines.push(`      - ${arg}`);
         }
+      }
+      if (mcp.surfaces && mcp.surfaces.length > 0) {
+        resultLines.push("    surfaces:");
+        for (const surface of mcp.surfaces) resultLines.push(`      - ${surface}`);
       }
     }
   }

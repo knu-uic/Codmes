@@ -1494,9 +1494,12 @@ private struct MCPSettingsView: View {
     @EnvironmentObject private var store: WorkspaceStore
     @State private var name = "custom-tool"
     @State private var command = ""
+    @State private var transport = "stdio"
     @State private var argsText = ""
     @State private var scopePath = ""
     @State private var envText = ""
+    @State private var url = ""
+    @State private var credentialId = ""
     @State private var enabled = true
     @State private var editingName: String?
     @State private var pendingDelete: MCPServerConfig?
@@ -1549,6 +1552,13 @@ private struct MCPSettingsView: View {
                     .autocorrectionDisabled()
                     #endif
 
+                Picker("Transport", selection: $transport) {
+                    Text("Local process (stdio)").tag("stdio")
+                    Text("Remote HTTPS").tag("streamable_http")
+                }
+                .pickerStyle(.segmented)
+
+                if transport == "stdio" {
                 TextField("Command", text: $command)
                     .textFieldStyle(.roundedBorder)
                     #if os(iOS)
@@ -1571,6 +1581,17 @@ private struct MCPSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                } else {
+                    TextField("HTTPS MCP URL", text: $url)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Credential ID", text: $credentialId)
+                        .textFieldStyle(.roundedBorder)
+                    Text("The bearer token is server-only. Provision it with `codmes mcp credential set <id>`; it is never sent to this device.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                if transport == "stdio" {
                 TextField("Default search scope, for example Notes or Documents", text: $scopePath)
                     .textFieldStyle(.roundedBorder)
                     #if os(iOS)
@@ -1592,6 +1613,7 @@ private struct MCPSettingsView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+                }
 
                 Toggle("Enabled", isOn: $enabled)
 
@@ -1600,10 +1622,13 @@ private struct MCPSettingsView: View {
                         Task {
                             await store.saveMCPServer(
                                 name: name,
+                                transport: transport,
                                 command: command,
                                 argsText: argsText,
                                 envText: envText,
                                 scopePath: scopePath,
+                                url: url,
+                                credentialId: credentialId,
                                 enabled: enabled,
                                 editingExisting: editingName != nil
                             )
@@ -1666,10 +1691,17 @@ private struct MCPSettingsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(server.name)
                     .font(.callout.weight(.medium))
-                Text("\(server.command) \(server.argsText)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                if server.isRemote {
+                    Text("\(server.url ?? "") · credential: \(server.credentialConfigured == true ? "configured" : "not configured")")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                } else {
+                    Text("\(server.command ?? "") \(server.argsText)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
                 if let scope = server.scopePath, !scope.isEmpty {
                     Text("Scope: \(scope)")
                         .font(.caption2)
@@ -1706,10 +1738,13 @@ private struct MCPSettingsView: View {
     private func edit(_ server: MCPServerConfig) {
         editingName = server.name
         name = server.name
-        command = server.command
+        transport = server.transport ?? "stdio"
+        command = server.command ?? ""
         argsText = server.argsText
         scopePath = server.scopePath ?? ""
         envText = server.envText
+        url = server.url ?? ""
+        credentialId = server.credentialId ?? ""
         enabled = server.isEnabled
     }
 
@@ -1717,9 +1752,12 @@ private struct MCPSettingsView: View {
         editingName = nil
         name = "custom-tool"
         command = ""
+        transport = "stdio"
         argsText = ""
         scopePath = ""
         envText = ""
+        url = ""
+        credentialId = ""
         enabled = true
     }
 
