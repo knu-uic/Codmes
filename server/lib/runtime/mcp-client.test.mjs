@@ -47,6 +47,33 @@ test("Streamable HTTP MCP redacts bearer material from failures", async () => {
   });
 });
 
+test("Streamable HTTP MCP can call an explicitly allowed bearerless loopback server", async () => {
+  const requests = [];
+  const server = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const message = JSON.parse(body);
+    requests.push(req.headers.authorization || null);
+    const result = message.method === "initialize"
+      ? { protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "knu", version: "1" } }
+      : { tools: [] };
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const client = new StreamableHttpMcpClient("knu-rag", `http://127.0.0.1:${port}/api/mcp/`, { allowUnauthenticated: true });
+  try {
+    await client.start();
+    await client.listTools();
+    assert.ok(requests.length >= 2);
+    assert.ok(requests.every((authorization) => authorization === null));
+  } finally {
+    client.stop();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("Streamable HTTP MCP aborts an in-flight request when its timeout expires", async () => {
   let aborted = false;
   const client = new StreamableHttpMcpClient("knu-rag", "http://127.0.0.1:1/api/mcp/", {

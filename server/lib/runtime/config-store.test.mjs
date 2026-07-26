@@ -29,6 +29,14 @@ import {
 test("remote MCP config preserves legacy stdio, permits only loopback HTTP, and keeps bearer server-only", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-remote-mcp-"));
   await ensureRuntimeConfig(root);
+  const automaticLocalKnu = (await readRuntimeConfig(root)).mcpServers.find((server) => server.name === "knu-rag");
+  assert.deepEqual(automaticLocalKnu, {
+    name: "knu-rag",
+    transport: "streamable_http",
+    url: "http://127.0.0.1:8000/api/mcp/",
+    surfaces: ["chat"],
+    enabled: true
+  });
   const legacy = normalizeMcpServerConfig({ name: "legacy", command: "node", args: ["server.mjs"] });
   assert.equal(legacy.transport, "stdio");
   const remote = normalizeMcpServerConfig({ name: "knu-rag", transport: "streamable_http", url: "https://example.test/api/mcp/", credential_id: "knu-rag", surfaces: ["chat"] });

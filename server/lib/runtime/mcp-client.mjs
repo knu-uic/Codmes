@@ -306,10 +306,11 @@ export class McpClient {
 }
 
 export class StreamableHttpMcpClient {
-  constructor(name, url, { tokenAccessor, logger = console, timeoutMs = 15000, fetchImpl = globalThis.fetch } = {}) {
+  constructor(name, url, { tokenAccessor, allowUnauthenticated = false, logger = console, timeoutMs = 15000, fetchImpl = globalThis.fetch } = {}) {
     this.name = name;
     this.url = url;
     this.tokenAccessor = tokenAccessor;
+    this.allowUnauthenticated = allowUnauthenticated;
     this.logger = logger;
     this.timeoutMs = timeoutMs;
     this.fetch = fetchImpl;
@@ -330,9 +331,9 @@ export class StreamableHttpMcpClient {
       ]);
       const authenticatedFetch = async (input, init = {}) => {
         const token = await this.tokenAccessor?.();
-        if (!token) throw new Error(`MCP credential for '${this.name}' is not configured.`);
+        if (!token && !this.allowUnauthenticated) throw new Error(`MCP credential for '${this.name}' is not configured.`);
         const headers = new Headers(init.headers || {});
-        headers.set("authorization", `Bearer ${token}`);
+        if (token) headers.set("authorization", `Bearer ${token}`);
         const controller = new AbortController();
         this.activeAbortControllers.add(controller);
         try { return await this.fetch(input, { ...init, headers, signal: controller.signal }); }

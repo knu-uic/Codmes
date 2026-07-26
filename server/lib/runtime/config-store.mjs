@@ -62,7 +62,20 @@ export async function ensureRuntimeConfig(workspaceRoot) {
   const dir = runtimeConfigDir(workspaceRoot);
   await fs.mkdir(dir, { recursive: true });
   await fs.chmod(dir, 0o700);
-  await writeYamlIfMissing(path.join(dir, "config.yaml"), "model:\n  default:\n  provider:\n");
+  const configPath = path.join(dir, "config.yaml");
+  await writeYamlIfMissing(configPath, "model:\n  default:\n  provider:\n");
+  const configContent = await fs.readFile(configPath, "utf8");
+  const parsedConfig = parseConfigYaml(configContent);
+  if (!/^mcp_servers:/m.test(configContent)) {
+    parsedConfig.mcp_servers = [{
+      name: "knu-rag",
+      transport: "streamable_http",
+      url: "http://127.0.0.1:8000/api/mcp/",
+      surfaces: ["chat"],
+      enabled: true
+    }];
+    await fs.writeFile(configPath, stringifyConfigYaml(configContent, parsedConfig), "utf8");
+  }
   await writeJsonIfMissing(path.join(dir, "auth.json"), { version: 1, credential_pool: {} });
   await fs.chmod(path.join(dir, "auth.json"), 0o600);
 }
@@ -170,7 +183,6 @@ export function normalizeMcpServerConfig(server = {}) {
   const url = String(server.url || "").trim();
   const credentialId = String(server.credential_id || server.credentialId || "").trim();
   const surfaces = Array.isArray(server.surfaces) ? [...new Set(server.surfaces.map(String).map((s) => s.trim()).filter(Boolean))] : [];
-  if (!credentialId || !/^[a-zA-Z0-9_-]+$/.test(credentialId)) throw new Error("A valid MCP credential_id is required.");
   if (!surfaces.length || surfaces.some((surface) => !["chat", "notes", "code"].includes(surface))) throw new Error("MCP streamable_http requires at least one allowed surface.");
   let parsed;
   try { parsed = new URL(url); } catch { throw new Error("MCP streamable_http requires an absolute HTTPS url."); }
@@ -178,10 +190,12 @@ export function normalizeMcpServerConfig(server = {}) {
   if ((!isLoopbackHttp && parsed.protocol !== "https:") || !parsed.hostname || parsed.username || parsed.password || parsed.search || parsed.hash) {
     throw new Error("MCP streamable_http requires an absolute HTTPS url, or loopback HTTP, without credentials, query, or fragment.");
   }
+  if (!credentialId && !isLoopbackHttp) throw new Error("A valid MCP credential_id is required.");
+  if (credentialId && !/^[a-zA-Z0-9_-]+$/.test(credentialId)) throw new Error("A valid MCP credential_id is required.");
   if ((Array.isArray(server.args) && server.args.length) || Object.keys(sanitizeMcpStringMap(server.env)).length) {
     throw new Error("MCP streamable_http does not accept args or env; provision its credential server-side.");
   }
-  return { name, transport, url, credential_id: credentialId, surfaces, enabled };
+  return { name, transport, url, ...(credentialId ? { credential_id: credentialId } : {}), surfaces, enabled };
 }
 
 function sanitizeMcpStringMap(value) {

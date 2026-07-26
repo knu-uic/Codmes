@@ -372,13 +372,15 @@ export class OpenAICompatibleRuntime extends EventEmitter {
               });
             }
           } catch (err) {
-            this.emit("event", {
-              type: "mcp.error",
-              sessionId: params.sessionId,
-              taskId: params.taskId,
-              serverName: mcp.name,
-              error: err.message
-            });
+            if (!isAutomaticLocalKnuMcp(mcp)) {
+              this.emit("event", {
+                type: "mcp.error",
+                sessionId: params.sessionId,
+                taskId: params.taskId,
+                serverName: mcp.name,
+                error: err.message
+              });
+            }
           }
         }
       }
@@ -997,7 +999,8 @@ export class OpenAICompatibleRuntime extends EventEmitter {
       client = (this.mcpClientFactory || createMcpClient)(mcpConfig, {
         workspaceRoot: this.workspaceRoot,
         env: mcpConfig.env || {},
-        tokenAccessor: () => getMcpCredential(this.workspaceRoot, mcpConfig.credential_id)
+        tokenAccessor: () => getMcpCredential(this.workspaceRoot, mcpConfig.credential_id),
+        allowUnauthenticated: isLoopbackMcpUrl(mcpConfig.url)
       });
       client.connectionIdentity = identity;
       this.mcpClients.set(mcpConfig.name, client);
@@ -1312,6 +1315,17 @@ export class OpenAICompatibleRuntime extends EventEmitter {
       refreshToken: String(payload.refresh_token || refreshToken || "").trim()
     };
   }
+}
+
+function isLoopbackMcpUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  } catch { return false; }
+}
+
+function isAutomaticLocalKnuMcp(mcp) {
+  return mcp?.name === "knu-rag" && !mcp?.credential_id && isLoopbackMcpUrl(mcp?.url);
 }
 
 function buildMessages(params, systemPrompt) {
