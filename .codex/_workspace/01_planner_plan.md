@@ -16,8 +16,8 @@ RAG MCP endpoint:
 ```text
 Codmes OpenAI Codex
   -> Codmes MCP tool execution and approval inbox
-  -> Tailscale HTTPS
-  -> https://macbookair.tail649ef4.ts.net/api/mcp/
+  -> local loopback HTTP
+  -> http://127.0.0.1:8000/api/mcp/
 ```
 
 The KNU endpoint is a bearer-protected, stateless Streamable HTTP FastMCP
@@ -26,11 +26,9 @@ server. It returns JSON responses and exposes exactly:
 - `search_knu_notices`
 - `get_knu_notice_detail`
 
-Deployment decision: operate this as one central KNU MCP service. The current
-Tailscale endpoint is for development and integration testing; production will
-use the HTTPS URL of the continuously operated central KNU MCP server. End
-users' Apple clients do not connect to KNU MCP directly and do not run their
-own KNUIS/MCP instance.
+Deployment decision: each Mac runs its own Codmes server and KNU MCP server.
+Codmes connects only to that Mac's loopback KNU MCP endpoint; Tailscale is not
+part of this request path.
 
 ## Approved configuration contract
 
@@ -40,7 +38,7 @@ Remote configuration contains no bearer value:
 mcp_servers:
   - name: knu-rag
     transport: streamable_http
-    url: https://macbookair.tail649ef4.ts.net/api/mcp/
+    url: http://127.0.0.1:8000/api/mcp/
     credential_id: knu-rag
     surfaces:
       - chat
@@ -52,7 +50,8 @@ Compatibility rules:
 - Missing `transport` means the existing `stdio` transport.
 - `stdio` requires `command` and accepts the existing `args`, `env`, and
   `scopePath` fields.
-- `streamable_http` requires an absolute HTTPS `url`, `credential_id`, and at
+- `streamable_http` requires an absolute HTTPS `url`, or an HTTP URL limited to
+  loopback (`localhost`, `127.0.0.1`, or `::1`), plus `credential_id` and at
   least one allowed surface. It rejects URL userinfo, query strings, and
   fragments.
 - The endpoint's trailing slash is preserved.
@@ -176,8 +175,8 @@ Files:
 - `docs/features/chat.md`
 - `README.md` only if operator setup needs a top-level pointer
 
-Document the configuration shape, server-side secret provisioning, approval
-precondition, Tailscale-only endpoint, rotation/removal, and validation steps.
+Document the local loopback configuration shape, one-command server-side secret
+provisioning, approval precondition, rotation/removal, and validation steps.
 
 ## Verification
 
@@ -223,14 +222,14 @@ Using the real endpoint and a server-side credential:
    the model.
 6. No raw bearer appears in Codmes or KNU application logs.
 
-This is a private live integration check, not authorization to change
-Tailscale Serve, ACLs, KNU server configuration, or public traffic.
+This is a private local integration check, not authorization to change KNU
+server configuration or public traffic.
 
 ## Explicitly out of scope
 
 - OAuth, JWKS, delegated user authorization, or personalized KNU identity.
 - LMS or portal tools.
-- Tailscale Funnel or public internet exposure.
+- Tailscale Funnel, Tailnet routing, or public internet exposure.
 - KNU RAG source filtering or data-quality corrections.
 - KNU MCP tool or response-contract changes.
 - Unrelated Apple build output, including `client/apple/build/`.

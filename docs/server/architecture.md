@@ -64,17 +64,15 @@ document job registry는 현재 server process memory 상태다. Apple client는
 2초, active job이 있으면 1초 간격으로 polling한다. Notes 상단 icon은 client
 upload queue가 아니라 이 server job 목록의 `running` 상태만 반영한다.
 
-## Remote KNU MCP boundary
+## Local KNU MCP boundary
 
-The development and integration-test deployment uses the private Tailscale
-Streamable HTTP endpoint `https://macbookair.tail649ef4.ts.net/api/mcp/`.
-Production uses the HTTPS URL of a continuously operated central KNU MCP
-server; its URL is a Codmes server deployment value rather than an Apple-client
-setting. End-user Apple clients neither connect to this hostname nor run a
-local KNUIS/MCP service. The endpoint bearer is stored only in
-`.codmes/config/auth.json` under `mcp_credentials`, with `0700` config
-directory and `0600` auth file permissions. It is read immediately before each
-HTTP request, so rotation needs no long-lived model or MCP config secret.
+Each Mac runs Codmes and KNU MCP together. Codmes reaches its own KNU MCP over
+the loopback Streamable HTTP endpoint `http://127.0.0.1:8000/api/mcp/`; this
+request does not use Tailscale. HTTP is allowed only for loopback addresses;
+every non-loopback MCP endpoint must use HTTPS. The endpoint bearer is stored
+only in `.codmes/config/auth.json` under `mcp_credentials`, with `0700` config
+directory and `0600` auth file permissions. `codmes mcp setup-local-knu`
+stores the local URL and bearer reference in one server-side operation.
 
 ## 실시간 흐름
 

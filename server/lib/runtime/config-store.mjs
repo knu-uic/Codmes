@@ -174,8 +174,9 @@ export function normalizeMcpServerConfig(server = {}) {
   if (!surfaces.length || surfaces.some((surface) => !["chat", "notes", "code"].includes(surface))) throw new Error("MCP streamable_http requires at least one allowed surface.");
   let parsed;
   try { parsed = new URL(url); } catch { throw new Error("MCP streamable_http requires an absolute HTTPS url."); }
-  if (parsed.protocol !== "https:" || !parsed.hostname || parsed.username || parsed.password || parsed.search || parsed.hash) {
-    throw new Error("MCP streamable_http requires an absolute HTTPS url without credentials, query, or fragment.");
+  const isLoopbackHttp = parsed.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
+  if ((!isLoopbackHttp && parsed.protocol !== "https:") || !parsed.hostname || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error("MCP streamable_http requires an absolute HTTPS url, or loopback HTTP, without credentials, query, or fragment.");
   }
   if ((Array.isArray(server.args) && server.args.length) || Object.keys(sanitizeMcpStringMap(server.env)).length) {
     throw new Error("MCP streamable_http does not accept args or env; provision its credential server-side.");

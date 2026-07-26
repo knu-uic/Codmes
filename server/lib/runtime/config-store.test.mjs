@@ -26,14 +26,16 @@ import {
   setDefaultModel
 } from "./config-store.mjs";
 
-test("remote MCP config preserves legacy stdio, validates HTTPS, and keeps bearer server-only", async () => {
+test("remote MCP config preserves legacy stdio, permits only loopback HTTP, and keeps bearer server-only", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-remote-mcp-"));
   await ensureRuntimeConfig(root);
   const legacy = normalizeMcpServerConfig({ name: "legacy", command: "node", args: ["server.mjs"] });
   assert.equal(legacy.transport, "stdio");
   const remote = normalizeMcpServerConfig({ name: "knu-rag", transport: "streamable_http", url: "https://example.test/api/mcp/", credential_id: "knu-rag", surfaces: ["chat"] });
   assert.equal(remote.url.endsWith("/"), true);
-  assert.throws(() => normalizeMcpServerConfig({ ...remote, url: "http://example.test/api/mcp/" }), /HTTPS/);
+  const local = normalizeMcpServerConfig({ ...remote, url: "http://127.0.0.1:8000/api/mcp/" });
+  assert.equal(local.url, "http://127.0.0.1:8000/api/mcp/");
+  assert.throws(() => normalizeMcpServerConfig({ ...remote, url: "http://example.test/api/mcp/" }), /loopback HTTP/);
   assert.throws(() => normalizeMcpServerConfig({ ...remote, url: "https://token@example.test/api/mcp/" }), /without credentials/);
   assert.throws(() => normalizeMcpServerConfig({ ...remote, args: ["Bearer secret"] }), /does not accept args/);
 

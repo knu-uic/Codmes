@@ -28,6 +28,7 @@ const REPO_ROOT = path.resolve(__dirname, "..");
 const SERVER_ENTRY = path.join(REPO_ROOT, "server", "index.mjs");
 const DEFAULT_SERVER_URL = "http://127.0.0.1:8787";
 const DEFAULT_WORKSPACE_ROOT = path.join(os.homedir(), "CodmesWorkspace");
+const DEFAULT_LOCAL_KNU_MCP_URL = "http://127.0.0.1:8000/api/mcp/";
 const UI = {
   reset: "\x1b[0m",
   bold: "\x1b[1m",
@@ -1418,6 +1419,7 @@ async function runMcp(args) {
   codmes mcp remove <name> [--root PATH]
   codmes mcp enable <name> [--root PATH]
   codmes mcp disable <name> [--root PATH]
+  codmes mcp setup-local-knu [--url URL] [--from-env NAME] [--root PATH]
   codmes mcp credential <set|status|remove> <credential-id> [--from-env NAME] [--root PATH]
 `);
     return;
@@ -1441,6 +1443,26 @@ async function runMcp(args) {
 
   const config = await readRuntimeConfig(root);
   const mcpServers = config.mcpServers || [];
+
+  if (subcommand === "setup-local-knu") {
+    const fromEnv = stringOption(options["from-env"]);
+    const token = fromEnv ? process.env[fromEnv] : await readStdinSecret();
+    if (!token) throw new Error(fromEnv ? `Environment variable '${fromEnv}' is empty.` : "No token received on stdin.");
+    const url = stringOption(options.url) || DEFAULT_LOCAL_KNU_MCP_URL;
+    const server = {
+      name: "knu-rag",
+      transport: "streamable_http",
+      url,
+      credential_id: "knu-rag",
+      surfaces: ["chat"],
+      enabled: true
+    };
+    const updated = [...mcpServers.filter((mcp) => mcp.name !== server.name), server];
+    await writeRuntimeConfig(root, { ...config, mcpServers: updated });
+    await setMcpCredential(root, server.credential_id, token);
+    printJson({ name: server.name, url: server.url, credentialId: server.credential_id, configured: true });
+    return;
+  }
 
   if (subcommand === "list") {
     console.log(`=== MCP Servers ===`);

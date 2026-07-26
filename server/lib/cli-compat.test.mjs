@@ -31,3 +31,19 @@ test("codmes CLI provisions MCP credentials from stdin without echoing the token
   assert.equal(remove.status, 0, remove.stderr);
   assert.doesNotMatch(remove.stdout, /cli-remote-secret/);
 });
+
+test("codmes CLI configures the local KNU MCP in one server-side command", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-cli-local-knu-"));
+  const configured = spawnSync(process.execPath, [path.join(repoRoot, "bin", "codmes.mjs"), "mcp", "setup-local-knu", "--from-env", "MCP_AUTH_TOKEN", "--root", root], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: { ...process.env, MCP_AUTH_TOKEN: "local-knu-secret" }
+  });
+  assert.equal(configured.status, 0, configured.stderr);
+  assert.doesNotMatch(configured.stdout, /local-knu-secret/);
+  const config = JSON.parse(await fs.readFile(path.join(root, ".codmes", "config", "auth.json"), "utf8"));
+  assert.equal(config.mcp_credentials["knu-rag"].token, "local-knu-secret");
+  const yaml = await fs.readFile(path.join(root, ".codmes", "config", "config.yaml"), "utf8");
+  assert.match(yaml, /url: http:\/\/127\.0\.0\.1:8000\/api\/mcp\//);
+  assert.match(yaml, /surfaces:\n\s+- chat/);
+});

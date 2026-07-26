@@ -1554,7 +1554,7 @@ private struct MCPSettingsView: View {
 
                 Picker("Transport", selection: $transport) {
                     Text("Local process (stdio)").tag("stdio")
-                    Text("Remote HTTPS").tag("streamable_http")
+                    Text("Remote / local HTTP").tag("streamable_http")
                 }
                 .pickerStyle(.segmented)
 
@@ -1582,11 +1582,11 @@ private struct MCPSettingsView: View {
                 }
 
                 } else {
-                    TextField("HTTPS MCP URL", text: $url)
+                    TextField("HTTPS URL, or local http://127.0.0.1", text: $url)
                         .textFieldStyle(.roundedBorder)
                     TextField("Credential ID", text: $credentialId)
                         .textFieldStyle(.roundedBorder)
-                    Text("The bearer token is server-only. Provision it with `codmes mcp credential set <id>`; it is never sent to this device.")
+                    Text("The bearer token is server-only. For local KNU MCP, use `codmes mcp setup-local-knu`; it is never sent to this device.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
