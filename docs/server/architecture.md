@@ -66,13 +66,14 @@ upload queue가 아니라 이 server job 목록의 `running` 상태만 반영한
 
 ## Local KNU MCP boundary
 
-Each Mac runs Codmes and KNU MCP together. Codmes reaches its own KNU MCP over
-the loopback Streamable HTTP endpoint `http://127.0.0.1:8000/api/mcp/`; this
-request does not use Tailscale. HTTP is allowed only for loopback addresses;
-every non-loopback MCP endpoint must use HTTPS. The endpoint bearer is stored
-only in `.codmes/config/auth.json` under `mcp_credentials`, with `0700` config
-directory and `0600` auth file permissions. `codmes mcp setup-local-knu`
-stores the local URL and bearer reference in one server-side operation.
+Each Mac runs Codmes and KNU MCP together. The automatic KNU entry points to
+the loopback Streamable HTTP endpoint `http://127.0.0.1:8000/api/mcp/` with
+Chat as its only surface; the Codmes server calls that local gateway without
+storing or sending a KNU bearer. This request does not use Tailscale. HTTP is
+allowed only for loopback addresses; every non-loopback MCP endpoint must use
+HTTPS and a server-side credential reference. Remote bearer values are kept in
+`.codmes/config/auth.json` under `mcp_credentials`, with `0700` config
+directory and `0600` auth file permissions; Apple clients never receive them.
 
 ## 실시간 흐름
 

@@ -179,15 +179,19 @@ box를 반환하므로 client는 추가 baseline 보정 없이 `normalized` 값�
 
 ## Remote MCP (KNU RAG)
 
-`/api/mcp` accepts legacy local `stdio` entries and remote entries shaped as
-`{name, transport:"streamable_http", url, credential_id, surfaces:["chat"], enabled}`.
-Remote URLs must be absolute HTTPS URLs with no userinfo, query, or fragment;
-HTTP is accepted only for `localhost`, `127.0.0.1`, or `::1`. The local KNU
-setup uses `http://127.0.0.1:8000/api/mcp/`, so each Mac's Codmes server calls
-only its own KNU MCP server. Configure it in one server-side operation with
-`codmes mcp setup-local-knu --from-env MCP_AUTH_TOKEN`; Apple clients never
-receive or call the MCP bearer directly.
-Responses expose only `credentialConfigured`; they never return the bearer.
-Provision or rotate it on the server with `codmes mcp credential set knu-rag`
-(token on stdin) or `--from-env NAME`, inspect with `status`, and remove with
-`remove`. The Apple app never receives or stores this credential.
+`/api/mcp` accepts legacy local `stdio` entries and Streamable HTTP entries
+shaped as `{name, transport:"streamable_http", url, credential_id?,
+surfaces:["chat"], enabled}`. The automatic local KNU entry is
+`http://127.0.0.1:8000/api/mcp/` with `surfaces:["chat"]` and no
+`credential_id`; the Codmes server calls the KNU gateway on the same Mac over
+loopback without a bearer. HTTP is accepted only for `localhost`, `127.0.0.1`,
+or `::1`.
+
+Non-loopback/remote MCP URLs must be absolute HTTPS URLs with no userinfo,
+query, or fragment, and must reference a server-side `credential_id`.
+Provision or rotate that bearer on the server with
+`codmes mcp credential set <credential-id>` (token on stdin) or
+`--from-env NAME`, inspect with `status`, and remove with `remove`. MCP
+`args`/`env` do not carry remote credentials. Responses expose only
+`credentialConfigured`; they never return the bearer, and Apple clients never
+receive or store it.
