@@ -187,6 +187,14 @@ surfaces:["chat"], enabled}`. The automatic local KNU entry is
 loopback without a bearer. HTTP is accepted only for `localhost`, `127.0.0.1`,
 or `::1`.
 
+Use that automatic entry when Codmes and KNU MCP run together on the same Mac
+and the gateway accepts token-free loopback requests. For an explicitly
+credentialed or legacy deployment, configure it manually from the Codmes
+server host with `codmes mcp setup-local-knu --url <url> --from-env <NAME>`.
+This replaces the `knu-rag` entry with the supplied URL and stores the bearer
+under the server-side `knu-rag` credential; `<NAME>` is only the environment
+variable name, and the token value is never printed or sent to Apple clients.
+
 Non-loopback/remote MCP URLs must be absolute HTTPS URLs with no userinfo,
 query, or fragment, and must reference a server-side `credential_id`.
 Provision or rotate that bearer on the server with

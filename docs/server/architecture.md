@@ -74,6 +74,11 @@ allowed only for loopback addresses; every non-loopback MCP endpoint must use
 HTTPS and a server-side credential reference. Remote bearer values are kept in
 `.codmes/config/auth.json` under `mcp_credentials`, with `0700` config
 directory and `0600` auth file permissions; Apple clients never receive them.
+The automatic entry is the default for a token-free loopback gateway. If a
+legacy or explicitly protected KNU gateway is required, run
+`codmes mcp setup-local-knu --url <url> --from-env <NAME>` on the Codmes server
+host; this writes the URL and the server-side `knu-rag` credential, without
+exposing the token value to Apple clients or command output.
 
 ## 실시간 흐름
 
