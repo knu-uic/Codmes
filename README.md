@@ -2,36 +2,42 @@
 
 [![check](https://github.com/jeongu0569-ui/Codmes/actions/workflows/check.yml/badge.svg)](https://github.com/jeongu0569-ui/Codmes/actions/workflows/check.yml)
 
-Codmes는 Chat, Notes/PDF, 문서 검색과 Code 작업을 하나의 server 중심 Workspace에서
-다루는 애플리케이션입니다. server가 file, search index, AI runtime과 상태를
-소유하고 macOS, iPhone, iPad 앱은 같은 Workspace에 접속합니다.
+Codmes는 Chat, Notes, Code 등 여러 작업을 하나의 환경에서 연결하는 통합 AI 워크스페이스입니다.
 
-현재 공식 앱은 macOS와 iPhone·iPad를 지원합니다.
+파일, 검색 인덱스, AI 런타임, 대화 기록과 작업 상태를 중앙 서버가 관리하며, 사용자는 Mac, iPhone, iPad 등 다양한 클라이언트에서 서버에 접속해 언제 어디서든 동일한 작업 환경을 이어서 사용할 수 있습니다.
 
-화면과 데이터 처리처럼 공통으로 사용할 수 있는 부분은 SwiftUI로 함께 만들고,
-mouse·keyboard가 필요한 macOS 기능은 AppKit으로, touch·Apple Pencil이 필요한
-iPhone·iPad 기능은 UIKit으로 따로 구현합니다. Notes와 PDF의 annotation data는
-특정 앱에만 묶이지 않도록 만들어, 나중에 Windows나 Android 앱에서도 그대로
-사용할 수 있게 합니다.
+단순히 AI와 대화하는 것을 넘어, 사용자의 문서와 노트, 코드 프로젝트, 이전 작업 맥락을 지속적으로 이해하는 개인 AI 에이전트 환경을 지향합니다.
 
-현재 저장소는 실제 사용 가능한 MVP를 확장하는 단계입니다.
+한 기기에서 작성한 노트나 진행하던 코드 작업을 다른 기기에서도 그대로 이어갈 수 있으며, AI는 서버에 연결된 파일과 검색 인덱스를 바탕으로 필요한 정보를 찾아 답변하고 실제 작업을 수행합니다.
+
+모든 기기에 대용량 AI 모델이나 프로젝트 파일을 개별적으로 저장할 필요 없이, 연산과 데이터 관리는 서버에 맡기고 클라이언트는 가볍게 접속하여 사용할 수 있습니다.
+
+Codmes가 제공하는 핵심 가치는 다음과 같습니다.
+
+* 어디서든 접속할 수 있는 개인 AI 작업 환경
+* 기기가 바뀌어도 유지되는 대화 맥락과 작업 상태
+* Chat, Notes, Code 사이의 자연스러운 정보 연결
+* 내 파일과 프로젝트를 이해하는 개인화된 AI 에이전트
+* 문서 검색, 코드 작업, AI 추론을 하나의 서버에서 통합 처리
+* 로컬 기기 성능과 저장 공간의 제약을 줄이는 서버 중심 구조
+* 사용자가 직접 소유하고 관리할 수 있는 데이터와 AI 환경
+
+Codmes는 단순한 AI 채팅 앱이 아니라, 사용자의 지식과 파일, 프로젝트, 작업 흐름을 연결하고 어디서든 함께 작업할 수 있는 ‘나만의 AI 워크스페이스’입니다.
 
 ## 주요 기능
 
-- [Chat](docs/features/chat.md): session, model, live streaming, context와 tool approval
-- [Notes와 PDF](docs/features/notes.md): file tree, PDF 읽기와 annotation, 대용량 streaming
-- [Search](docs/features/search.md): file과 본문 검색, 문서 추출, PDF page 결과
-- [Code](docs/features/code.md): source 편집, code agent task, patch와 check
-- [Runtime과 Server](docs/server/architecture.md): provider, model, tool과 Workspace API
+- Chat: 세션 관리, AI 모델 선택, 실시간 응답 스트리밍, 대화 문맥 유지, 접근 권한 관리, 파일 및 사용자 멘션
+- Notes: 트리 기반 파일 관리, PDF 필기, 다양한 형식의 파일 열람 및 편집, 노트 내보내기, 노트와 문서를 기반으로 하는 AI 채팅
+- Code: 소스 코드 탐색 및 편집, Code Agent 작업 실행, 변경 사항 패치 검토, 테스트 및 검사 결과 확인
+- Search: 대화 기록 검색, 파일 및 문서 검색, 검색 인덱스를 활용한 통합 검색
+- Server: AI Provider 및 모델 관리, Tool 실행, 파일과 검색 인덱스 관리, Workspace API 제공
 
-Apple 앱은 server의 절대 경로를 직접 다루지 않고 HTTP와 WebSocket API를 통해
-Workspace-relative path만 사용합니다. 아직 구현되지 않은 범위는
-[roadmap](docs/roadmap.md)을 참고하세요.
+아직 구현되지 않은 기능은[roadmap](docs/roadmap.md)을 참고하세요.
 
 ## 빠른 시작
 
 ### 요구사항
-
+- 현재 공식 앱은 macOS와 iPhone·iPad를 지원합니다.
 - Node.js 22 이상
 - npm
 - document runtime bootstrap용 Python 3.11~3.13
