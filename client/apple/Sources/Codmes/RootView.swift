@@ -178,7 +178,6 @@ struct RootView: View {
             HSplitView {
                 primaryDetailView
                     .frame(minWidth: 0)
-                Divider()
                 ChatHomeView(compact: true, onOpenModelSettings: openModelSettings)
                     .frame(minWidth: 320, idealWidth: 390, maxWidth: 460)
             }
