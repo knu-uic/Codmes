@@ -182,10 +182,10 @@ box를 반환하므로 client는 추가 baseline 보정 없이 `normalized` 값�
 `/api/mcp` accepts legacy local `stdio` entries and remote entries shaped as
 `{name, transport:"streamable_http", url, credential_id, surfaces:["chat"], enabled}`.
 Remote URLs must be absolute HTTPS URLs with no userinfo, query, or fragment.
-The KNU Tailscale URL is configured on the central Codmes server; Apple clients
-never call it directly. Its Tailnet identity must be allowed by ACL to reach
-the central KNU MCP service. A separately deployed Codmes server must point
-`url` at its own reachable MCP server.
+The current KNU Tailscale URL is for integration testing. Production configures
+the HTTPS URL of the continuously operated central KNU MCP server on the
+central Codmes server; Apple clients never call it directly. A separately
+deployed Codmes server must point `url` at its own reachable MCP server.
 Responses expose only `credentialConfigured`; they never return the bearer.
 Provision or rotate it on the server with `codmes mcp credential set knu-rag`
 (token on stdin) or `--from-env NAME`, inspect with `status`, and remove with

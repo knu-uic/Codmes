@@ -26,8 +26,9 @@ server. It returns JSON responses and exposes exactly:
 - `search_knu_notices`
 - `get_knu_notice_detail`
 
-Deployment decision: operate this as one central KNU MCP service. The Codmes
-server joins the same Tailnet and is allowed to reach the endpoint by ACL; end
+Deployment decision: operate this as one central KNU MCP service. The current
+Tailscale endpoint is for development and integration testing; production will
+use the HTTPS URL of the continuously operated central KNU MCP server. End
 users' Apple clients do not connect to KNU MCP directly and do not run their
 own KNUIS/MCP instance.
 
