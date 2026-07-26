@@ -2133,13 +2133,13 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func respondToApproval(lineId: UUID, approved: Bool) async {
-        guard let liveSessionId else {
-            statusMessage = "No live session"
+        guard let approvalId = chatLines.first(where: { $0.id == lineId })?.approvalId else {
+            statusMessage = "Missing approval id"
             return
         }
-        updateApprovalLine(lineId, state: approved ? .approved : .denied)
         do {
-            try await liveClient.respondToApproval(sessionId: liveSessionId, approved: approved)
+            try await liveClient.respondToApproval(approvalId: approvalId, approved: approved)
+            updateApprovalLine(lineId, state: approved ? .approved : .denied)
             statusMessage = approved ? "Approval sent" : "Denial sent"
         } catch {
             statusMessage = error.localizedDescription
@@ -2329,7 +2329,7 @@ final class WorkspaceStore: ObservableObject {
             return
         }
         if type == "approval.request" {
-            chatLines.append(ChatLine(role: "approval", text: text.isEmpty ? "Approval requested." : text, approvalState: .pending))
+            chatLines.append(ChatLine(role: "approval", text: text.isEmpty ? "Approval requested." : text, approvalState: .pending, approvalId: envelope.approvalId))
             Task {
                 await refreshApprovals()
                 await refreshAgentTasks()

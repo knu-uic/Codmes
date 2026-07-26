@@ -1412,14 +1412,16 @@ struct ChatLine: Identifiable, Equatable {
     let role: String
     var text: String
     var approvalState: ApprovalState?
+    let approvalId: String?
     var activityItems: [ChatActivity]
     var isStreamingActivity: Bool
 
-    init(id: UUID = UUID(), role: String, text: String, approvalState: ApprovalState? = nil, activityItems: [ChatActivity] = [], isStreamingActivity: Bool = false) {
+    init(id: UUID = UUID(), role: String, text: String, approvalState: ApprovalState? = nil, approvalId: String? = nil, activityItems: [ChatActivity] = [], isStreamingActivity: Bool = false) {
         self.id = id
         self.role = role
         self.text = text
         self.approvalState = approvalState
+        self.approvalId = approvalId
         self.activityItems = activityItems
         self.isStreamingActivity = isStreamingActivity
     }
@@ -1429,6 +1431,7 @@ struct ChatLine: Identifiable, Equatable {
         lhs.role == rhs.role &&
         lhs.text == rhs.text &&
         lhs.approvalState == rhs.approvalState &&
+        lhs.approvalId == rhs.approvalId &&
         lhs.activityItems == rhs.activityItems &&
         lhs.isStreamingActivity == rhs.isStreamingActivity
     }

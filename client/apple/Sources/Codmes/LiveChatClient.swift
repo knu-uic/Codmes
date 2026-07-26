@@ -22,6 +22,7 @@ struct LiveEnvelope: Codable, Sendable {
     let id: String?
     let type: String?
     let sessionId: String?
+    let approvalId: String?
     let text: String?
     let error: String?
     let result: LiveResult?
@@ -63,7 +64,7 @@ struct PromptSubmitParams: Encodable {
 }
 
 struct ApprovalRespondParams: Encodable {
-    let sessionId: String
+    let approvalId: String
     let approved: Bool
 }
 
@@ -140,10 +141,10 @@ actor LiveChatClient {
         )
     }
 
-    func respondToApproval(sessionId: String, approved: Bool) async throws {
+    func respondToApproval(approvalId: String, approved: Bool) async throws {
         _ = try await send(
-            command: "approval.respond",
-            params: ApprovalRespondParams(sessionId: sessionId, approved: approved)
+            command: "approval.inbox.respond",
+            params: ApprovalRespondParams(approvalId: approvalId, approved: approved)
         )
     }
 

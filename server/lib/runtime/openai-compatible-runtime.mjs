@@ -254,7 +254,28 @@ export class OpenAICompatibleRuntime extends EventEmitter {
       });
 
       for (const call of result.toolCalls) {
-        const toolResult = await this.executeToolCall(call, activeParams);
+        let toolResult;
+        try {
+          toolResult = await this.executeToolCall(call, activeParams);
+        } catch (error) {
+          if (error?.approvalRequired && error.pendingState) {
+            const assistantMessage = messages[messages.length - 1];
+            error.pendingState.continuation = {
+              messages: [
+                ...messages.slice(0, -1),
+                {
+                  ...assistantMessage,
+                  tool_calls: assistantMessage.tool_calls.filter((item) => item.id === call.id)
+                }
+              ],
+              provider: selection.provider.id,
+              model: selection.model,
+              reasoningEffort: params.reasoningEffort,
+              maxToolRounds: Math.max(0, maxToolRounds - round)
+            };
+          }
+          throw error;
+        }
         if (call.name === "tool_discovery") {
           const expansion = expandToolsForTurn(activeParams, toolResult);
           activeParams = expansion.params;
@@ -968,6 +989,47 @@ export class OpenAICompatibleRuntime extends EventEmitter {
       currentCodeScopePath: pendingState.currentCodeScopePath || params.currentCodeScopePath,
       approved: true
     });
+    const continuation = pendingState.continuation;
+    if (result?.ok !== false && continuation?.messages?.length) {
+      const continuationParams = {
+        sessionId: pendingState.sessionId || params.sessionId,
+        taskId: pendingState.taskId || params.taskId,
+        surface: pendingState.surface || params.surface,
+        folderId: pendingState.folderId || params.folderId,
+        projectId: pendingState.projectId || params.projectId,
+        expandedToolsForThisTurn: pendingState.expandedToolsForThisTurn || params.expandedToolsForThisTurn || [],
+        reasoningEffort: continuation.reasoningEffort,
+        provider: continuation.provider,
+        model: continuation.model,
+        maxToolRounds: continuation.maxToolRounds
+      };
+      const selection = await this.resolveModelSelection(continuationParams);
+      const messages = [
+        ...continuation.messages,
+        {
+          role: "tool",
+          tool_call_id: pendingState.toolCall.id,
+          name: pendingState.toolCall.name,
+          content: JSON.stringify(result)
+        }
+      ];
+      const completed = await this.runChatLoop(selection, messages, continuationParams);
+      this.emit("event", {
+        type: "turn.complete",
+        sessionId: continuationParams.sessionId,
+        taskId: continuationParams.taskId,
+        text: completed.reply
+      });
+      return {
+        ok: true,
+        status: "completed",
+        type: pendingState.type,
+        result,
+        reply: completed.reply,
+        reasoning: completed.reasoning,
+        toolRounds: completed.toolRounds
+      };
+    }
     return {
       ok: result?.ok !== false,
       status: result?.ok === false ? "failed" : "completed",

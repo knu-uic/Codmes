@@ -220,13 +220,16 @@ test("MCP dangerous tool call creates approval_required task and approved inbox 
     workspaceRoot: root,
     fetchImpl: async () => {
       modelRequestCount += 1;
+      const chunks = modelRequestCount === 1
+        ? [
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_delete","type":"function","function":{"name":"mcp__files__delete_file","arguments":"{\\"path\\":\\"Notes/a.md\\"}"}}]}}]}\n\n',
+            "data: [DONE]\n\n"
+          ]
+        : ['data: {"choices":[{"delta":{"content":"deleted"}}]}\n\n', "data: [DONE]\n\n"];
       return {
         ok: true,
         headers: { get: () => "text/event-stream" },
-        body: streamChunks([
-          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_delete","type":"function","function":{"name":"mcp__files__delete_file","arguments":"{\\"path\\":\\"Notes/a.md\\"}"}}]}}]}\n\n',
-          "data: [DONE]\n\n"
-        ])
+        body: streamChunks(chunks)
       };
     }
   });
@@ -264,7 +267,8 @@ test("MCP dangerous tool call creates approval_required task and approved inbox 
   assert.equal(resumedTask.status, "completed");
   assert.equal(resumedTask.pendingState, null);
   assert.deepEqual(resumedTask.result.result.output, [{ type: "text", text: "delete_file called 1" }]);
-  assert.equal(modelRequestCount, 1);
+  assert.equal(resumedTask.result.reply, "deleted");
+  assert.equal(modelRequestCount, 2);
 
   runtime.close();
 });
@@ -299,8 +303,10 @@ test("remote Chat MCP keeps bearer out of approval state and calls exactly once 
   const task = await engine.readTask(result.taskId);
   assert.equal(task.pendingState.type, "mcp.tool.call");
   assert.equal(JSON.stringify(task).includes("remote-bearer-secret"), false);
-  await engine.respondToWorkspaceApproval(result.approvalId, { approved: true });
+  const approved = await engine.respondToWorkspaceApproval(result.approvalId, { approved: true });
   assert.equal(calls, 1);
+  assert.equal(modelRequests, 2);
+  assert.equal(approved.result.result.reply, "notice found");
   modelRequests = 0;
   const rejectedSession = await engine.createSession({});
   const rejected = await engine.submitPrompt({ sessionId: rejectedSession.sessionId, message: "공지 찾아줘", surface: "chat", approved: false });
