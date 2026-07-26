@@ -13,7 +13,7 @@ struct FileSectionView: View {
         Group {
             #if os(macOS)
             HSplitView {
-                FileBrowserPane(title: title, root: root)
+                FileBrowserPane(title: title, root: root, showsHeader: false)
                     .frame(minWidth: 220, idealWidth: 280, maxWidth: 380)
                     .frame(maxHeight: .infinity)
 

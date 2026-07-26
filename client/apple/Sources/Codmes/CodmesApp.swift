@@ -9,7 +9,7 @@ struct CodmesApp: App {
 
     var body: some Scene {
         #if os(macOS)
-        WindowGroup(id: "codmes-main-window-v2") {
+        WindowGroup("", id: "codmes-main-window-v2") {
             rootView
         }
         .windowStyle(.titleBar)
@@ -26,6 +26,7 @@ struct CodmesApp: App {
             .environmentObject(store)
             .tint(.secondary)
             #if os(macOS)
+            .background(MacWindowConfigurator())
             .onAppear {
                 activateMacAppWindow()
             }
@@ -43,6 +44,29 @@ struct CodmesApp: App {
 }
 
 #if os(macOS)
+private struct MacWindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        NSView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            configureMacWindow(nsView.window)
+        }
+    }
+}
+
+@MainActor
+func configureMacWindow(_ window: NSWindow?) {
+    guard let window else { return }
+    window.styleMask.insert(.resizable)
+    window.minSize = NSSize(width: 640, height: 420)
+    window.title = ""
+    window.titleVisibility = .hidden
+    window.titlebarAppearsTransparent = true
+    window.toolbarStyle = .unified
+}
+
 @MainActor
 private func activateMacAppWindow() {
     NSApp.setActivationPolicy(.regular)
@@ -50,10 +74,7 @@ private func activateMacAppWindow() {
         let window = NSApp.windows
             .filter({ $0.isVisible && $0.styleMask.contains(.titled) })
             .max(by: { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height })
-        if let window {
-            window.styleMask.insert(.resizable)
-            window.minSize = NSSize(width: 640, height: 420)
-        }
+        configureMacWindow(window)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }

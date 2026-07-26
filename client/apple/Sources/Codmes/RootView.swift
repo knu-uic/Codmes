@@ -21,38 +21,28 @@ struct RootView: View {
         GeometryReader { proxy in
             HStack(spacing: 0) {
                 if isMacSidebarVisible {
-                    VStack(spacing: 0) {
-                        ScrollView {
-                            VStack(spacing: 4) {
-                                ForEach(visibleWorkspaceSections) { section in
-                                    surfaceButton(
-                                        title: section.rawValue,
-                                        systemImage: section.systemImage,
-                                        isSelected: selectedPluginSurfaceId == nil && selectedSection == section
-                                    ) {
-                                        selectSection(section)
-                                    }
-                                }
-                                ForEach(store.enabledPluginSurfaces) { surface in
-                                    surfaceButton(
-                                        title: surface.title,
-                                        systemImage: surface.systemImage,
-                                        isSelected: selectedPluginSurfaceId == surface.id
-                                    ) {
-                                        selectPluginSurface(surface)
-                                    }
+                    ScrollView {
+                        VStack(spacing: 4) {
+                            ForEach(visibleWorkspaceSections) { section in
+                                surfaceButton(
+                                    title: section.rawValue,
+                                    systemImage: section.systemImage,
+                                    isSelected: selectedPluginSurfaceId == nil && selectedSection == section
+                                ) {
+                                    selectSection(section)
                                 }
                             }
-                            .padding(10)
+                            ForEach(store.enabledPluginSurfaces) { surface in
+                                surfaceButton(
+                                    title: surface.title,
+                                    systemImage: surface.systemImage,
+                                    isSelected: selectedPluginSurfaceId == surface.id
+                                ) {
+                                    selectPluginSurface(surface)
+                                }
+                            }
                         }
-
-                        Divider()
-
-                        ScrollView {
-                            ServerStatusView()
-                                .padding(12)
-                        }
-                        .frame(maxHeight: min(240, proxy.size.height * 0.38))
+                        .padding(10)
                     }
                     .frame(width: min(240, max(180, proxy.size.width * 0.22)))
 
@@ -61,44 +51,16 @@ struct RootView: View {
 
                 detailView
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .toolbar {
-                        Button {
-                            isMacSidebarVisible.toggle()
-                        } label: {
-                            Image(systemName: "sidebar.left")
-                        }
-                        .help(isMacSidebarVisible ? "Hide sidebar" : "Show sidebar")
-
-                        if activeSurfaceId != "chat" {
-                            Button {
-                                isChatPanelVisible.toggle()
-                            } label: {
-                                Image(systemName: isChatPanelVisible ? "sidebar.right" : "bubble.right")
-                            }
-                            .help(isChatPanelVisible ? "Hide chat panel" : "Show chat panel")
-                        }
-
-                        if activeSurfaceId == "notes", !store.activeDocumentJobs.isEmpty {
-                            documentJobsButton
-                        }
-
-                        Button {
-                            store.selectedPDFFocus = nil
-                            showingGlobalSearch = true
-                        } label: {
-                            Image(systemName: "magnifyingglass")
-                        }
-                        .help("Global search")
-
-                        Button {
-                            showingSettings = true
-                        } label: {
-                            Image(systemName: "gearshape")
-                        }
-                        .help("Settings")
-                    }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
+            .toolbar {
+                if #available(macOS 26.0, *) {
+                    macToolbar
+                        .sharedBackgroundVisibility(.hidden)
+                } else {
+                    macToolbar
+                }
+            }
         }
         .frame(minWidth: 640, idealWidth: 1120, minHeight: 420, idealHeight: 740)
         .sheet(isPresented: $showingSettings) {
@@ -108,6 +70,11 @@ struct RootView: View {
         .sheet(isPresented: $showingGlobalSearch) {
             SearchView(onSelectSurface: selectSurfaceFromSearch)
                 .environmentObject(store)
+        }
+        .onChange(of: activeSurfaceId) { _, _ in
+            DispatchQueue.main.async {
+                configureMacWindow(NSApp.keyWindow)
+            }
         }
         .task(id: activeSurfaceTaskKey) {
             store.activeChatSurface = activeSurfaceId
@@ -171,6 +138,99 @@ struct RootView: View {
         }
     }
 
+    #if os(macOS)
+    @ToolbarContentBuilder
+    private var macToolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            HStack(spacing: 10) {
+                Button {
+                    isMacSidebarVisible.toggle()
+                } label: {
+                    Image(systemName: "sidebar.left")
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(MacToolbarIconButtonStyle(isSelected: isMacSidebarVisible))
+                .help(isMacSidebarVisible ? "Hide sidebar" : "Show sidebar")
+
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 5) {
+                        Text(activeSurfaceTitle)
+                            .font(.headline.weight(.semibold))
+
+                        Circle()
+                            .fill(store.isWorkspaceConnected ? .green : .orange)
+                            .frame(width: 7, height: 7)
+                    }
+
+                    if let activePDFStatus {
+                        Text(activePDFStatus)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .lineLimit(1)
+            }
+        }
+
+        if #available(macOS 26.0, *) {
+            ToolbarSpacer(.flexible)
+        }
+
+        ToolbarItemGroup(placement: .confirmationAction) {
+            if activeSurfaceId != "chat" {
+                Button {
+                    isChatPanelVisible.toggle()
+                } label: {
+                    Image(systemName: "bubble.right")
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(MacToolbarIconButtonStyle(isSelected: isChatPanelVisible))
+                .help(isChatPanelVisible ? "Hide chat panel" : "Show chat panel")
+            }
+
+            if activeSurfaceId == "notes", !store.activeDocumentJobs.isEmpty {
+                documentJobsButton
+            }
+
+            Button {
+                store.selectedPDFFocus = nil
+                showingGlobalSearch = true
+            } label: {
+                Image(systemName: "magnifyingglass")
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(MacToolbarIconButtonStyle(isSelected: showingGlobalSearch))
+            .help("Global search")
+
+            Button {
+                showingSettings = true
+            } label: {
+                Image(systemName: "gearshape")
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(MacToolbarIconButtonStyle(isSelected: showingSettings))
+            .help("Settings")
+        }
+    }
+
+    private struct MacToolbarIconButtonStyle: ButtonStyle {
+        let isSelected: Bool
+
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .foregroundStyle(.secondary)
+                .background(
+                    configuration.isPressed || isSelected
+                        ? Color.primary.opacity(0.10)
+                        : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+    }
+    #endif
+
     @ViewBuilder
     private var detailView: some View {
         #if os(macOS)
@@ -178,7 +238,7 @@ struct RootView: View {
             HSplitView {
                 primaryDetailView
                     .frame(minWidth: 0)
-                ChatHomeView(compact: true, onOpenModelSettings: openModelSettings)
+                ChatHomeView(compact: true, showsHeader: false, onOpenModelSettings: openModelSettings)
                     .frame(minWidth: 320, idealWidth: 390, maxWidth: 460)
             }
         } else {
@@ -601,7 +661,7 @@ struct RootView: View {
                     .contentShape(Rectangle())
                     .highPriorityGesture(chatPanelGesture(panelWidth: panelWidth))
 
-                    ChatHomeView(compact: true, onOpenModelSettings: openModelSettings)
+                    ChatHomeView(compact: true, showsHeader: false, onOpenModelSettings: openModelSettings)
                         .frame(width: panelWidth)
                         .background(.regularMaterial)
                         .clipShape(RoundedRectangle(cornerRadius: 18))
@@ -764,7 +824,11 @@ struct RootView: View {
             if let selectedPluginSurface {
                 PluginSurfaceView(surface: selectedPluginSurface)
             } else {
+                #if os(macOS)
+                ChatHomeView(showsHeader: false, onOpenModelSettings: openModelSettings)
+                #else
                 ChatHomeView(onOpenModelSettings: openModelSettings)
+                #endif
             }
         case .notes:
             #if os(iOS)
