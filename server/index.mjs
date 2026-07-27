@@ -646,7 +646,23 @@ async function handleRequest(req, res) {
       const sessionId = decodeURIComponent(sessionMoveMatch[1]);
       const body = await readJsonBody(req);
       const { moveSessionToFolder } = await import("./lib/runtime/conversation-folders.mjs");
-      return sendJson(res, await moveSessionToFolder(WORKSPACE_ROOT, sessionId, body.folderId));
+      return sendJson(
+        res,
+        await moveSessionToFolder(
+          WORKSPACE_ROOT,
+          sessionId,
+          body.folderId,
+          body.projectId,
+          body.projectTitle
+        )
+      );
+    }
+    const sessionPinMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/pin$/);
+    if (req.method === "POST" && sessionPinMatch) {
+      const sessionId = decodeURIComponent(sessionPinMatch[1]);
+      const body = await readJsonBody(req);
+      const { setSessionPinned } = await import("./lib/runtime/conversation-folders.mjs");
+      return sendJson(res, await setSessionPinned(WORKSPACE_ROOT, sessionId, body.pinned));
     }
     const sessionArchiveMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/archive$/);
     if (req.method === "POST" && sessionArchiveMatch) {
@@ -2908,6 +2924,7 @@ async function normalizeSessionsResponse(value) {
       projectId: stringField(item.project_id, item.projectId, item.project?.id, item.workspace_id, item.workspaceId, item.scope_id, item.scopeId),
       projectTitle: stringField(item.project_title, item.projectTitle, item.project?.title, item.project?.name, item.workspace_title, item.workspaceTitle, item.workspace?.title, item.workspace?.name, item.cwd, item.git_repo_root, item.gitRepoRoot),
       updatedAt: stringField(item.updated_at, item.updatedAt, item.modified_at, item.modifiedAt, item.last_active, item.lastActive),
+      pinned: Boolean(item.pinned),
       isActive: Boolean(item.is_active ?? item.isActive)
     });
   }

@@ -11,7 +11,8 @@ import {
   deleteFolder,
   getFolderMemory,
   updateFolderMemory,
-  moveSessionToFolder
+  moveSessionToFolder,
+  setSessionPinned
 } from "./conversation-folders.mjs";
 
 test("Conversation Folders: CRUD and memory settings", async () => {
@@ -70,5 +71,31 @@ test("Conversation Folders: sessions can be moved into and out of folders", asyn
 
   const unassigned = await moveSessionToFolder(root, sessionId, null);
   assert.equal(unassigned.folderId, null);
+  assert.equal(unassigned.projectId, null);
   assert.equal(unassigned.kind, "general");
+
+  const movedToProject = await moveSessionToFolder(
+    root,
+    sessionId,
+    null,
+    "/workspace/hermes-connection",
+    "hermes-connection"
+  );
+  assert.equal(movedToProject.folderId, null);
+  assert.equal(movedToProject.projectId, "/workspace/hermes-connection");
+  assert.equal(movedToProject.projectTitle, "hermes-connection");
+  assert.equal(movedToProject.kind, "project");
+
+  const movedFromProjectToFolder = await moveSessionToFolder(root, sessionId, folder.id);
+  assert.equal(movedFromProjectToFolder.folderId, folder.id);
+  assert.equal(movedFromProjectToFolder.projectId, null);
+  assert.equal(movedFromProjectToFolder.projectTitle, null);
+
+  const pinned = await setSessionPinned(root, sessionId, true);
+  assert.equal(pinned.pinned, true);
+  const pinnedStored = JSON.parse(await fs.readFile(path.join(sessionsDir, `${sessionId}.json`), "utf8"));
+  assert.equal(pinnedStored.pinned, true);
+
+  const unpinned = await setSessionPinned(root, sessionId, false);
+  assert.equal(unpinned.pinned, false);
 });

@@ -80,7 +80,13 @@ export async function updateFolderMemory(workspaceRoot, folderId, memoryEntries)
   return memoryEntries;
 }
 
-export async function moveSessionToFolder(workspaceRoot, sessionId, folderId) {
+export async function moveSessionToFolder(
+  workspaceRoot,
+  sessionId,
+  folderId,
+  projectId = null,
+  projectTitle = null
+) {
   const sessionPath = path.join(workspaceRoot, ".codmes", "sessions", `${sessionId}.json`);
   let session = null;
   try {
@@ -91,7 +97,9 @@ export async function moveSessionToFolder(workspaceRoot, sessionId, folderId) {
   }
   
   session.folderId = folderId || null;
-  session.kind = folderId ? "folder" : (session.projectId ? "project" : "general");
+  session.projectId = folderId ? null : (projectId || null);
+  session.projectTitle = folderId ? null : (projectId ? (projectTitle || projectId) : null);
+  session.kind = folderId ? "folder" : (projectId ? "project" : "general");
   session.updatedAt = new Date().toISOString();
   
   await fs.writeFile(sessionPath, JSON.stringify(session, null, 2), "utf8");
@@ -100,6 +108,24 @@ export async function moveSessionToFolder(workspaceRoot, sessionId, folderId) {
   const { indexSession } = await import("./conversation-index.mjs");
   await indexSession(workspaceRoot, session);
   
+  return session;
+}
+
+export async function setSessionPinned(workspaceRoot, sessionId, pinned) {
+  const sessionPath = path.join(workspaceRoot, ".codmes", "sessions", `${sessionId}.json`);
+  let session = null;
+  try {
+    session = JSON.parse(await fs.readFile(sessionPath, "utf8"));
+  } catch {
+    throw new Error(`Session with id ${sessionId} not found`);
+  }
+
+  session.pinned = Boolean(pinned);
+  session.updatedAt = new Date().toISOString();
+  await fs.writeFile(sessionPath, JSON.stringify(session, null, 2), "utf8");
+
+  const { indexSession } = await import("./conversation-index.mjs");
+  await indexSession(workspaceRoot, session);
   return session;
 }
 

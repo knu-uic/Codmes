@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 #if os(macOS)
 import WebKit
 #elseif os(iOS)
@@ -14,6 +15,7 @@ struct ChatHomeView: View {
     @EnvironmentObject private var store: WorkspaceStore
     var compact = false
     var showsHeader = true
+    var showsSessionToolbar = true
     var onOpenModelSettings: (() -> Void)? = nil
     @State private var draft = ""
     @State private var showingSessionManager = false
@@ -29,7 +31,9 @@ struct ChatHomeView: View {
             if showsHeader {
                 chatHeader
             }
-            sessionToolbar
+            if showsSessionToolbar {
+                sessionToolbar
+            }
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(spacing: 14) {
@@ -468,6 +472,662 @@ struct ChatHomeView: View {
         Task { await store.sendChatMessage(message) }
     }
 }
+
+#if os(macOS)
+struct ChatNavigationSidebar: View {
+    @EnvironmentObject private var store: WorkspaceStore
+    @State private var showingSessionManager = false
+    @State private var showingCreateGroupFolder = false
+    @State private var pendingDeleteGroupFolder: ConversationFolder?
+    @State private var renamingProject: ConversationFolder?
+    @State private var renameProjectName = ""
+    @State private var newGroupFolderName = ""
+    @State private var isSelectingSessions = false
+    @State private var selectedSessionIds = Set<String>()
+    @State private var pendingDeleteSession: HermesSessionSummary?
+    @State private var renamingSession: HermesSessionSummary?
+    @State private var renameSessionTitle = ""
+    @State private var pendingBulkDelete = false
+    @State private var targetedProjectId: String?
+    @State private var isRecentDropTargeted = false
+    @State private var hoveredSessionId: String?
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 6) {
+                    Text("프로젝트")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    Button {
+                        showingSessionManager = true
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Manage projects and chats")
+
+                    Button {
+                        newGroupFolderName = ""
+                        showingCreateGroupFolder = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Create project")
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 14)
+                .padding(.bottom, 8)
+
+                if projects.isEmpty {
+                    Text("프로젝트가 없습니다")
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                } else {
+                    ForEach(projects) { project in
+                        projectSection(project)
+                    }
+                }
+
+                recentHeader
+                    .padding(.horizontal, 14)
+                    .padding(.top, 22)
+                    .padding(.bottom, 8)
+                    .background(
+                        isRecentDropTargeted
+                            ? Color.accentColor.opacity(0.12)
+                            : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 8)
+                    )
+                    .padding(.horizontal, 4)
+                    .onDrop(
+                        of: [.codmesChatSessions, .utf8PlainText],
+                        isTargeted: $isRecentDropTargeted,
+                        perform: { providers in
+                            moveDroppedProviders(providers, to: nil)
+                        }
+                    )
+
+                if recentSessions.isEmpty {
+                    Text("프로젝트에 속하지 않은 최근 채팅이 없습니다")
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                } else {
+                    ForEach(recentSessions) { session in
+                        sessionRow(session, indentation: 0)
+                    }
+                }
+            }
+            .padding(.bottom, 14)
+        }
+        .background(.background.opacity(0.96))
+        .task {
+            await store.refreshHermesMetadata()
+        }
+        .sheet(isPresented: $showingSessionManager) {
+            SessionManagerView(isPresented: $showingSessionManager)
+                .environmentObject(store)
+        }
+        .alert("New group folder", isPresented: $showingCreateGroupFolder) {
+            TextField("Folder name", text: $newGroupFolderName)
+            Button("Create") {
+                Task { await store.createConversationFolder(name: newGroupFolderName) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Sessions inside this folder share folder-level memory.")
+        }
+        .alert(
+            "프로젝트 이름 변경",
+            isPresented: Binding(
+                get: { renamingProject != nil },
+                set: { if !$0 { renamingProject = nil } }
+            )
+        ) {
+            TextField("프로젝트 이름", text: $renameProjectName)
+            Button("변경") {
+                guard let project = renamingProject else { return }
+                Task {
+                    await store.renameConversationFolder(project, name: renameProjectName)
+                    renamingProject = nil
+                }
+            }
+            Button("취소", role: .cancel) {
+                renamingProject = nil
+            }
+        }
+        .alert(
+            "세션 이름 변경",
+            isPresented: Binding(
+                get: { renamingSession != nil },
+                set: { if !$0 { renamingSession = nil } }
+            )
+        ) {
+            TextField("세션 이름", text: $renameSessionTitle)
+            Button("변경") {
+                guard let session = renamingSession else { return }
+                let title = renameSessionTitle
+                renamingSession = nil
+                Task { await store.renameHermesSession(session, title: title) }
+            }
+            Button("취소", role: .cancel) {
+                renamingSession = nil
+            }
+        } message: {
+            Text(renamingSession?.title ?? "")
+        }
+        .confirmationDialog(
+            "Delete group folder?",
+            isPresented: Binding(
+                get: { pendingDeleteGroupFolder != nil },
+                set: { if !$0 { pendingDeleteGroupFolder = nil } }
+            ),
+            presenting: pendingDeleteGroupFolder
+        ) { folder in
+            Button("Delete \(folder.name)", role: .destructive) {
+                Task {
+                    await store.deleteConversationFolder(folder)
+                    pendingDeleteGroupFolder = nil
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                pendingDeleteGroupFolder = nil
+            }
+        } message: { folder in
+            Text("Sessions in \(folder.name) will be kept and moved out of the group.")
+        }
+        .confirmationDialog(
+            "세션을 삭제할까요?",
+            isPresented: Binding(
+                get: { pendingDeleteSession != nil },
+                set: { if !$0 { pendingDeleteSession = nil } }
+            ),
+            presenting: pendingDeleteSession
+        ) { session in
+            Button("삭제", role: .destructive) {
+                Task {
+                    await store.deleteHermesSession(session)
+                    pendingDeleteSession = nil
+                }
+            }
+            Button("취소", role: .cancel) {
+                pendingDeleteSession = nil
+            }
+        } message: { session in
+            Text(session.title)
+        }
+        .confirmationDialog(
+            "선택한 세션을 삭제할까요?",
+            isPresented: $pendingBulkDelete
+        ) {
+            Button("\(selectedSessionIds.count)개 삭제", role: .destructive) {
+                let sessions = selectedSessions
+                Task {
+                    await store.deleteHermesSessions(sessions)
+                    endSessionSelection()
+                }
+            }
+            Button("취소", role: .cancel) {}
+        }
+    }
+
+    private var recentHeader: some View {
+        HStack(spacing: 5) {
+            Text("최근")
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            if isSelectingSessions {
+                Button {
+                    if allSessionsSelected {
+                        selectedSessionIds.removeAll()
+                    } else {
+                        selectedSessionIds = Set(store.hermesSessions.map(\.id))
+                    }
+                } label: {
+                    Image(systemName: allSessionsSelected ? "checkmark.circle.fill" : "checkmark.circle")
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help(allSessionsSelected ? "전체 선택 해제" : "전체 선택")
+
+                Button {
+                    pendingBulkDelete = true
+                } label: {
+                    Image(systemName: "trash")
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(selectedSessionIds.isEmpty ? .tertiary : .secondary)
+                .disabled(selectedSessionIds.isEmpty)
+                .help("선택한 세션 삭제")
+
+                Button {
+                    endSessionSelection()
+                } label: {
+                    Image(systemName: "xmark")
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("선택 취소")
+            } else {
+                Button {
+                    showingSessionManager = true
+                } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("세션 히스토리")
+
+                Button {
+                    store.selectedHermesProjectId = "__all__"
+                    store.prepareNewChat()
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("새 세션")
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var projects: [HermesSessionProject] {
+        store.hermesSessionProjects.filter { $0.id != "__all__" }
+    }
+
+    private var recentSessions: [HermesSessionSummary] {
+        orderedSessions(store.hermesSessions.filter { session in
+            let projectId = session.folderId ?? session.projectId ?? session.projectTitle
+            return projectId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
+        })
+    }
+
+    private var selectedSessions: [HermesSessionSummary] {
+        store.hermesSessions.filter { selectedSessionIds.contains($0.id) }
+    }
+
+    private var allSessionsSelected: Bool {
+        !store.hermesSessions.isEmpty
+            && selectedSessionIds.count == store.hermesSessions.count
+    }
+
+    private func sessions(in project: HermesSessionProject) -> [HermesSessionSummary] {
+        orderedSessions(store.hermesSessions.filter {
+            ($0.folderId ?? $0.projectId ?? $0.projectTitle) == project.id
+        })
+    }
+
+    private func orderedSessions(_ sessions: [HermesSessionSummary]) -> [HermesSessionSummary] {
+        sessions.enumerated()
+            .sorted {
+                if $0.element.pinned != $1.element.pinned {
+                    return $0.element.pinned && !$1.element.pinned
+                }
+                return $0.offset < $1.offset
+            }
+            .map(\.element)
+    }
+
+    @ViewBuilder
+    private func projectSection(_ project: HermesSessionProject) -> some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 9) {
+                Image(systemName: "folder")
+                    .frame(width: 18)
+
+                Text(project.title)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Spacer(minLength: 6)
+            }
+            .font(.headline.weight(.medium))
+            .foregroundStyle(.primary)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                store.selectedHermesProjectId = project.id
+            }
+
+            Menu {
+                Button {
+                    store.selectedHermesProjectId = project.id
+                    showingSessionManager = true
+                } label: {
+                    Label("프로젝트 관리", systemImage: "slider.horizontal.3")
+                }
+
+                if let folder = store.conversationFolders.first(where: { $0.id == project.id }) {
+                    Divider()
+                    Button {
+                        renameProjectName = folder.name
+                        renamingProject = folder
+                    } label: {
+                        Label("프로젝트 이름 변경", systemImage: "pencil")
+                    }
+
+                    Button(role: .destructive) {
+                        pendingDeleteGroupFolder = folder
+                    } label: {
+                        Label("프로젝트 제거", systemImage: "trash")
+                    }
+                } else {
+                    Divider()
+                    Button("프로젝트 이름 변경") {}
+                        .disabled(true)
+                    Button("프로젝트 제거", role: .destructive) {}
+                        .disabled(true)
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .frame(width: 26, height: 28)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .foregroundStyle(.secondary)
+            .help("Project actions")
+
+            Button {
+                store.selectedHermesProjectId = project.id
+                store.prepareNewChat()
+            } label: {
+                Image(systemName: "square.and.pencil")
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("New chat in \(project.title)")
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 10)
+        .frame(height: 38)
+        .background(
+            targetedProjectId == project.id
+                ? Color.accentColor.opacity(0.14)
+                : store.selectedHermesProjectId == project.id
+                ? Color.secondary.opacity(0.12)
+                : Color.clear,
+            in: RoundedRectangle(cornerRadius: 8)
+        )
+        .padding(.horizontal, 4)
+        .onDrop(
+            of: [.codmesChatSessions, .utf8PlainText],
+            isTargeted: projectDropTargetBinding(project.id),
+            perform: { providers in
+                moveDroppedProviders(providers, to: project)
+            }
+        )
+
+        ForEach(sessions(in: project)) { session in
+            sessionRow(session, indentation: 32)
+        }
+    }
+
+    private func sessionRow(_ session: HermesSessionSummary, indentation: CGFloat) -> some View {
+        HStack(spacing: 4) {
+            HStack(spacing: 5) {
+                if session.pinned {
+                    Image(systemName: "pin.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                Text(session.title)
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 12 + indentation)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if isSelectingSessions {
+                    toggleSessionSelection(session)
+                    return
+                }
+                if let projectId = session.folderId ?? session.projectId ?? session.projectTitle {
+                    store.selectedHermesProjectId = projectId
+                } else {
+                    store.selectedHermesProjectId = "__all__"
+                }
+                Task { await store.resumeHermesSession(session) }
+            }
+            .accessibilityAddTraits(.isButton)
+            .onDrag {
+                dragProvider(for: session)
+            } preview: {
+                dragPreview(for: session)
+            }
+
+            if isSelectingSessions {
+                Button {
+                    toggleSessionSelection(session)
+                } label: {
+                    Image(
+                        systemName: selectedSessionIds.contains(session.id)
+                            ? "checkmark.circle.fill"
+                            : "circle"
+                    )
+                    .frame(width: 25, height: 28)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(selectedSessionIds.contains(session.id) ? .primary : .tertiary)
+                .help(selectedSessionIds.contains(session.id) ? "선택 해제" : "선택")
+            } else {
+                Menu {
+                    sessionActionsMenu(for: session)
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .frame(width: 27, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .foregroundStyle(.secondary)
+                .opacity(hoveredSessionId == session.id ? 1 : 0)
+                .help("세션 작업")
+            }
+        }
+        .padding(.trailing, 7)
+        .frame(maxWidth: .infinity)
+        .frame(height: 34)
+        .background(
+            store.liveSessionId == session.id
+                ? Color.secondary.opacity(0.18)
+                : selectedSessionIds.contains(session.id)
+                ? Color.secondary.opacity(0.12)
+                : Color.clear,
+            in: RoundedRectangle(cornerRadius: 8)
+        )
+        .padding(.horizontal, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .help(session.title)
+        .onHover { isHovering in
+            if isHovering {
+                hoveredSessionId = session.id
+            } else if hoveredSessionId == session.id {
+                hoveredSessionId = nil
+            }
+        }
+        .contextMenu {
+            sessionActionsMenu(for: session)
+        }
+    }
+
+    @ViewBuilder
+    private func sessionActionsMenu(for session: HermesSessionSummary) -> some View {
+        Button {
+            Task { await store.setHermesSessionPinned(session, pinned: !session.pinned) }
+        } label: {
+            Label(
+                session.pinned ? "고정 해제" : "고정",
+                systemImage: session.pinned ? "pin.slash" : "pin"
+            )
+        }
+
+        Button {
+            isSelectingSessions = true
+            selectedSessionIds.insert(session.id)
+        } label: {
+            Label("선택", systemImage: "checkmark.circle")
+        }
+
+        Button {
+            renamingSession = session
+            renameSessionTitle = session.title
+        } label: {
+            Label("이름 변경", systemImage: "pencil")
+        }
+
+        Divider()
+
+        Button(role: .destructive) {
+            pendingDeleteSession = session
+        } label: {
+            Label("삭제", systemImage: "trash")
+        }
+        .disabled(session.id == store.liveSessionId)
+    }
+
+    private func dragPreview(for session: HermesSessionSummary) -> some View {
+        Label(
+            dragPayload(for: session).sessionIds.count == 1
+                ? session.title
+                : "\(dragPayload(for: session).sessionIds.count)개 세션",
+            systemImage: "bubble.left.and.bubble.right"
+        )
+        .padding(8)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func toggleSessionSelection(_ session: HermesSessionSummary) {
+        if selectedSessionIds.contains(session.id) {
+            selectedSessionIds.remove(session.id)
+        } else {
+            selectedSessionIds.insert(session.id)
+        }
+    }
+
+    private func endSessionSelection() {
+        isSelectingSessions = false
+        selectedSessionIds.removeAll()
+    }
+
+    private func dragPayload(for session: HermesSessionSummary) -> SessionSidebarDragPayload {
+        let ids = isSelectingSessions && selectedSessionIds.contains(session.id)
+            ? Array(selectedSessionIds)
+            : [session.id]
+        return SessionSidebarDragPayload(sessionIds: ids)
+    }
+
+    private func dragProvider(for session: HermesSessionSummary) -> NSItemProvider {
+        let data = (try? JSONEncoder().encode(dragPayload(for: session))) ?? Data()
+        let payload = String(data: data, encoding: .utf8) ?? ""
+        let provider = NSItemProvider(object: payload as NSString)
+        provider.registerDataRepresentation(
+            forTypeIdentifier: UTType.codmesChatSessions.identifier,
+            visibility: .all
+        ) { completion in
+            completion(data, nil)
+            return nil
+        }
+        return provider
+    }
+
+    private func moveDroppedProviders(
+        _ providers: [NSItemProvider],
+        to project: HermesSessionProject?
+    ) -> Bool {
+        guard let provider = providers.first(where: { provider in
+            provider.hasItemConformingToTypeIdentifier(UTType.codmesChatSessions.identifier)
+                || provider.canLoadObject(ofClass: NSString.self)
+        }) else {
+            return false
+        }
+
+        let handleData: @Sendable (Data?) -> Void = { data in
+            guard let data,
+                  let dragPayload = try? JSONDecoder().decode(SessionSidebarDragPayload.self, from: data) else { return }
+            Task { @MainActor in
+                let ids = Set(dragPayload.sessionIds)
+                let sessions = store.hermesSessions.filter { ids.contains($0.id) }
+                guard !sessions.isEmpty else { return }
+                let folderId = project.flatMap { destination in
+                    store.conversationFolders.contains(where: { $0.id == destination.id })
+                        ? destination.id
+                        : nil
+                }
+                let codeProject = project.flatMap { destination in
+                    folderId == nil ? destination : nil
+                }
+                await store.moveSessions(
+                    sessions,
+                    toFolderId: folderId,
+                    projectId: codeProject?.id,
+                    projectTitle: codeProject?.title
+                )
+                endSessionSelection()
+            }
+        }
+
+        if provider.hasItemConformingToTypeIdentifier(UTType.codmesChatSessions.identifier) {
+            provider.loadDataRepresentation(
+                forTypeIdentifier: UTType.codmesChatSessions.identifier
+            ) { data, _ in
+                handleData(data)
+            }
+        } else {
+            provider.loadObject(ofClass: NSString.self) { object, _ in
+                handleData((object as? String)?.data(using: .utf8))
+            }
+        }
+        return true
+    }
+
+    private func projectDropTargetBinding(_ projectId: String) -> Binding<Bool> {
+        Binding(
+            get: { targetedProjectId == projectId },
+            set: { isTargeted in
+                if isTargeted {
+                    targetedProjectId = projectId
+                } else if targetedProjectId == projectId {
+                    targetedProjectId = nil
+                }
+            }
+        )
+    }
+}
+
+private struct SessionSidebarDragPayload: Codable, Sendable {
+    let sessionIds: [String]
+}
+
+private extension UTType {
+    static let codmesChatSessions = UTType(exportedAs: "com.codmes.chat-sessions")
+}
+#endif
 
 struct SessionManagerView: View {
     @EnvironmentObject private var store: WorkspaceStore

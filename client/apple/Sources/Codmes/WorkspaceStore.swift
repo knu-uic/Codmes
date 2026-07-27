@@ -312,15 +312,70 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
-    func moveSession(_ session: HermesSessionSummary, toFolderId folderId: String?) async {
+    func renameConversationFolder(_ folder: ConversationFolder, name: String) async {
+        let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else {
+            statusMessage = "Project name is required"
+            return
+        }
         guard let api else { return }
         do {
-            try await api.moveSessionToFolder(sessionId: session.id, folderId: folderId)
-            statusMessage = folderId == nil ? "Removed \(session.title) from group folder" : "Moved \(session.title)"
+            let updated = try await api.updateConversationFolder(folderId: folder.id, name: cleaned)
+            conversationFolders = conversationFolders.map { $0.id == folder.id ? updated : $0 }
+            statusMessage = "Renamed project to \(cleaned)"
             await refreshHermesMetadata()
         } catch {
             statusMessage = error.localizedDescription
         }
+    }
+
+    func moveSession(
+        _ session: HermesSessionSummary,
+        toFolderId folderId: String?,
+        projectId: String? = nil,
+        projectTitle: String? = nil
+    ) async {
+        guard let api else { return }
+        do {
+            try await api.moveSession(
+                sessionId: session.id,
+                folderId: folderId,
+                projectId: projectId,
+                projectTitle: projectTitle
+            )
+            statusMessage = "Moved \(session.title)"
+            await refreshHermesMetadata()
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func moveSessions(
+        _ sessions: [HermesSessionSummary],
+        toFolderId folderId: String?,
+        projectId: String? = nil,
+        projectTitle: String? = nil
+    ) async {
+        guard let api, !sessions.isEmpty else { return }
+        var movedIds = Set<String>()
+        var failureCount = 0
+        for session in sessions {
+            do {
+                try await api.moveSession(
+                    sessionId: session.id,
+                    folderId: folderId,
+                    projectId: projectId,
+                    projectTitle: projectTitle
+                )
+                movedIds.insert(session.id)
+            } catch {
+                failureCount += 1
+            }
+        }
+        statusMessage = failureCount == 0
+            ? "Moved \(movedIds.count) sessions"
+            : "Moved \(movedIds.count), failed \(failureCount)"
+        await refreshHermesMetadata()
     }
 
     func refreshRuntimeProviders() async {
@@ -1559,7 +1614,8 @@ final class WorkspaceStore: ObservableObject {
                     folderId: nil,
                     folderTitle: nil,
                     projectId: result.target.projectId,
-                    projectTitle: nil
+                    projectTitle: nil,
+                    pinned: false
                 )
             )
             if let messageId = result.target.messageId {
@@ -1821,7 +1877,8 @@ final class WorkspaceStore: ObservableObject {
                 reasoningEffort: chatReasoningMode.effort,
                 accessMode: chatAccessMode.rawValue,
                 surface: activeChatSurface,
-                folderId: selectedConversationFolderIdForNewSession
+                folderId: selectedConversationFolderIdForNewSession,
+                projectId: selectedProjectIdForNewSession
             )
             liveSessionId = sessionId
             activeHermesSessionTitle = "New session"
@@ -1919,7 +1976,8 @@ final class WorkspaceStore: ObservableObject {
                         folderId: $0.folderId,
                         folderTitle: $0.folderTitle,
                         projectId: $0.projectId,
-                        projectTitle: $0.projectTitle
+                        projectTitle: $0.projectTitle,
+                        pinned: $0.pinned
                     )
                     : $0
             }
@@ -1928,6 +1986,29 @@ final class WorkspaceStore: ObservableObject {
             }
             statusMessage = "Renamed \(cleaned)"
             await refreshHermesMetadata()
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func setHermesSessionPinned(_ session: HermesSessionSummary, pinned: Bool) async {
+        guard let api else { return }
+        do {
+            try await api.setHermesSessionPinned(sessionId: session.id, pinned: pinned)
+            hermesSessions = hermesSessions.map {
+                guard $0.id == session.id else { return $0 }
+                return HermesSessionSummary(
+                    id: $0.id,
+                    title: $0.title,
+                    updatedAt: $0.updatedAt,
+                    folderId: $0.folderId,
+                    folderTitle: $0.folderTitle,
+                    projectId: $0.projectId,
+                    projectTitle: $0.projectTitle,
+                    pinned: pinned
+                )
+            }
+            statusMessage = pinned ? "Pinned \(session.title)" : "Unpinned \(session.title)"
         } catch {
             statusMessage = error.localizedDescription
         }
@@ -2053,6 +2134,14 @@ final class WorkspaceStore: ObservableObject {
 
     var selectedConversationFolderIdForNewSession: String? {
         conversationFolders.contains { $0.id == selectedHermesProjectId } ? selectedHermesProjectId : nil
+    }
+
+    var selectedProjectIdForNewSession: String? {
+        guard selectedHermesProjectId != "__all__",
+              !conversationFolders.contains(where: { $0.id == selectedHermesProjectId }) else {
+            return nil
+        }
+        return selectedHermesProjectId
     }
 
     private func shortProjectTitle(_ value: String) -> String {

@@ -1318,6 +1318,7 @@ struct HermesSessionSummary: Identifiable, Hashable {
     let folderTitle: String?
     let projectId: String?
     let projectTitle: String?
+    let pinned: Bool
 }
 
 struct HermesSessionProject: Identifiable, Hashable {

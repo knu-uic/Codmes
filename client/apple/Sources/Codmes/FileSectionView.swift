@@ -1033,9 +1033,6 @@ struct FilePreviewView: View {
                     }
                 )
             } else if let rawFile = store.selectedRawFile {
-#if os(macOS)
-                HeaderView(title: rawFile.name, subtitle: rawFile.path)
-#endif
                 if rawFile.kind == "pdf" {
                     if let session = rawFile.streamSession {
                         StreamedPDFWorkspaceHost(rawFile: rawFile, session: session)
@@ -1064,9 +1061,6 @@ struct FilePreviewView: View {
                     ContentUnavailableView("Raw preview unavailable", systemImage: "doc", description: Text(rawFile.path))
                 }
             } else if let file = store.selectedFile {
-#if os(macOS)
-                HeaderView(title: file.name, subtitle: file.path)
-#endif
                 HStack(spacing: 12) {
                     if store.isEditingFile {
                         Button {
@@ -1161,9 +1155,6 @@ private struct RawFileLoadingView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-#if os(macOS)
-            HeaderView(title: item.name, subtitle: item.path)
-#endif
             if let errorMessage {
                 ContentUnavailableView {
                     Label("Could not open PDF", systemImage: "exclamationmark.triangle")

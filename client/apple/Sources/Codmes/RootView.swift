@@ -12,6 +12,7 @@ struct RootView: View {
     @State private var showingGlobalSearch = false
     @State private var showingSettings = false
     @State private var isMacSidebarVisible = true
+    @State private var showingMacSurfaceMenu = false
     @State private var showingDocumentJobs = false
     @State private var seenDocumentJobIds = Set<String>()
     @State private var documentJobsAutoDismissTask: Task<Void, Never>?
@@ -20,31 +21,9 @@ struct RootView: View {
         #if os(macOS)
         GeometryReader { proxy in
             HStack(spacing: 0) {
-                if isMacSidebarVisible {
-                    ScrollView {
-                        VStack(spacing: 4) {
-                            ForEach(visibleWorkspaceSections) { section in
-                                surfaceButton(
-                                    title: section.rawValue,
-                                    systemImage: section.systemImage,
-                                    isSelected: selectedPluginSurfaceId == nil && selectedSection == section
-                                ) {
-                                    selectSection(section)
-                                }
-                            }
-                            ForEach(store.enabledPluginSurfaces) { surface in
-                                surfaceButton(
-                                    title: surface.title,
-                                    systemImage: surface.systemImage,
-                                    isSelected: selectedPluginSurfaceId == surface.id
-                                ) {
-                                    selectPluginSurface(surface)
-                                }
-                            }
-                        }
-                        .padding(10)
-                    }
-                    .frame(width: min(240, max(180, proxy.size.width * 0.22)))
+                if isMacSidebarVisible, macHasSidebar {
+                    macSidebar
+                        .frame(width: macSidebarWidth(for: proxy.size.width))
 
                     Divider()
                 }
@@ -119,6 +98,10 @@ struct RootView: View {
         activeSurfaceId
     }
 
+    private var macHasSidebar: Bool {
+        activeSurfaceId == "chat" || activeSurfaceId == "notes" || activeSurfaceId == "code"
+    }
+
     private var activeDocumentTitle: String? {
         guard activeSurfaceId == "notes" || activeSurfaceId == "code" else { return nil }
         return store.loadingRawFile?.name ?? store.selectedRawFile?.name ?? store.selectedFile?.name
@@ -139,42 +122,86 @@ struct RootView: View {
     }
 
     #if os(macOS)
+    @ViewBuilder
+    private var macSidebar: some View {
+        if activeSurfaceId == "chat" {
+            ChatNavigationSidebar()
+        } else if activeSurfaceId == "notes" {
+            FileBrowserPane(title: "Notes", root: "notes", showsHeader: false)
+        } else if activeSurfaceId == "code" {
+            FileBrowserPane(title: "Code", root: "code", showsHeader: false)
+        }
+    }
+
+    private func macSidebarWidth(for availableWidth: CGFloat) -> CGFloat {
+        if activeSurfaceId == "chat" {
+            return min(300, max(240, availableWidth * 0.24))
+        }
+        return min(320, max(220, availableWidth * 0.26))
+    }
+
     @ToolbarContentBuilder
     private var macToolbar: some ToolbarContent {
         ToolbarItem(placement: .navigation) {
             HStack(spacing: 10) {
+                if macHasSidebar {
+                    Button {
+                        isMacSidebarVisible.toggle()
+                    } label: {
+                        Image(systemName: "sidebar.left")
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(MacToolbarIconButtonStyle(isSelected: isMacSidebarVisible))
+                    .help(isMacSidebarVisible ? "Hide sidebar" : "Show sidebar")
+                }
+
                 Button {
-                    isMacSidebarVisible.toggle()
+                    showingMacSurfaceMenu.toggle()
                 } label: {
-                    Image(systemName: "sidebar.left")
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(MacToolbarIconButtonStyle(isSelected: isMacSidebarVisible))
-                .help(isMacSidebarVisible ? "Hide sidebar" : "Show sidebar")
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack(spacing: 5) {
+                            Text(activeSurfaceTitle)
+                                .font(.headline.weight(.semibold))
 
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack(spacing: 5) {
-                        Text(activeSurfaceTitle)
-                            .font(.headline.weight(.semibold))
+                            Image(systemName: "chevron.down")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.secondary)
 
-                        Circle()
-                            .fill(store.isWorkspaceConnected ? .green : .orange)
-                            .frame(width: 7, height: 7)
+                            Circle()
+                                .fill(store.isWorkspaceConnected ? .green : .orange)
+                                .frame(width: 7, height: 7)
+                        }
+
+                        if let activePDFStatus {
+                            Text(activePDFStatus)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                     }
-
-                    if let activePDFStatus {
-                        Text(activePDFStatus)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
+                    .lineLimit(1)
+                    .contentShape(Rectangle())
                 }
-                .lineLimit(1)
+                .buttonStyle(.plain)
+                .fixedSize()
+                .popover(isPresented: $showingMacSurfaceMenu, arrowEdge: .top) {
+                    macSurfaceMenu
+                }
             }
         }
 
         if #available(macOS 26.0, *) {
             ToolbarSpacer(.flexible)
+        }
+
+        ToolbarItem(placement: .principal) {
+            Text(activeDocumentTitle ?? "")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 420)
+                .accessibilityLabel(activeDocumentTitle.map { "Open file: \($0)" } ?? "No open file")
         }
 
         ToolbarItemGroup(placement: .confirmationAction) {
@@ -212,6 +239,63 @@ struct RootView: View {
             .buttonStyle(MacToolbarIconButtonStyle(isSelected: showingSettings))
             .help("Settings")
         }
+    }
+
+    private var macSurfaceMenu: some View {
+        VStack(spacing: 2) {
+            ForEach(visibleWorkspaceSections) { section in
+                Button {
+                    selectSection(section)
+                    showingMacSurfaceMenu = false
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: section.systemImage)
+                            .frame(width: 18)
+                        Text(section.rawValue)
+                        Spacer()
+                        if selectedPluginSurfaceId == nil && selectedSection == section {
+                            Image(systemName: "checkmark")
+                                .font(.caption.weight(.bold))
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            if !store.enabledPluginSurfaces.isEmpty {
+                Divider()
+                    .padding(.vertical, 4)
+            }
+
+            ForEach(store.enabledPluginSurfaces) { surface in
+                Button {
+                    selectPluginSurface(surface)
+                    showingMacSurfaceMenu = false
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: surface.systemImage)
+                            .frame(width: 18)
+                        Text(surface.title)
+                        Spacer()
+                        if selectedPluginSurfaceId == surface.id {
+                            Image(systemName: "checkmark")
+                                .font(.caption.weight(.bold))
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(8)
+        .frame(minWidth: 210)
     }
 
     private struct MacToolbarIconButtonStyle: ButtonStyle {
@@ -825,7 +909,11 @@ struct RootView: View {
                 PluginSurfaceView(surface: selectedPluginSurface)
             } else {
                 #if os(macOS)
-                ChatHomeView(showsHeader: false, onOpenModelSettings: openModelSettings)
+                ChatHomeView(
+                    showsHeader: false,
+                    showsSessionToolbar: false,
+                    onOpenModelSettings: openModelSettings
+                )
                 #else
                 ChatHomeView(onOpenModelSettings: openModelSettings)
                 #endif
@@ -834,13 +922,13 @@ struct RootView: View {
             #if os(iOS)
             FileSectionView(title: "Notes", root: "notes", showsBrowserOnIOS: false)
             #else
-            FileSectionView(title: "Notes", root: "notes")
+            FilePreviewView()
             #endif
         case .code:
             #if os(iOS)
             FileSectionView(title: "Code", root: "code", showsBrowserOnIOS: false)
             #else
-            FileSectionView(title: "Code", root: "code")
+            FilePreviewView()
             #endif
         }
     }

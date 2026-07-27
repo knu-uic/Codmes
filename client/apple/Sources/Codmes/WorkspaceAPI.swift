@@ -470,17 +470,38 @@ struct WorkspaceAPI {
         try await post("/api/conversation-folders", body: ["name": name])
     }
 
+    func updateConversationFolder(folderId: String, name: String) async throws -> ConversationFolder {
+        var components = try components("/api/conversation-folders/\(folderId)")
+        components.percentEncodedPath = "/api/conversation-folders/\(folderId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? folderId)"
+        return try await request(components, method: "PATCH", body: ["name": name])
+    }
+
     func deleteConversationFolder(folderId: String) async throws {
         var components = try components("/api/conversation-folders/\(folderId)")
         components.percentEncodedPath = "/api/conversation-folders/\(folderId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? folderId)"
         let _: EmptyResponse = try await request(components, method: "DELETE")
     }
 
-    func moveSessionToFolder(sessionId: String, folderId: String?) async throws {
+    func moveSession(
+        sessionId: String,
+        folderId: String?,
+        projectId: String?,
+        projectTitle: String?
+    ) async throws {
         var components = try components("/api/sessions/\(sessionId)/move-to-folder")
         components.percentEncodedPath = "/api/sessions/\(sessionId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionId)/move-to-folder"
-        let body: [String: String] = ["folderId": folderId ?? ""]
+        let body: [String: String] = [
+            "folderId": folderId ?? "",
+            "projectId": projectId ?? "",
+            "projectTitle": projectTitle ?? ""
+        ]
         let _: EmptyResponse = try await request(components, method: "POST", body: body)
+    }
+
+    func setHermesSessionPinned(sessionId: String, pinned: Bool) async throws {
+        var components = try components("/api/sessions/\(sessionId)/pin")
+        components.percentEncodedPath = "/api/sessions/\(sessionId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionId)/pin"
+        let _: EmptyResponse = try await request(components, method: "POST", body: ["pinned": pinned])
     }
 
     func surfaces() async throws -> [WorkspaceSurface] {
@@ -819,8 +840,20 @@ private func collectHermesSessions(from object: Any, into sessions: inout [Herme
         let projectTitle = projectTitleCandidates.compactMap { stringValue($0) }.first
         let folderId = stringValue(dict["folder_id"]) ?? stringValue(dict["folderId"])
         let folderTitle = stringValue(dict["folder_title"]) ?? stringValue(dict["folderTitle"])
+        let pinned = boolValue(dict["pinned"]) ?? false
         if messageCount > 0 || preview != nil || explicitTitle != nil {
-            sessions.append(HermesSessionSummary(id: id, title: title, updatedAt: updatedAt, folderId: folderId, folderTitle: folderTitle, projectId: projectId, projectTitle: projectTitle))
+            sessions.append(
+                HermesSessionSummary(
+                    id: id,
+                    title: title,
+                    updatedAt: updatedAt,
+                    folderId: folderId,
+                    folderTitle: folderTitle,
+                    projectId: projectId,
+                    projectTitle: projectTitle,
+                    pinned: pinned
+                )
+            )
         }
     }
     for key in ["sessions", "items", "data", "results"] {
