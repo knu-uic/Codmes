@@ -1,10 +1,12 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 struct RootView: View {
     @EnvironmentObject private var store: WorkspaceStore
     @State private var selection: WorkspaceSection? = .chat
     @State private var selectedPluginSurfaceId: String?
-    @State private var sidebarMenuExpanded = false
     @State private var isChatPanelVisible = false
     @State private var chatPanelDragX: CGFloat = 0
     @State private var isSidebarVisible = false
@@ -342,25 +344,58 @@ struct RootView: View {
     #if os(iOS)
     private var iOSRootView: some View {
         GeometryReader { proxy in
-            let sidebarWidth = min(max(proxy.size.width * 0.78, 260), 320)
-            ZStack(alignment: .leading) {
-                iOSMainContent
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .simultaneousGesture(edgeOpenSidebarGesture(width: sidebarWidth))
+            let usesPersistentSidebar =
+                UIDevice.current.userInterfaceIdiom == .pad
+                && proxy.size.width >= 700
+                && proxy.size.width > proxy.size.height
+            let sidebarWidth = usesPersistentSidebar
+                ? min(320, max(280, proxy.size.width * 0.28))
+                : min(max(proxy.size.width * 0.78, 260), 320)
 
-                if isSidebarVisible {
-                    Color.black.opacity(0.25)
-                        .ignoresSafeArea()
-                        .contentShape(Rectangle())
-                        .gesture(sidebarGesture(width: sidebarWidth))
-                        .onTapGesture {
-                            closeSidebar()
+            VStack(spacing: 0) {
+                iOSTopBar
+                Divider()
+
+                Group {
+                    if usesPersistentSidebar {
+                        HStack(spacing: 0) {
+                            if isSidebarVisible {
+                                iOSSidebar(width: sidebarWidth, persistent: true)
+                                    .transition(.move(edge: .leading))
+                            }
+
+                            iOSMainContent
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
-                }
+                    } else {
+                        ZStack(alignment: .leading) {
+                            iOSMainContent
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .simultaneousGesture(edgeOpenSidebarGesture(width: sidebarWidth))
 
-                iOSSidebar(width: sidebarWidth)
-                    .offset(x: sidebarOffset(width: sidebarWidth))
-                    .gesture(sidebarGesture(width: sidebarWidth))
+                            if isSidebarVisible {
+                                Color.black.opacity(0.25)
+                                    .ignoresSafeArea()
+                                    .contentShape(Rectangle())
+                                    .gesture(sidebarGesture(width: sidebarWidth))
+                                    .onTapGesture {
+                                        closeSidebar()
+                                    }
+                            }
+
+                            iOSSidebar(width: sidebarWidth, persistent: false)
+                                .offset(x: sidebarOffset(width: sidebarWidth))
+                                .gesture(sidebarGesture(width: sidebarWidth))
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .onAppear {
+                updateIOSSidebarPresentation(usesPersistentSidebar)
+            }
+            .onChange(of: usesPersistentSidebar) { _, isPersistent in
+                updateIOSSidebarPresentation(isPersistent)
             }
             .clipped()
         }
@@ -388,11 +423,13 @@ struct RootView: View {
     }
 
     private var iOSMainContent: some View {
-        VStack(spacing: 0) {
-            iOSTopBar
-            Divider()
+        Group {
             if activeSurfaceId == "chat" {
-                ChatHomeView(showsHeader: false, onOpenModelSettings: openModelSettings)
+                ChatHomeView(
+                    showsHeader: false,
+                    showsSessionToolbar: false,
+                    onOpenModelSettings: openModelSettings
+                )
             } else {
                 iOSSwipeChatContainer {
                     primaryDetailView
@@ -406,7 +443,8 @@ struct RootView: View {
         GeometryReader { proxy in
             let compact = proxy.size.width < 600
             let horizontalPadding: CGFloat = compact ? 8 : 16
-            let leadingLaneWidth: CGFloat = compact ? 112 : 150
+            let leadingLaneWidth: CGFloat = compact ? 132 : 180
+            let surfaceLabelWidth: CGFloat = compact ? 92 : 132
             let titleWidth = max(
                 64,
                 min(compact ? 160 : 360, proxy.size.width - 2 * (horizontalPadding + leadingLaneWidth))
@@ -416,7 +454,11 @@ struct RootView: View {
                 HStack(spacing: compact ? 4 : 8) {
                     HStack(spacing: compact ? 4 : 8) {
                         Button {
-                            openSidebar()
+                            if isSidebarVisible {
+                                closeSidebar()
+                            } else {
+                                openSidebar()
+                            }
                         } label: {
                             Image(systemName: "sidebar.left")
                                 .frame(width: 28, height: 28)
@@ -425,22 +467,62 @@ struct RootView: View {
                         .foregroundStyle(.secondary)
                         .contentShape(Rectangle())
 
-                        VStack(alignment: .leading, spacing: 0) {
-                            HStack(spacing: 5) {
-                                Text(activeSurfaceTitle)
-                                    .font(.headline.weight(.semibold))
-
-                                Circle()
-                                    .fill(store.isWorkspaceConnected ? .green : .orange)
-                                    .frame(width: 7, height: 7)
+                        Menu {
+                            ForEach(visibleWorkspaceSections) { section in
+                                Button {
+                                    selectSection(section)
+                                } label: {
+                                    Label(section.rawValue, systemImage: section.systemImage)
+                                    if selectedPluginSurfaceId == nil && selectedSection == section {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
                             }
 
-                            if let activePDFStatus {
-                                Text(activePDFStatus)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
+                            if !store.enabledPluginSurfaces.isEmpty {
+                                Divider()
                             }
+
+                            ForEach(store.enabledPluginSurfaces) { surface in
+                                Button {
+                                    selectPluginSurface(surface)
+                                } label: {
+                                    Label(surface.title, systemImage: surface.systemImage)
+                                    if selectedPluginSurfaceId == surface.id {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 0) {
+                                HStack(spacing: 5) {
+                                    Text(activeSurfaceTitle)
+                                        .font(.headline.weight(.semibold))
+                                        .lineLimit(1)
+                                        .layoutPriority(1)
+
+                                    Image(systemName: "chevron.down")
+                                        .font(.caption2.weight(.bold))
+                                        .foregroundStyle(.secondary)
+
+                                    Circle()
+                                        .fill(store.isWorkspaceConnected ? .green : .orange)
+                                        .frame(width: 7, height: 7)
+                                }
+
+                                if let activePDFStatus {
+                                    Text(activePDFStatus)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            .frame(width: surfaceLabelWidth, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .transaction { transaction in
+                            transaction.animation = nil
                         }
                     }
                     .lineLimit(1)
@@ -491,139 +573,52 @@ struct RootView: View {
         .background(.quaternary.opacity(0.14))
     }
 
-    private func iOSSidebar(width: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Codmes")
-                    .font(.title2.weight(.semibold))
-                Text(store.workspace?.rootName ?? "Codmes")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 18)
-            .padding(.top, 18)
-
-            VStack(spacing: 8) {
-                Button {
-                    withAnimation(.spring(response: 0.24, dampingFraction: 0.9)) {
-                        sidebarMenuExpanded.toggle()
+    private func iOSSidebar(width: CGFloat, persistent: Bool) -> some View {
+        Group {
+            if activeSurfaceId == "chat" {
+                ChatNavigationSidebar {
+                    if !persistent {
+                        closeSidebar()
                     }
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: activeSurfaceIcon)
-                            .frame(width: 20)
-                        Text(activeSurfaceTitle)
-                            .font(.headline.weight(.semibold))
-                        Spacer()
-                        Image(systemName: "chevron.down")
-                            .font(.caption.weight(.bold))
-                            .rotationEffect(.degrees(sidebarMenuExpanded ? 180 : 0))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 11)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(RoundedRectangle(cornerRadius: 10))
-                    .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
                 }
-                .buttonStyle(.plain)
-
-                if sidebarMenuExpanded {
-                    VStack(spacing: 2) {
-                        ForEach(visibleWorkspaceSections) { section in
-                            Button {
-                                selectSectionFromSidebar(section)
-                            } label: {
-                                HStack(spacing: 10) {
-                                    Image(systemName: section.systemImage)
-                                        .frame(width: 20)
-                                    Text(section.rawValue)
-                                    Spacer()
-                                }
-                                .font(.subheadline.weight(.medium))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 9)
-                                .foregroundStyle(selectedSection == section ? .primary : .secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(RoundedRectangle(cornerRadius: 8))
-                                .background(
-                                    selectedSection == section ? Color.secondary.opacity(0.12) : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: 8)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        ForEach(store.enabledPluginSurfaces) { surface in
-                            Button {
-                                selectPluginSurfaceFromSidebar(surface)
-                            } label: {
-                                HStack(spacing: 10) {
-                                    Image(systemName: surface.systemImage)
-                                        .frame(width: 20)
-                                    Text(surface.title)
-                                    Spacer()
-                                }
-                                .font(.subheadline.weight(.medium))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 9)
-                                .foregroundStyle(selectedPluginSurfaceId == surface.id ? .primary : .secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(RoundedRectangle(cornerRadius: 8))
-                                .background(
-                                    selectedPluginSurfaceId == surface.id ? Color.secondary.opacity(0.12) : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: 8)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(6)
-                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-                }
-            }
-            .padding(.horizontal, 10)
-
-            if selectedSection == .notes {
-                Divider()
-                    .padding(.vertical, 4)
+            } else if activeSurfaceId == "notes" {
                 FileBrowserPane(title: "Notes", root: "notes", showsHeader: false) {
-                    closeSidebar()
+                    if !persistent {
+                        closeSidebar()
+                    }
                 }
-                .frame(maxHeight: .infinity)
-            } else if selectedSection == .code {
-                Divider()
-                    .padding(.vertical, 4)
+            } else if activeSurfaceId == "code" {
                 FileBrowserPane(title: "Code", root: "code", showsHeader: false) {
-                    closeSidebar()
+                    if !persistent {
+                        closeSidebar()
+                    }
                 }
-                .frame(maxHeight: .infinity)
             } else {
-                Spacer()
+                ContentUnavailableView(
+                    "사이드바 없음",
+                    systemImage: activeSurfaceIcon,
+                    description: Text("\(activeSurfaceTitle)에는 사이드바 항목이 없습니다.")
+                )
             }
-
-            Button {
-                showingSettings = true
-                closeSidebar()
-            } label: {
-                Label("Settings", systemImage: "gearshape")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .foregroundStyle(.secondary)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(18)
         }
         .frame(width: width, alignment: .leading)
         .frame(maxHeight: .infinity)
-        .background(.regularMaterial)
+        .background(.background.opacity(0.96))
         .overlay(alignment: .trailing) {
             Rectangle()
                 .fill(.quaternary.opacity(0.55))
                 .frame(width: 1)
         }
-        .shadow(color: .black.opacity(0.20), radius: 18, x: 6, y: 0)
+    }
+
+    private func updateIOSSidebarPresentation(_ persistent: Bool) {
+        isSidebarVisible = persistent
+        sidebarDragX = 0
+
+        if persistent {
+            isChatPanelVisible = false
+            chatPanelDragX = 0
+        }
     }
 
     private func openSidebar() {
@@ -639,23 +634,6 @@ struct RootView: View {
         withAnimation(.spring(response: 0.24, dampingFraction: 0.92)) {
             isSidebarVisible = false
             sidebarDragX = 0
-        }
-    }
-
-    private func selectSectionFromSidebar(_ section: WorkspaceSection) {
-        selectSection(section)
-        withAnimation(.spring(response: 0.22, dampingFraction: 0.9)) {
-            sidebarMenuExpanded = false
-        }
-        if section == .chat {
-            closeSidebar()
-        }
-    }
-
-    private func selectPluginSurfaceFromSidebar(_ surface: WorkspaceSurface) {
-        selectPluginSurface(surface)
-        withAnimation(.spring(response: 0.22, dampingFraction: 0.9)) {
-            sidebarMenuExpanded = false
         }
     }
 
@@ -725,40 +703,28 @@ struct RootView: View {
                 if isChatPanelVisible {
                     Color.black.opacity(0.24)
                         .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .gesture(chatPanelGesture(panelWidth: panelWidth))
                         .onTapGesture {
-                            withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
-                                isChatPanelVisible = false
-                                chatPanelDragX = 0
-                            }
+                            closeChatPanel()
                         }
                 }
 
-                HStack(spacing: 0) {
-                    ZStack {
-                        Color.clear
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(.secondary.opacity(0.55))
-                            .frame(width: 3, height: 48)
-                    }
-                    .frame(width: 20)
+                ChatHomeView(compact: true, showsHeader: false, onOpenModelSettings: openModelSettings)
+                    .frame(width: panelWidth)
                     .frame(maxHeight: .infinity)
-                    .contentShape(Rectangle())
-                    .highPriorityGesture(chatPanelGesture(panelWidth: panelWidth))
+                    .background(.regularMaterial)
+                    .overlay(alignment: .leading) {
+                        Rectangle()
+                            .fill(.quaternary.opacity(0.55))
+                            .frame(width: 1)
+                    }
+                    .offset(x: chatPanelOffset(panelWidth: panelWidth))
+                    .simultaneousGesture(chatPanelGesture(panelWidth: panelWidth))
 
-                    ChatHomeView(compact: true, showsHeader: false, onOpenModelSettings: openModelSettings)
-                        .frame(width: panelWidth)
-                        .background(.regularMaterial)
-                        .clipShape(RoundedRectangle(cornerRadius: 18))
-                        .shadow(color: .black.opacity(0.22), radius: 18, x: -6, y: 0)
-                }
-                .frame(width: panelWidth + 15)
-                .frame(maxHeight: .infinity)
-                .offset(x: chatPanelOffset(panelWidth: panelWidth))
-                .simultaneousGesture(chatPanelGesture(panelWidth: panelWidth))
-
-                if !isChatPanelVisible && !isSidebarVisible {
+                if !isChatPanelVisible {
                     Color.clear
-                        .frame(width: 28)
+                        .frame(width: 26)
                         .contentShape(Rectangle())
                         .gesture(chatPanelGesture(panelWidth: panelWidth))
                 }
@@ -768,41 +734,27 @@ struct RootView: View {
     }
 
     private func chatPanelOffset(panelWidth: CGFloat) -> CGFloat {
-        let closedOffset = panelWidth + 15
         if isChatPanelVisible {
             return max(0, chatPanelDragX)
         }
-        return max(0, closedOffset + chatPanelDragX)
+        return max(0, panelWidth + chatPanelDragX)
     }
 
     private func chatPanelGesture(panelWidth: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 12)
             .onChanged { value in
-                guard !isSidebarVisible else { return }
-                guard abs(value.translation.width) > abs(value.translation.height) * 1.35 else {
-                    chatPanelDragX = 0
-                    return
-                }
                 if isChatPanelVisible {
-                    chatPanelDragX = min(panelWidth + 15, max(0, value.translation.width))
+                    chatPanelDragX = max(0, value.translation.width)
                 } else {
-                    chatPanelDragX = max(-(panelWidth + 15), min(0, value.translation.width))
+                    chatPanelDragX = min(0, value.translation.width)
                 }
             }
             .onEnded { value in
-                guard !isSidebarVisible else {
-                    chatPanelDragX = 0
-                    return
-                }
-                guard abs(value.translation.width) > abs(value.translation.height) * 1.35 else {
-                    chatPanelDragX = 0
-                    return
-                }
                 let predicted = value.predictedEndTranslation.width
                 let shouldOpen = isChatPanelVisible
                     ? value.translation.width < panelWidth * 0.28 && predicted < panelWidth * 0.45
-                    : value.translation.width < -44 || predicted < -80
-                withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                    : value.translation.width < -34 || predicted < -72
+                withAnimation(.spring(response: 0.26, dampingFraction: 0.9)) {
                     isChatPanelVisible = shouldOpen
                     if shouldOpen {
                         isSidebarVisible = false
@@ -811,6 +763,13 @@ struct RootView: View {
                     chatPanelDragX = 0
                 }
             }
+    }
+
+    private func closeChatPanel() {
+        withAnimation(.spring(response: 0.24, dampingFraction: 0.92)) {
+            isChatPanelVisible = false
+            chatPanelDragX = 0
+        }
     }
     #endif
 

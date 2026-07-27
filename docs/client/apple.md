@@ -24,12 +24,35 @@ client/apple/Sources/Codmes/
 - `WorkspaceAPI`: HTTP 요청
 - `LiveChatClient`: WebSocket stream
 
+## 반응형 navigation
+
+`RootView`의 iOS/iPadOS 상단 bar는 surface menu와 연결 상태 LED를 항상
+유지한다. iPad 가로 700pt 이상에서는 왼쪽 sidebar와 본문을 `HStack`으로
+배치하고, iPhone·iPad 세로·좁은 Split View에서는 overlay sidebar를 사용한다.
+sidebar는 상단 bar 아래에서만 열리므로 현재 surface와 연결 상태를 가리지 않는다.
+
+Chat에서는 왼쪽 sidebar가 project와 session을 표시하고, Notes와 Code에서는 같은
+자리에 `FileBrowserPane`을 표시한다. overlay 상태에서는 항목을 열면 sidebar를
+닫고 persistent 상태에서는 유지한다. Notes와 Code의 오른쪽 Chat panel은 왼쪽
+sidebar gesture를 좌우 반전한 drag/offset/spring 규칙을 사용한다.
+
+surface menu label은 compact에서 92pt, regular에서 132pt의 안정된 외곽 폭을
+사용한다. 내부 이름·화살표·LED는 leading 정렬하므로 짧은 이름에도 불필요한
+간격이 생기지 않는다. 긴 plugin 이름은 상단에서 말줄임표로 축약하고 menu
+목록에서는 전체 이름을 보여준다.
+
 ## 파일 탐색
 
 Notes와 Code는 한 위치로 들어가는 탐색 방식이 아니라 재귀 트리를 사용한다.
 여러 폴더를 동시에 펼칠 수 있고 펼침 상태를 앱 저장소에 보존한다. 파일은 길게
 눌러 선택하거나 여러 항목을 선택할 수 있으며, 폴더 행에 drag and drop하여
 이동한다. 폴더 바깥으로 이동할 때는 상위/root drop target을 사용한다.
+
+iOS/iPadOS drag and drop에 사용하는 custom type은 `iOS-Info.plist`에서 exported
+UTI로 선언한다.
+
+- `com.codmes.workspace-item`: Notes/Code file tree 항목
+- `com.codmes.chat-sessions`: 단일 또는 다중 선택 Chat session
 
 ## PDF 읽기
 

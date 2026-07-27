@@ -9,9 +9,73 @@ iPhone·iPad 기능은 UIKit으로 따로 구현합니다. Notes와 PDF의 annot
 ## 전체 구조
 
 - 첫 화면은 실제 Chat, Notes, Code 작업 화면이다.
-- 상단 bar에는 현재 surface와 열린 파일 제목, 검색과 설정 command를 둔다.
+- 상단 bar에는 surface 선택기, 연결 상태, 열린 파일 제목, 검색과 설정 command를 둔다.
 - Notes와 Code는 같은 위치에서 여러 folder를 펼칠 수 있는 tree를 사용한다.
 - 선택된 file과 drop 가능한 folder는 색과 border로 즉시 구분한다.
+
+## 상단 surface 선택기
+
+- Chat, Notes, Code와 plugin surface 전환은 상단 왼쪽의
+  `surface 이름 + 아래 화살표 + 연결 상태 LED` menu에서 수행한다.
+- 별도의 surface 전환 bar를 작업 화면 안에 중복해서 만들지 않는다.
+- 연결 상태 LED는 surface 이름 옆에 항상 남기고, sidebar가 열려도 상단 bar를
+  가리지 않는다.
+- sidebar toggle은 surface 선택기 왼쪽, 검색과 설정은 상단 오른쪽에 둔다.
+- Notes와 Code에서 연 file 제목은 상단 중앙에 표시한다.
+- surface 이름이 바뀔 때 SwiftUI가 `Menu` label의 폭을 다시 측정하며 한 frame
+  잘리는 현상이 생기지 않도록 label 외곽 폭을 고정한다. 이름, 화살표, LED로
+  이루어진 내부 `HStack`은 leading 정렬을 사용해 요소 사이 간격을 유지한다.
+- 매우 긴 plugin surface 이름은 상단의 고정 영역 안에서 tail truncation으로
+  줄인다. 화살표와 LED는 유지하고, 선택 menu에서는 plugin의 전체 이름을
+  표시한다. 긴 이름 때문에 검색·설정 command나 중앙 제목을 밀어내면 안 된다.
+
+## 왼쪽 sidebar
+
+- macOS와 iPad 가로 화면의 sidebar는 본문 위를 덮지 않고 본문을 밀어내는
+  persistent layout을 기본으로 한다. 상단 toggle로 접고 다시 펼칠 수 있다.
+- iPad persistent layout은 iPad idiom이면서 가로 방향이고 사용 가능한 폭이
+  700pt 이상일 때 사용한다. iPhone, iPad 세로, 좁은 Split View에서는 본문 위에
+  나타나는 overlay layout을 사용한다.
+- overlay sidebar는 바깥 영역 tap 또는 왼쪽 방향 drag로 닫을 수 있다. 같은
+  상단 toggle은 닫힌 상태에서는 열기, 열린 상태에서는 닫기로 동작한다.
+- sidebar는 항상 상단 bar 아래에서 시작한다. 따라서 sidebar가 열린 동안에도
+  surface 이름, 아래 화살표, 연결 LED, 검색과 설정을 확인할 수 있어야 한다.
+- Chat sidebar는 project와 그 안의 session, project에 속하지 않은 최근 session을
+  표시한다. Notes와 Code sidebar는 각각의 재귀 file tree를 표시한다.
+- Chat, Notes, Code sidebar container는 모두
+  `.background.opacity(0.96)`의 같은 배경을 사용한다. surface에 따라 다른
+  material이나 tint를 적용해 색이 달라 보이게 하지 않는다.
+- overlay layout에서 session이나 file을 열면 sidebar를 닫는다. persistent
+  layout에서는 선택 후에도 sidebar를 유지한다.
+- plugin surface에 전용 sidebar가 없으면 빈 상태 안내를 표시한다.
+
+## Chat sidebar interaction
+
+- project header에는 project 관리 menu와 새 chat command를 둔다.
+- project menu는 프로젝트 관리, 이름 변경, 제거 command를 제공한다.
+- 최근 header에는 session history와 새 session command를 둔다. 다중 선택
+  중에는 전체 선택/해제와 삭제 command로 교체한다.
+- macOS session row의 `...`는 pointer hover 중에만 표시한다. iOS/iPadOS에서는
+  `...`를 상시 표시하지 않고 long press context menu로 고정, 선택, 이름 변경,
+  삭제 command를 연다.
+- session row의 전체 영역을 hit target으로 사용한다. 제목 text만 hover 또는
+  tap target이 되면 안 된다.
+- session은 project 사이와 최근 영역으로 drag and drop할 수 있다. 다중 선택
+  중 선택된 session 하나를 drag하면 선택된 전체 session을 함께 이동한다.
+- project 아래와 최근 영역에 같은 session을 중복 표시하지 않는다.
+
+## 오른쪽 Chat panel
+
+- Notes와 Code의 오른쪽 Chat panel은 오른쪽 edge에서 drag하여 열고, panel이나
+  dimmed background를 오른쪽으로 drag하거나 바깥 영역을 tap하여 닫는다.
+- 왼쪽 sidebar와 같은 spring 응답과 drag threshold를 반대 방향으로 적용한다.
+  별도의 handle 폭이나 추가 offset을 두지 말고 panel 전체가 pointer/touch 이동을
+  연속적으로 따라야 한다.
+- 대각선 drag 중 translation을 갑자기 `0`으로 초기화하지 않는다. 이 처리는
+  panel이 손가락에서 끊겨 보이는 원인이 된다.
+- 오른쪽 Chat panel이 열리면 좁은 작업 공간에서 충돌하지 않도록 왼쪽 sidebar를
+  접는다. 왼쪽 sidebar를 열 때도 오른쪽 panel을 닫는다.
+- Chat panel 내부에는 `Codmes Chat` 같은 중복 header를 추가하지 않는다.
 
 ## 파일 interaction
 
@@ -20,6 +84,9 @@ iPhone·iPad 기능은 UIKit으로 따로 구현합니다. Notes와 PDF의 annot
 - `...` menu는 long press가 불편할 때 같은 관리 command를 제공한다.
 - 다중 선택은 copy/delete/drag 같은 묶음 동작에 사용한다.
 - folder 밖으로 이동할 수 있도록 root도 명확한 drop target을 제공한다.
+- iOS/iPadOS custom drag payload는 app Info.plist에 exported UTI로 선언한다.
+  file tree는 `com.codmes.workspace-item`, chat session은
+  `com.codmes.chat-sessions`를 사용한다.
 
 ## 검색
 

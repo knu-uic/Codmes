@@ -55,6 +55,26 @@
 				<string>application/vnd.codmes.pdf+zip</string>
 			</dict>
 		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Codmes Workspace Item Drag Payload</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.codmes.workspace-item</string>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Codmes Chat Session Drag Payload</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.codmes.chat-sessions</string>
+		</dict>
 	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>

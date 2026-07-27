@@ -473,9 +473,9 @@ struct ChatHomeView: View {
     }
 }
 
-#if os(macOS)
 struct ChatNavigationSidebar: View {
     @EnvironmentObject private var store: WorkspaceStore
+    var onOpenSession: (() -> Void)? = nil
     @State private var showingSessionManager = false
     @State private var showingCreateGroupFolder = false
     @State private var pendingDeleteGroupFolder: ConversationFolder?
@@ -842,8 +842,12 @@ struct ChatNavigationSidebar: View {
                 Image(systemName: "ellipsis")
                     .frame(width: 26, height: 28)
             }
+            #if os(macOS)
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
+            #else
+            .buttonStyle(.plain)
+            #endif
             .foregroundStyle(.secondary)
             .help("Project actions")
 
@@ -911,7 +915,10 @@ struct ChatNavigationSidebar: View {
                 } else {
                     store.selectedHermesProjectId = "__all__"
                 }
-                Task { await store.resumeHermesSession(session) }
+                Task {
+                    await store.resumeHermesSession(session)
+                    onOpenSession?()
+                }
             }
             .accessibilityAddTraits(.isButton)
             .onDrag {
@@ -920,6 +927,7 @@ struct ChatNavigationSidebar: View {
                 dragPreview(for: session)
             }
 
+            #if os(macOS)
             if isSelectingSessions {
                 Button {
                     toggleSessionSelection(session)
@@ -948,6 +956,23 @@ struct ChatNavigationSidebar: View {
                 .opacity(hoveredSessionId == session.id ? 1 : 0)
                 .help("세션 작업")
             }
+            #else
+            if isSelectingSessions {
+                Button {
+                    toggleSessionSelection(session)
+                } label: {
+                    Image(
+                        systemName: selectedSessionIds.contains(session.id)
+                            ? "checkmark.circle.fill"
+                            : "circle"
+                    )
+                    .frame(width: 25, height: 28)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(selectedSessionIds.contains(session.id) ? .primary : .tertiary)
+                .help(selectedSessionIds.contains(session.id) ? "선택 해제" : "선택")
+            }
+            #endif
         }
         .padding(.trailing, 7)
         .frame(maxWidth: .infinity)
@@ -964,6 +989,7 @@ struct ChatNavigationSidebar: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .help(session.title)
+        #if os(macOS)
         .onHover { isHovering in
             if isHovering {
                 hoveredSessionId = session.id
@@ -971,6 +997,7 @@ struct ChatNavigationSidebar: View {
                 hoveredSessionId = nil
             }
         }
+        #endif
         .contextMenu {
             sessionActionsMenu(for: session)
         }
@@ -1127,7 +1154,6 @@ private struct SessionSidebarDragPayload: Codable, Sendable {
 private extension UTType {
     static let codmesChatSessions = UTType(exportedAs: "com.codmes.chat-sessions")
 }
-#endif
 
 struct SessionManagerView: View {
     @EnvironmentObject private var store: WorkspaceStore
