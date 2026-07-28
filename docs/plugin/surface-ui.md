@@ -1,12 +1,14 @@
 # Declarative Plugin Surface Contract
 
 Codmes plugin Surface는 외부 웹사이트를 WebView/iframe으로 표시하지 않는다.
-plugin backend는 화면 데이터와 제한된 action을 JSON으로 선언하고, Codmes
-클라이언트가 macOS/iOS의 네이티브 UI로 렌더링한다.
+plugin package가 화면 구조와 제한된 action, data binding을 선언하고 plugin
+backend는 domain data만 JSON으로 제공한다. Codmes 서버가 두 입력을 결합하며
+클라이언트는 macOS/iOS의 네이티브 UI로 렌더링한다.
 
 ```text
-plugin backend → Surface document(JSON) → Codmes server validation
-               → SwiftUI renderer(macOS/iOS)
+plugin package surface.json ─┐
+                             ├→ Codmes binding compiler/validation
+plugin backend domain JSON ──┘  → Surface document → SwiftUI renderer
 ```
 
 따라서 standalone KNU 웹과 Codmes KNU Surface는 같은 backend를 사용할 수
@@ -22,22 +24,65 @@ plugin backend → Surface document(JSON) → Codmes server validation
     "type": "declarative",
     "title": "KNU",
     "upstreamUrl": "http://127.0.0.1:8000",
-    "entryPath": "/api/codmes/surface",
-    "navigation": [
-      { "id": "notices", "title": "공지", "icon": "bell", "path": "/api/codmes/surface/notices" },
-      { "id": "lms", "title": "LMS", "icon": "checklist", "path": "/api/codmes/surface/lms", "requiresAuth": true }
-    ]
+    "entryPath": "/api/notices",
+    "ui": "surface.json"
   }
 }
 ```
 
-Codmes 서버가 `entryPath`를 호출한다. Workspace bearer와 MCP credential은
-plugin Surface endpoint로 전달하지 않는다. 응답은 최대 2 MiB, collection
-item은 최대 500개로 제한한다.
+설치 시 `ui` 경로는 plugin package 밖으로 벗어날 수 없다. Codmes는 파일을
+검증하여 설치 manifest에 포함하고 각 route의 `dataSources`를 upstream에
+요청한다. 인증 route에는 해당 plugin 사용자 credential만 전달하며 Workspace
+bearer와 MCP service credential은 전달하지 않는다. data 응답은 source마다 최대
+2 MiB, collection item은 최대 500개로 제한한다.
+
+## Plugin-owned route와 binding
+
+`surface.json`은 native navigation과 data source, 최종 document mapping을 함께
+정의한다. backend 응답 필드가 바뀌면 plugin 개발자가 이 파일의 path mapping을
+업데이트한다.
+
+```json
+{
+  "schemaVersion": 1,
+  "routes": [
+    {
+      "id": "notices",
+      "title": "공지",
+      "icon": "bell",
+      "requiresAuth": false,
+      "dataSources": [
+        { "id": "notices", "path": "/api/notices?limit=100" }
+      ],
+      "document": {
+        "schemaVersion": 1,
+        "presentation": "collection",
+        "title": "공지사항",
+        "subtitle": { "literal": "최신 공지를 확인하세요." },
+        "collection": {
+          "source": "notices.notices",
+          "item": {
+            "id": "url",
+            "title": "title",
+            "body": { "coalesce": ["summary", "content"] },
+            "action": { "type": "openURL", "url": "url" }
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+binding value는 현재 문자열 path, `literal`, `coalesce`, `join`, `default`,
+boolean의 `trueValue`/`falseValue`, `suffix`를 지원한다. `$`로 시작한 path는
+현재 item이 아니라 모든 data source의 root를 참조한다. collection은 source
+mapping과 static item을, dashboard는 `keyValue`, `table` 및 같은 형태의 group
+mapping을 지원한다.
 
 ## Native navigation과 로그인
 
-- macOS와 가로 iPad는 Notes처럼 왼쪽에 `navigation`을 상시 표시한다.
+- macOS와 가로 iPad는 route 목록을 Notes처럼 왼쪽에 상시 표시한다.
 - iPhone과 좁은 iPad는 sidebar에서 항목을 선택한 뒤 native content hierarchy로
   들어간다.
 - plugin sidebar 상단은 Surface 이름, 로그인 LED/계정명, 작은
@@ -69,9 +114,11 @@ item은 최대 500개로 제한한다.
   저장하고 `requiresAuth` route 요청에 Bearer로 붙인다. 토큰 값은 Apple
   client나 Surface document에 노출하지 않는다.
 
-## Surface document v1
+## 컴파일된 Surface document v1
 
-첫 presentation은 검색과 filter가 가능한 `collection`이다.
+이 문서는 plugin backend가 직접 반환하는 계약이 아니라 Codmes가
+`surface.json`과 domain data를 결합한 뒤 Apple 앱에 보내는 내부 렌더링
+계약이다. 첫 presentation은 검색과 filter가 가능한 `collection`이다.
 
 ```json
 {
@@ -118,7 +165,7 @@ item은 최대 500개로 제한한다.
 - 검색과 filter는 client에서 즉시 수행한다.
 - `__all__` filter option은 해당 filter를 적용하지 않는 예약 값이다.
 - v1 action은 `http`/`https` `openURL`만 허용한다.
-- plugin이 보내는 system image 이름은 client가 지원하지 않으면 기본 icon으로
+- plugin package가 선언한 system image 이름은 client가 지원하지 않으면 기본 icon으로
   대체할 수 있다.
 - loading, empty, error, pull-to-refresh 표현은 Codmes가 소유한다.
 
@@ -161,7 +208,8 @@ Codmes가 SwiftUI로 섹션과 표를 직접 렌더링하며 plugin HTML이나 J
 - 허용 section kind는 v1에서 `keyValue`, `table`이다.
 - `keyValue.fields`는 최대 100개, `table.columns`는 최대 50개,
   `table.rows`는 최대 1,000개다.
-- plugin은 문자열 데이터만 선언하고 글꼴·색상·플랫폼 표현은 Codmes가 소유한다.
+- plugin binding은 문자열 데이터의 의미와 배치를 선언하고 글꼴·색상·플랫폼
+  표현은 Codmes가 소유한다.
 
 ## 확장 원칙
 

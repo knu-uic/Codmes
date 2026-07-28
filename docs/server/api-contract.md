@@ -192,8 +192,11 @@ Manifest v1 plugin routes:
 - `GET /api/plugins` lists installed plugin manifests.
 - `POST /api/plugins/install` with `{path}` installs a server-local package.
 - `DELETE /api/plugins/:pluginId` removes its Surface and MCP registration.
-- `GET /api/plugins/:pluginId/surface-document?route=<navigationId>` fetches
-  and validates one declarative route for native client rendering.
+- `GET /api/plugins/:pluginId/surface-document?route=<navigationId>` loads the
+  installed plugin-owned route binding, fetches its domain JSON data sources,
+  compiles them into one declarative document, and validates it for native
+  client rendering. Legacy full-document routes remain readable during
+  migration.
 - `GET /api/plugins/:pluginId/auth/status` returns login state without a token.
 - `POST /api/plugins/:pluginId/auth/login` accepts `{username,password}`,
   maps those values to the manifest's `usernameField` and `passwordField`,
@@ -204,8 +207,8 @@ Manifest v1 plugin routes:
 - `DELETE /api/plugins/:pluginId/auth/logout` removes that stored token.
 
 CLI-first installation uses
-`codmes plugin install <path> --root <workspace>`. Installation writes the
-validated manifest under `.codmes/plugins/<pluginId>/plugin.json` and updates
-the MCP config as one rollback-safe operation. Removal reverses both. The
-current format installs declarative configuration only; it does not download or
-execute native code.
+`codmes plugin install <path> --root <workspace>`. Installation resolves and
+validates a package-local `surface.ui` file, embeds that declarative definition
+in `.codmes/plugins/<pluginId>/plugin.json`, and updates the MCP config as one
+rollback-safe operation. Removal reverses both. The current format installs
+declarative configuration only; it does not download or execute native code.

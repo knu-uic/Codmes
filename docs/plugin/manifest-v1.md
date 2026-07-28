@@ -10,7 +10,7 @@ Codmes의 선택형 plugin은 서버 Workspace에 한 번 설치하며, 연결�
 {
   "schemaVersion": 1,
   "id": "kr.ac.kongju.knu",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "name": "KNU",
   "platforms": ["macos", "ios", "ipados"],
   "permissions": ["network:127.0.0.1"],
@@ -19,13 +19,8 @@ Codmes의 선택형 plugin은 서버 Workspace에 한 번 설치하며, 연결�
     "type": "declarative",
     "title": "KNU",
     "upstreamUrl": "http://127.0.0.1:8000",
-    "entryPath": "/api/codmes/surface",
-    "navigation": [
-      { "id": "notices", "title": "공지", "icon": "bell", "path": "/api/codmes/surface/notices" },
-      { "id": "lms", "title": "LMS", "icon": "checklist", "path": "/api/codmes/surface/lms", "requiresAuth": true },
-      { "id": "portal", "title": "포털", "icon": "person.text.rectangle", "path": "/api/codmes/surface/portal", "requiresAuth": true },
-      { "id": "settings", "title": "설정", "icon": "gearshape", "path": "/api/codmes/surface/settings", "requiresAuth": true }
-    ],
+    "entryPath": "/api/notices",
+    "ui": "surface.json",
     "auth": {
       "type": "password",
       "credentialId": "knu-user-session",
@@ -54,10 +49,12 @@ Codmes의 선택형 plugin은 서버 Workspace에 한 번 설치하며, 연결�
   자동 부여하지 않는다.
 - 인증 없는 MCP는 loopback에서만 허용한다. KNU는 로컬 개발에서도
   `credentialId: "knu"`를 사용해 FastAPI MCP로 Bearer를 직접 보낸다.
-- 설치는 Manifest만 복사한다. 임의 native binary나 JavaScript를 Codmes
-  process 안에서 실행하지 않는다.
-- `navigation`은 native sidebar/계층형 내비게이션 항목이다. `requiresAuth`인
-  route는 사용자 토큰이 없으면 Codmes가 잠금 화면을 반환한다.
+- 설치는 Manifest와 `surface.ui`가 가리키는 declarative JSON을 검증해 하나의
+  설치 manifest로 저장한다. 임의 native binary나 JavaScript를 Codmes process
+  안에서 실행하지 않는다.
+- `surface.ui`는 package 내부 JSON 파일 또는 같은 구조의 object다. 여기에 선언한
+  route가 native sidebar/계층형 내비게이션 항목이 된다. `requiresAuth`인 route는
+  사용자 토큰이 없으면 Codmes가 잠금 화면을 반환한다.
 - `surface.auth`는 로그인 endpoint 계약만 선언한다. 비밀번호는 로그인 요청에만
   사용하고 저장하지 않으며, 반환된 사용자 JWT만 Codmes 서버 credential store에
   저장한다.
@@ -84,9 +81,11 @@ printf '%s' "$MCP_AUTH_TOKEN" \
 
 ## Declarative Surface 보안
 
-Apple 앱은 HTML/JavaScript를 실행하지 않는다. 인증된 Codmes API를 통해 Surface
-document를 받고 SwiftUI renderer가 허용된 component와 action만 표시한다.
-Workspace bearer와 MCP credential은 plugin Surface endpoint로 전달하지 않는다.
+Apple 앱은 HTML/JavaScript를 실행하지 않는다. Codmes 서버는 설치된 UI binding에
+plugin backend의 domain JSON을 대입해 Surface document를 만든다. Apple 앱은
+인증된 Codmes API를 통해 이 문서를 받고 SwiftUI renderer로 허용된 component와
+action만 표시한다. Workspace bearer와 MCP credential은 plugin data endpoint로
+전달하지 않는다.
 스키마와 제한은 [Declarative Plugin Surface Contract](./surface-ui.md)를 따른다.
 
 ## KNU PoC 범위

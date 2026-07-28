@@ -3049,8 +3049,9 @@ async function assertPathAvailable(absolutePath) {
 
 async function fetchPluginSurfaceDocument(pluginId, routeId) {
   const { resolvePluginSurfaceDocumentTarget } = await import("./lib/runtime/plugin-registry.mjs");
+  const { renderPluginSurfaceDocument } = await import("./lib/runtime/plugin-surface-renderer.mjs");
   const { getPluginCredential } = await import("./lib/runtime/config-store.mjs");
-  const { manifest, navigation, url } = await resolvePluginSurfaceDocumentTarget(
+  const { manifest, navigation, uiRoute, url } = await resolvePluginSurfaceDocumentTarget(
     WORKSPACE_ROOT,
     pluginId,
     routeId
@@ -3066,7 +3067,7 @@ async function fetchPluginSurfaceDocument(pluginId, routeId) {
       schemaVersion: 1,
       presentation: "collection",
       title: navigation.title,
-      subtitle: "사이드바 상단의 로그인 버튼을 눌러 KNU 계정을 연결하세요.",
+      subtitle: "사이드바 상단의 로그인 버튼을 눌러 플러그인 계정을 연결하세요.",
       filters: [],
       items: [],
       emptyState: {
@@ -3075,6 +3076,21 @@ async function fetchPluginSurfaceDocument(pluginId, routeId) {
       }
     };
   }
+  if (uiRoute) {
+    const entries = await Promise.all(uiRoute.dataSources.map(async (source) => {
+      const sourceUrl = new URL(source.path, manifest.surface.upstreamUrl);
+      return [source.id, await fetchPluginSurfaceJson(sourceUrl, credential)];
+    }));
+    const document = renderPluginSurfaceDocument(uiRoute, Object.fromEntries(entries));
+    validatePluginSurfaceDocument(document);
+    return document;
+  }
+  const document = await fetchPluginSurfaceJson(url, credential);
+  validatePluginSurfaceDocument(document);
+  return document;
+}
+
+async function fetchPluginSurfaceJson(url, credential) {
   let response;
   try {
     response = await fetch(url, {
@@ -3086,25 +3102,24 @@ async function fetchPluginSurfaceDocument(pluginId, routeId) {
       signal: AbortSignal.timeout(15_000)
     });
   } catch (error) {
-    throw Object.assign(new Error(`Plugin surface is unavailable: ${error.message}`), { status: 502 });
+    throw Object.assign(new Error(`Plugin data source is unavailable: ${error.message}`), { status: 502 });
   }
   if (!response.ok) {
     throw Object.assign(
-      new Error(`Plugin surface returned ${response.status}.`),
+      new Error(`Plugin data source returned ${response.status}.`),
       { status: 502 }
     );
   }
   const text = await response.text();
   if (Buffer.byteLength(text, "utf8") > 2 * 1024 * 1024) {
-    throw Object.assign(new Error("Plugin surface document is too large."), { status: 502 });
+    throw Object.assign(new Error("Plugin data source response is too large."), { status: 502 });
   }
   let document;
   try {
     document = JSON.parse(text);
   } catch {
-    throw Object.assign(new Error("Plugin surface returned invalid JSON."), { status: 502 });
+    throw Object.assign(new Error("Plugin data source returned invalid JSON."), { status: 502 });
   }
-  validatePluginSurfaceDocument(document);
   return document;
 }
 

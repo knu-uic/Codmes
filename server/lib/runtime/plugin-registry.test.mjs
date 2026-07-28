@@ -103,3 +103,45 @@ test("plugin manifest rejects insecure remote services and cross-surface MCP acc
     /own surface/
   );
 });
+
+test("plugin installation resolves a package-owned Surface UI file", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-plugin-ui-root-"));
+  const source = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-plugin-ui-source-"));
+  const ui = {
+    schemaVersion: 1,
+    routes: [{
+      id: "notices",
+      title: "Notices",
+      icon: "bell",
+      dataSources: [{ id: "notices", path: "/api/notices?limit=100" }],
+      document: {
+        schemaVersion: 1,
+        presentation: "collection",
+        title: "Notices",
+        collection: {
+          source: "notices.notices",
+          item: { id: "url", title: "title" }
+        }
+      }
+    }]
+  };
+  await fs.writeFile(path.join(source, "surface.json"), JSON.stringify(ui), "utf8");
+  await fs.writeFile(path.join(source, "plugin.json"), JSON.stringify({
+    ...manifest,
+    surface: {
+      ...manifest.surface,
+      navigation: undefined,
+      ui: "surface.json"
+    }
+  }), "utf8");
+
+  const installed = await installPlugin(root, source);
+
+  assert.equal(installed.plugin.surface.ui.schemaVersion, 1);
+  assert.deepEqual(installed.plugin.surface.navigation.map((item) => item.id), ["notices"]);
+  assert.equal(installed.plugin.surface.ui.routes[0].dataSources[0].path, "/api/notices?limit=100");
+  assert.deepEqual(
+    (await getInstalledPlugin(root, manifest.id)).surface.ui,
+    installed.plugin.surface.ui
+  );
+});

@@ -73,20 +73,23 @@ registers a declarative Surface and its Streamable HTTP MCP entry. The Apple app
 contacts a plugin service directly:
 
 ```text
-Apple SwiftUI renderer <- Codmes schema proxy <- plugin Surface JSON endpoint
+Apple SwiftUI renderer <- Codmes binding compiler <- plugin package UI JSON
+                                     ^              + plugin domain data API
 AI runtime             -> Codmes MCP client    -> plugin MCP service
 ```
 
 The client never executes plugin HTML, JavaScript, or native binaries. Codmes
-validates the declarative document and renders allowlisted components/actions.
-The schema proxy does not forward the Workspace bearer or MCP credential.
+validates the plugin-owned binding and compiled document, then renders
+allowlisted components/actions. The data client does not forward the Workspace
+bearer or MCP credential.
 HTTPS is required for non-loopback services; plain HTTP and credential-free MCP
 are allowed only on loopback for a locally deployed plugin gateway. Tool calls
 remain subject to the normal Codmes approval policy.
 
 KNU is the first proof of concept. Its development package points directly at
-local FastAPI, exposes public notices as a native collection, and exposes its
-notice evidence MCP only on the `knu` Surface. Codmes sends the server-side
+local FastAPI, maps public notice data to a native collection through the
+package's `surface.json`, and exposes its notice evidence MCP only on the `knu`
+Surface. Codmes sends the server-side
 `knu` credential as a Bearer token; Docker/Caddy is an optional deployment
 path. KNU account/portal/LMS authentication remains a KNU-service concern, not
 a Codmes account feature.

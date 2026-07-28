@@ -27,6 +27,15 @@ export async function readPluginManifestSource(sourcePath) {
   const stat = await fs.stat(absolute);
   const manifestPath = stat.isDirectory() ? path.join(absolute, "plugin.json") : absolute;
   const parsed = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  if (typeof parsed?.surface?.ui === "string") {
+    const packageDirectory = path.dirname(manifestPath);
+    const uiPath = path.resolve(packageDirectory, parsed.surface.ui);
+    const relative = path.relative(packageDirectory, uiPath);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error("Plugin surface UI file must stay inside the plugin package.");
+    }
+    parsed.surface.ui = JSON.parse(await fs.readFile(uiPath, "utf8"));
+  }
   return validatePluginManifest(parsed);
 }
 
@@ -83,9 +92,18 @@ function normalizeDeclarativeSurface(value, pluginId, pluginName) {
   }
   const upstreamUrl = normalizeServiceUrl(value.upstreamUrl, "Surface upstreamUrl");
   const entryPath = normalizeEntryPath(value.entryPath || "/api/codmes/surface");
-  const navigation = Array.isArray(value.navigation)
-    ? value.navigation.map((item) => normalizeSurfaceNavigationItem(item))
-    : [];
+  const ui = value.ui == null ? null : normalizeSurfaceUiDefinition(value.ui);
+  const navigation = ui
+    ? ui.routes.map((route) => ({
+        id: route.id,
+        title: route.title,
+        icon: route.icon,
+        path: route.dataSources[0]?.path || entryPath,
+        requiresAuth: route.requiresAuth
+      }))
+    : Array.isArray(value.navigation)
+      ? value.navigation.map((item) => normalizeSurfaceNavigationItem(item))
+      : [];
   if (!navigation.length) {
     throw new Error("Declarative plugin surface must include navigation.");
   }
@@ -102,9 +120,71 @@ function normalizeDeclarativeSurface(value, pluginId, pluginName) {
     upstreamUrl,
     entryPath,
     navigation,
+    ui,
     auth,
     order: Number.isFinite(value.order) ? Number(value.order) : 1000,
     pluginId
+  };
+}
+
+function normalizeSurfaceUiDefinition(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Plugin surface UI definition must be an object.");
+  }
+  if (Number(value.schemaVersion) !== 1) {
+    throw new Error("Plugin surface UI schemaVersion must be 1.");
+  }
+  if (!Array.isArray(value.routes) || !value.routes.length || value.routes.length > 32) {
+    throw new Error("Plugin surface UI must contain between 1 and 32 routes.");
+  }
+  const routes = value.routes.map((route) => normalizeSurfaceUiRoute(route));
+  if (new Set(routes.map((route) => route.id)).size !== routes.length) {
+    throw new Error("Plugin surface UI route ids must be unique.");
+  }
+  return { schemaVersion: 1, routes };
+}
+
+function normalizeSurfaceUiRoute(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Plugin surface UI route must be an object.");
+  }
+  const id = String(value.id || "").trim().toLowerCase();
+  if (!SURFACE_ID_PATTERN.test(id)) throw new Error("Plugin surface UI route id is invalid.");
+  const title = String(value.title || "").trim();
+  if (!title) throw new Error("Plugin surface UI route title is required.");
+  if (!Array.isArray(value.dataSources) || !value.dataSources.length || value.dataSources.length > 8) {
+    throw new Error("Plugin surface UI route must contain between 1 and 8 data sources.");
+  }
+  const dataSources = value.dataSources.map((source) => {
+    const sourceId = String(source?.id || "").trim();
+    if (!SURFACE_ID_PATTERN.test(sourceId)) throw new Error("Plugin data source id is invalid.");
+    return { id: sourceId, path: normalizeEntryPath(source.path) };
+  });
+  if (new Set(dataSources.map((source) => source.id)).size !== dataSources.length) {
+    throw new Error("Plugin data source ids must be unique within a route.");
+  }
+  const document = value.document;
+  if (!document || typeof document !== "object" || Array.isArray(document)) {
+    throw new Error("Plugin surface UI route must include a document binding.");
+  }
+  if (Number(document.schemaVersion) !== 1
+      || !["collection", "dashboard"].includes(String(document.presentation || ""))) {
+    throw new Error("Unsupported plugin surface UI document binding.");
+  }
+  if (!String(document.title || "").trim()) {
+    throw new Error("Plugin surface UI document title is required.");
+  }
+  const serialized = JSON.stringify(document);
+  if (Buffer.byteLength(serialized, "utf8") > 256 * 1024) {
+    throw new Error("Plugin surface UI document binding is too large.");
+  }
+  return {
+    id,
+    title,
+    icon: String(value.icon || "square.grid.2x2").trim(),
+    requiresAuth: value.requiresAuth === true,
+    dataSources,
+    document: JSON.parse(serialized)
   };
 }
 
@@ -351,8 +431,9 @@ export async function resolvePluginSurfaceDocumentTarget(workspaceRoot, pluginId
   if (!navigation) {
     throw Object.assign(new Error("Plugin surface route was not found."), { status: 404 });
   }
+  const uiRoute = manifest.surface.ui?.routes?.find((item) => item.id === route) || null;
   const url = new URL(navigation.path, manifest.surface.upstreamUrl);
-  return { manifest, navigation, url };
+  return { manifest, navigation, uiRoute, url };
 }
 
 function normalizePluginId(value) {

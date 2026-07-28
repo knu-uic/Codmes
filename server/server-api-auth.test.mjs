@@ -444,19 +444,20 @@ test("workspace server protects APIs with CODMES_SERVER_TOKEN and exposes manage
   }
 });
 
-test("plugin surface document is fetched server-side for native client rendering", async () => {
+test("plugin package owns UI while the upstream returns data only", async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-plugin-api-"));
   const source = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-plugin-package-"));
   const codmesPort = 28000 + Math.floor(Math.random() * 5000);
   const token = "workspace-secret";
   const upstreamRequests = [];
-  const surfaceDocument = {
+  const expectedDocument = {
     schemaVersion: 1,
     presentation: "dashboard",
     title: "Portal",
     subtitle: "Student data",
     search: null,
     filters: [],
+    emptyState: null,
     items: [],
     sections: [{
       id: "timetable",
@@ -468,10 +469,17 @@ test("plugin surface document is fetched server-side for native client rendering
       rows: [["1", "Data Structures"]]
     }]
   };
+  const upstreamData = {
+    student: { name: "Test Student" },
+    timetable: {
+      columns: ["Period", "Monday"],
+      rows: [["1", "Data Structures"]]
+    }
+  };
   const upstream = http.createServer((req, res) => {
     upstreamRequests.push({ url: req.url, authorization: req.headers.authorization, cookie: req.headers.cookie });
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify(surfaceDocument));
+    res.end(JSON.stringify(upstreamData));
   });
   await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   const upstreamPort = upstream.address().port;
@@ -485,10 +493,8 @@ test("plugin surface document is fetched server-side for native client rendering
       id: "portal",
       type: "declarative",
       upstreamUrl: `http://127.0.0.1:${upstreamPort}`,
-      entryPath: "/api/codmes/surface",
-      navigation: [
-        { id: "notices", title: "Notices", path: "/api/codmes/surface" }
-      ]
+      entryPath: "/api/portal-data",
+      ui: "surface.json"
     },
     mcp: {
       name: "portal",
@@ -497,6 +503,30 @@ test("plugin surface document is fetched server-side for native client rendering
       surfaces: ["portal"],
       allowUnauthenticated: true
     }
+  }), "utf8");
+  await fs.writeFile(path.join(source, "surface.json"), JSON.stringify({
+    schemaVersion: 1,
+    routes: [{
+      id: "portal",
+      title: "Portal",
+      dataSources: [{ id: "api", path: "/api/portal-data" }],
+      document: {
+        schemaVersion: 1,
+        presentation: "dashboard",
+        title: "Portal",
+        subtitle: { literal: "Student data" },
+        filters: [],
+        emptyState: null,
+        sections: [{
+          id: { literal: "timetable" },
+          title: { literal: "Timetable" },
+          systemImage: "calendar",
+          kind: "table",
+          columns: { path: "$.api.timetable.columns" },
+          rows: { path: "$.api.timetable.rows" }
+        }]
+      }
+    }]
   }), "utf8");
   const server = spawn(process.execPath, ["server/index.mjs"], {
     cwd: path.resolve("."),
@@ -530,8 +560,8 @@ test("plugin surface document is fetched server-side for native client rendering
       `${baseUrl}/api/plugins/com.example.portal/surface-document`,
       { token }
     );
-    assert.deepEqual(document, surfaceDocument);
-    assert.deepEqual(upstreamRequests.map((request) => request.url), ["/api/codmes/surface"]);
+    assert.deepEqual(document, expectedDocument);
+    assert.deepEqual(upstreamRequests.map((request) => request.url), ["/api/portal-data"]);
     assert.equal(upstreamRequests.every((request) => request.authorization === undefined), true);
     assert.equal(upstreamRequests.every((request) => request.cookie === undefined), true);
 
