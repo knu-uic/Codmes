@@ -856,10 +856,141 @@ struct WorkspaceSurface: Codable, Identifiable, Hashable {
     let prompt: String?
     let root: String?
     let pluginId: String?
+    let renderer: String?
+    let dataPath: String?
+    let navigation: [PluginSurfaceNavigationItem]?
+    let hasAuthentication: Bool?
 
     var isEnabled: Bool { enabled ?? true }
     var canRemove: Bool { removable ?? true }
     var systemImage: String { icon?.isEmpty == false ? icon! : "square.grid.2x2" }
+}
+
+struct PluginSurfaceNavigationItem: Codable, Identifiable, Hashable {
+    let id: String
+    let title: String
+    let icon: String?
+    let path: String?
+    let requiresAuth: Bool?
+
+    var systemImage: String { icon?.isEmpty == false ? icon! : "square.grid.2x2" }
+}
+
+struct PluginAuthStatus: Codable, Equatable {
+    let supported: Bool?
+    let authenticated: Bool
+    let username: String?
+    let reachable: Bool?
+    let studentId: String?
+    let name: String?
+    let major: String?
+    let year: Int?
+    let profileSyncing: Bool?
+    let syncStage: String?
+    let lmsSyncError: String?
+
+    init(
+        supported: Bool?,
+        authenticated: Bool,
+        username: String?,
+        reachable: Bool?,
+        studentId: String? = nil,
+        name: String? = nil,
+        major: String? = nil,
+        year: Int? = nil,
+        profileSyncing: Bool? = nil,
+        syncStage: String? = nil,
+        lmsSyncError: String? = nil
+    ) {
+        self.supported = supported
+        self.authenticated = authenticated
+        self.username = username
+        self.reachable = reachable
+        self.studentId = studentId
+        self.name = name
+        self.major = major
+        self.year = year
+        self.profileSyncing = profileSyncing
+        self.syncStage = syncStage
+        self.lmsSyncError = lmsSyncError
+    }
+}
+
+struct PluginAuthLoginResponse: Codable {
+    let authenticated: Bool
+    let username: String?
+}
+
+struct PluginAuthLogoutResponse: Codable {
+    let authenticated: Bool
+    let removed: Bool?
+}
+
+struct PluginSurfaceDocument: Codable {
+    let schemaVersion: Int
+    let presentation: String
+    let title: String
+    let subtitle: String?
+    let search: PluginSurfaceSearch?
+    let filters: [PluginSurfaceFilter]
+    let emptyState: PluginSurfaceEmptyState?
+    let items: [PluginSurfaceItem]
+    let sections: [PluginSurfaceSection]?
+}
+
+struct PluginSurfaceSearch: Codable {
+    let placeholder: String?
+    let fields: [String]
+}
+
+struct PluginSurfaceFilter: Codable, Identifiable {
+    let id: String
+    let label: String?
+    let style: String?
+    let options: [PluginSurfaceFilterOption]
+}
+
+struct PluginSurfaceFilterOption: Codable, Identifiable {
+    var id: String { value }
+    let value: String
+    let label: String
+}
+
+struct PluginSurfaceEmptyState: Codable {
+    let title: String
+    let systemImage: String?
+}
+
+struct PluginSurfaceItem: Codable, Identifiable {
+    let id: String
+    let title: String
+    let subtitle: String?
+    let body: String?
+    let tags: [String]
+    let filterValues: [String: String]
+    let action: PluginSurfaceAction?
+}
+
+struct PluginSurfaceAction: Codable {
+    let type: String
+    let url: String?
+}
+
+struct PluginSurfaceSection: Codable, Identifiable {
+    let id: String
+    let title: String
+    let subtitle: String?
+    let systemImage: String?
+    let kind: String
+    let fields: [PluginSurfaceField]?
+    let columns: [String]?
+    let rows: [[String]]?
+}
+
+struct PluginSurfaceField: Codable, Identifiable {
+    let id: String
+    let label: String
+    let value: String
 }
 
 struct SurfaceUpdateBody: Encodable {
@@ -883,13 +1014,19 @@ struct MCPServersResponse: Codable {
 struct MCPServerConfig: Codable, Identifiable, Hashable {
     var id: String { name }
     let name: String
-    let command: String
+    let transport: String?
+    let command: String?
     let args: [String]?
     let enabled: Bool?
     let env: [String: String]?
     let scopePath: String?
+    let url: String?
+    let credentialId: String?
+    let surfaces: [String]?
+    let credentialConfigured: Bool?
 
     var isEnabled: Bool { enabled ?? true }
+    var isRemote: Bool { transport == "streamable_http" }
     var argsText: String { (args ?? []).joined(separator: " ") }
     var envText: String {
         (env ?? [:])
@@ -897,15 +1034,23 @@ struct MCPServerConfig: Codable, Identifiable, Hashable {
             .map { "\($0.key)=\($0.value)" }
             .joined(separator: "\n")
     }
+
+    enum CodingKeys: String, CodingKey { case name, transport, command, args, enabled, env, scopePath, url, credentialId = "credential_id", surfaces, credentialConfigured }
 }
 
 struct MCPServerUpdateBody: Encodable {
     let name: String?
-    let command: String
-    let args: [String]
+    let transport: String
+    let command: String?
+    let args: [String]?
     let enabled: Bool
-    let env: [String: String]
-    let scopePath: String
+    let env: [String: String]?
+    let scopePath: String?
+    let url: String?
+    let credentialId: String?
+    let surfaces: [String]?
+
+    enum CodingKeys: String, CodingKey { case name, transport, command, args, enabled, env, scopePath, url, credentialId = "credential_id", surfaces }
 }
 
 struct SearchConfigResponse: Codable {
@@ -1399,14 +1544,16 @@ struct ChatLine: Identifiable, Equatable {
     let role: String
     var text: String
     var approvalState: ApprovalState?
+    let approvalId: String?
     var activityItems: [ChatActivity]
     var isStreamingActivity: Bool
 
-    init(id: UUID = UUID(), role: String, text: String, approvalState: ApprovalState? = nil, activityItems: [ChatActivity] = [], isStreamingActivity: Bool = false) {
+    init(id: UUID = UUID(), role: String, text: String, approvalState: ApprovalState? = nil, approvalId: String? = nil, activityItems: [ChatActivity] = [], isStreamingActivity: Bool = false) {
         self.id = id
         self.role = role
         self.text = text
         self.approvalState = approvalState
+        self.approvalId = approvalId
         self.activityItems = activityItems
         self.isStreamingActivity = isStreamingActivity
     }
@@ -1416,6 +1563,7 @@ struct ChatLine: Identifiable, Equatable {
         lhs.role == rhs.role &&
         lhs.text == rhs.text &&
         lhs.approvalState == rhs.approvalState &&
+        lhs.approvalId == rhs.approvalId &&
         lhs.activityItems == rhs.activityItems &&
         lhs.isStreamingActivity == rhs.isStreamingActivity
     }

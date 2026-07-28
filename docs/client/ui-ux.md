@@ -49,6 +49,41 @@ iPhone·iPad 기능은 UIKit으로 따로 구현합니다. Notes와 PDF의 annot
   layout에서는 선택 후에도 sidebar를 유지한다.
 - plugin surface에 전용 sidebar가 없으면 빈 상태 안내를 표시한다.
 
+## Surface 설정
+
+- Settings의 Surfaces 기본 화면에는 Surface 목록과 plugin 추가 UI를 표시한다.
+- 각 Surface 행에는 활성화 toggle과 설정 아이콘을 함께 둔다. 설정 아이콘을
+  누르면 Settings의 왼쪽 category sidebar는 유지하고 오른쪽 main 영역 전체를
+  해당 Surface 상세로 전환한다. 상세 우상단의 닫기 버튼은 Surface 목록으로
+  돌아간다.
+- Chat, Notes, Code도 동일한 상세 진입점을 제공한다. 아직 개별 설정이 없더라도
+  화면을 없애지 않고 향후 옵션이 들어갈 자리라는 빈 상태를 표시한다.
+- 인증을 제공하는 plugin Surface 상세는 Model Config의 계정 인증 UI를 따른다.
+  상단에 연결 상태, 저장된 계정, 기본 연결/해제 command를 표시하고 자격 증명은
+  별도 card 안에서 다룬다.
+- plugin sidebar의 로그인 버튼은 별도 임시 로그인 sheet를 만들지 않는다.
+  `Settings → Surfaces → 현재 plugin` 상세로 이동하며 로그인은 그 화면에서만
+  수행한다.
+- 비밀번호 기반 plugin은 비밀번호를 로그인 요청에만 사용하고 client와 Codmes
+  서버 어디에도 저장하지 않는다. plugin이 발급한 사용자 token만 Codmes 서버의
+  credential store에 저장한다.
+- KNU Surface의 인증 필드는 별도 KNU PICK 회원 계정이 아니라 공주대 포털
+  학번·비밀번호를 받는다. 연결 중에는 외부 SSO 확인이 진행 중임을 명시한다.
+- plugin 로그인 작업과 인증 상태는 설정 상세 View가 아니라 앱 전역
+  `WorkspaceStore`가 소유한다. 설정과 Surface sidebar는 같은 상태를 구독하며
+  로그인 중 표시, 성공, 실패가 양쪽에 즉시 반영되어야 한다.
+- 사용자가 인증 도중 설정 상세 또는 설정 sheet를 닫아도 로그인 요청과 후속
+  동기화 polling은 취소하지 않는다. 명시적인 취소 기능을 제공하기 전까지
+  화면 종료는 작업 취소 의미로 사용하지 않는다.
+- 로그인 요청이 시작되면 학번·비밀번호 입력 card를 즉시 숨기고 인증 전용
+  progress 상태로 교체한다. 진행 중인 form과 입력값을 화면에 남기지 않는다.
+- 인증 성공과 포털 데이터 동기화는 별개 상태다. sidebar의 주 상태는 로그인된
+  계정명을 유지하고, 후속 데이터 동기화는 작은 progress indicator로만 보조
+  표시한다.
+- 포털 인증 후 서버의 KNUIS/LMS sync가 진행되는 동안 계정명 옆에 작은 progress
+  indicator를 표시하고 auth status를 polling한다. 완료되면 계정 card에 이름과
+  `학번 · 학과 · 학년`을 표시하고 LMS Surface를 자동으로 다시 읽는다.
+
 ## Chat sidebar interaction
 
 - project header에는 project 관리 menu와 새 chat command를 둔다.

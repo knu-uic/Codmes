@@ -52,6 +52,8 @@ import {
   providerEnvKeys,
   readCredentials,
   readRuntimeConfig,
+  getMcpCredentialStatus,
+  normalizeMcpServerConfig,
   removeProviderCredentialEntry,
   removeCredentialValue,
   selectProviderCredentialEntry,
@@ -282,6 +284,44 @@ async function handleRequest(req, res) {
     }
     if (req.method === "GET" && url.pathname === "/api/workspace") {
       return sendJson(res, await workspaceInfo());
+    }
+    if (req.method === "GET" && url.pathname === "/api/plugins") {
+      const { listInstalledPlugins } = await import("./lib/runtime/plugin-registry.mjs");
+      return sendJson(res, { plugins: await listInstalledPlugins(WORKSPACE_ROOT) });
+    }
+    if (req.method === "POST" && url.pathname === "/api/plugins/install") {
+      const body = await readJsonBody(req);
+      const { installPlugin } = await import("./lib/runtime/plugin-registry.mjs");
+      return sendJson(res, await installPlugin(WORKSPACE_ROOT, body.path), 201);
+    }
+    const pluginRemoveMatch = url.pathname.match(/^\/api\/plugins\/([^/]+)$/);
+    if (req.method === "DELETE" && pluginRemoveMatch) {
+      const { removePlugin } = await import("./lib/runtime/plugin-registry.mjs");
+      return sendJson(res, await removePlugin(WORKSPACE_ROOT, decodeURIComponent(pluginRemoveMatch[1])));
+    }
+    const pluginSurfaceDocumentMatch = url.pathname.match(/^\/api\/plugins\/([^/]+)\/surface-document$/);
+    if (req.method === "GET" && pluginSurfaceDocumentMatch) {
+      return sendJson(
+        res,
+        await fetchPluginSurfaceDocument(
+          decodeURIComponent(pluginSurfaceDocumentMatch[1]),
+          url.searchParams.get("route")
+        )
+      );
+    }
+    const pluginAuthMatch = url.pathname.match(/^\/api\/plugins\/([^/]+)\/auth\/(status|login|logout)$/);
+    if (pluginAuthMatch) {
+      const pluginId = decodeURIComponent(pluginAuthMatch[1]);
+      const action = pluginAuthMatch[2];
+      if (req.method === "GET" && action === "status") {
+        return sendJson(res, await pluginAuthStatus(pluginId));
+      }
+      if (req.method === "POST" && action === "login") {
+        return sendJson(res, await loginPlugin(req, pluginId));
+      }
+      if (req.method === "DELETE" && action === "logout") {
+        return sendJson(res, await logoutPlugin(pluginId));
+      }
     }
     if (req.method === "GET" && url.pathname === "/api/tree") {
       return sendJson(res, await readTree(url));
@@ -1980,24 +2020,15 @@ async function updateSecurity(req) {
 
 async function listMcpServers() {
   const config = await readRuntimeConfig(WORKSPACE_ROOT);
-  return { servers: (config.mcpServers || []).map(normalizeMcpServer) };
+  return { servers: await Promise.all((config.mcpServers || []).map(normalizeMcpServer)) };
 }
 
 async function addMcpServer(req) {
   const body = await readJsonBody(req);
   const name = safeMcpName(body.name);
-  const command = String(body.command || "").trim();
-  if (!command) throw Object.assign(new Error("Missing MCP command."), { status: 400 });
   const config = await readRuntimeConfig(WORKSPACE_ROOT);
   const servers = config.mcpServers || [];
-  const next = {
-    name,
-    command,
-    args: Array.isArray(body.args) ? body.args.map(String) : [],
-    enabled: body.enabled !== false,
-    env: sanitizeStringMap(body.env),
-    scopePath: String(body.scopePath || body.scope_path || "").trim()
-  };
+  const next = normalizeMcpRequest({ ...body, name });
   const existingIndex = servers.findIndex((server) => server.name === name);
   if (existingIndex !== -1) {
     servers[existingIndex] = {
@@ -2005,11 +2036,11 @@ async function addMcpServer(req) {
       ...next
     };
     await writeRuntimeConfig(WORKSPACE_ROOT, { ...config, mcpServers: servers });
-    return { ok: true, created: false, server: normalizeMcpServer(servers[existingIndex]) };
+    return { ok: true, created: false, server: await normalizeMcpServer(servers[existingIndex]) };
   }
   servers.push(next);
   await writeRuntimeConfig(WORKSPACE_ROOT, { ...config, mcpServers: servers });
-  return { ok: true, created: true, server: normalizeMcpServer(servers.at(-1)) };
+  return { ok: true, created: true, server: await normalizeMcpServer(servers.at(-1)) };
 }
 
 async function updateMcpServer(name, req) {
@@ -2021,20 +2052,10 @@ async function updateMcpServer(name, req) {
   if (index === -1) throw Object.assign(new Error(`MCP server not found: ${target}`), { status: 404 });
 
   const current = servers[index];
-  const next = {
-    ...current,
-    command: body.command !== undefined ? String(body.command || "").trim() : current.command,
-    args: body.args !== undefined ? (Array.isArray(body.args) ? body.args.map(String) : []) : (current.args || []),
-    enabled: body.enabled !== undefined ? body.enabled !== false : current.enabled !== false,
-    env: body.env !== undefined ? sanitizeStringMap(body.env) : sanitizeStringMap(current.env),
-    scopePath: body.scopePath !== undefined || body.scope_path !== undefined
-      ? String(body.scopePath || body.scope_path || "").trim()
-      : String(current.scopePath || current.scope_path || "").trim()
-  };
-  if (!next.command) throw Object.assign(new Error("Missing MCP command."), { status: 400 });
+  const next = normalizeMcpRequest({ ...current, ...body, name: current.name });
   servers[index] = next;
   await writeRuntimeConfig(WORKSPACE_ROOT, { ...config, mcpServers: servers });
-  return { ok: true, server: normalizeMcpServer(next) };
+  return { ok: true, server: await normalizeMcpServer(next) };
 }
 
 async function setMcpEnabled(name, enabled) {
@@ -2045,7 +2066,7 @@ async function setMcpEnabled(name, enabled) {
   if (!server) throw Object.assign(new Error(`MCP server not found: ${target}`), { status: 404 });
   server.enabled = enabled;
   await writeRuntimeConfig(WORKSPACE_ROOT, { ...config, mcpServers: servers });
-  return { ok: true, server: normalizeMcpServer(server) };
+  return { ok: true, server: await normalizeMcpServer(server) };
 }
 
 async function removeMcpServer(name) {
@@ -2578,16 +2599,17 @@ function safeMcpName(value) {
   return name;
 }
 
-function normalizeMcpServer(server = {}) {
-  return {
-    ...server,
-    name: String(server.name || ""),
-    command: String(server.command || ""),
-    args: Array.isArray(server.args) ? server.args.map(String) : [],
-    enabled: parseLooseBoolean(server.enabled, true),
-    env: sanitizeStringMap(server.env),
-    scopePath: String(server.scopePath || server.scope_path || "").trim()
-  };
+function normalizeMcpRequest(server) {
+  try { return normalizeMcpServerConfig(server); }
+  catch (error) { throw Object.assign(error, { status: 400 }); }
+}
+
+async function normalizeMcpServer(server = {}) {
+  const normalized = normalizeMcpRequest(server);
+  if (normalized.transport === "streamable_http") {
+    return { ...normalized, credentialConfigured: await getMcpCredentialStatus(WORKSPACE_ROOT, normalized.credential_id) };
+  }
+  return normalized;
 }
 
 function parseLooseBoolean(value, fallback = false) {
@@ -3023,6 +3045,220 @@ async function assertPathAvailable(absolutePath) {
     return;
   }
   throw Object.assign(new Error("A file or folder already exists at that path."), { status: 409 });
+}
+
+async function fetchPluginSurfaceDocument(pluginId, routeId) {
+  const { resolvePluginSurfaceDocumentTarget } = await import("./lib/runtime/plugin-registry.mjs");
+  const { getPluginCredential } = await import("./lib/runtime/config-store.mjs");
+  const { manifest, navigation, url } = await resolvePluginSurfaceDocumentTarget(
+    WORKSPACE_ROOT,
+    pluginId,
+    routeId
+  );
+  if (manifest.surface.type !== "declarative") {
+    throw Object.assign(new Error("Plugin does not provide a declarative surface."), { status: 400 });
+  }
+  const credential = manifest.surface.auth
+    ? await getPluginCredential(WORKSPACE_ROOT, manifest.surface.auth.credentialId)
+    : null;
+  if (navigation.requiresAuth && !credential) {
+    return {
+      schemaVersion: 1,
+      presentation: "collection",
+      title: navigation.title,
+      subtitle: "사이드바 상단의 로그인 버튼을 눌러 KNU 계정을 연결하세요.",
+      filters: [],
+      items: [],
+      emptyState: {
+        title: "로그인이 필요합니다.",
+        systemImage: "person.crop.circle.badge.exclamationmark"
+      }
+    };
+  }
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        accept: "application/json",
+        ...(credential ? { authorization: `Bearer ${credential.token}` } : {})
+      },
+      redirect: "error",
+      signal: AbortSignal.timeout(15_000)
+    });
+  } catch (error) {
+    throw Object.assign(new Error(`Plugin surface is unavailable: ${error.message}`), { status: 502 });
+  }
+  if (!response.ok) {
+    throw Object.assign(
+      new Error(`Plugin surface returned ${response.status}.`),
+      { status: 502 }
+    );
+  }
+  const text = await response.text();
+  if (Buffer.byteLength(text, "utf8") > 2 * 1024 * 1024) {
+    throw Object.assign(new Error("Plugin surface document is too large."), { status: 502 });
+  }
+  let document;
+  try {
+    document = JSON.parse(text);
+  } catch {
+    throw Object.assign(new Error("Plugin surface returned invalid JSON."), { status: 502 });
+  }
+  validatePluginSurfaceDocument(document);
+  return document;
+}
+
+async function pluginAuthStatus(pluginId) {
+  const { getInstalledPlugin } = await import("./lib/runtime/plugin-registry.mjs");
+  const { getPluginCredential, removePluginCredential } = await import("./lib/runtime/config-store.mjs");
+  const plugin = await getInstalledPlugin(WORKSPACE_ROOT, pluginId);
+  if (!plugin) throw Object.assign(new Error("Plugin is not installed."), { status: 404 });
+  const auth = plugin.surface.auth;
+  if (!auth) return { supported: false, authenticated: false, username: null };
+  const credential = await getPluginCredential(WORKSPACE_ROOT, auth.credentialId);
+  if (!credential) return { supported: true, authenticated: false, username: null };
+  const url = new URL(auth.statusPath, plugin.surface.upstreamUrl);
+  try {
+    const response = await fetch(url, {
+      headers: { accept: "application/json", authorization: `Bearer ${credential.token}` },
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000)
+    });
+    if (response.status === 401 || response.status === 403) {
+      await removePluginCredential(WORKSPACE_ROOT, auth.credentialId);
+      return { supported: true, authenticated: false, username: null };
+    }
+    if (!response.ok) {
+      return {
+        supported: true,
+        authenticated: true,
+        username: credential.username,
+        reachable: false
+      };
+    }
+    const profile = await response.json().catch(() => ({}));
+    return {
+      supported: true,
+      authenticated: true,
+      username: String(profile.username || credential.username || "") || null,
+      reachable: true,
+      studentId: String(profile.student_id || "") || null,
+      name: String(profile.name || "") || null,
+      major: String(profile.major || "") || null,
+      year: Number.isInteger(profile.year) ? profile.year : null,
+      profileSyncing: Boolean(
+        profile.portal_syncing ?? (profile.student_id && !profile.name)
+      ),
+      syncStage: String(profile.sync_stage || "") || null,
+      lmsSyncError: String(profile.lms_sync_error || "") || null
+    };
+  } catch {
+    return {
+      supported: true,
+      authenticated: true,
+      username: credential.username,
+      reachable: false
+    };
+  }
+}
+
+async function loginPlugin(req, pluginId) {
+  const { getInstalledPlugin } = await import("./lib/runtime/plugin-registry.mjs");
+  const { setPluginCredential } = await import("./lib/runtime/config-store.mjs");
+  const plugin = await getInstalledPlugin(WORKSPACE_ROOT, pluginId);
+  if (!plugin) throw Object.assign(new Error("Plugin is not installed."), { status: 404 });
+  const auth = plugin.surface.auth;
+  if (!auth) throw Object.assign(new Error("Plugin does not support user authentication."), { status: 400 });
+  const body = await readJsonBody(req);
+  const username = String(body.username || "").trim();
+  const password = String(body.password || "");
+  if (!username || !password) {
+    throw Object.assign(new Error("Username and password are required."), { status: 400 });
+  }
+  const url = new URL(auth.loginPath, plugin.surface.upstreamUrl);
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify({
+        [auth.usernameField]: username,
+        [auth.passwordField]: password
+      }),
+      redirect: "error",
+      // University SSO verification may use a headless browser. Keep it
+      // bounded below the Apple client's request timeout.
+      signal: AbortSignal.timeout(50_000)
+    });
+  } catch (error) {
+    throw Object.assign(new Error(`Plugin login is unavailable: ${error.message}`), { status: 502 });
+  }
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw Object.assign(
+      new Error(String(result.detail || result.error || "Plugin login failed.")),
+      { status: response.status === 401 ? 401 : 502 }
+    );
+  }
+  const token = String(result[auth.tokenField] || "");
+  if (!token) throw Object.assign(new Error("Plugin login did not return a session token."), { status: 502 });
+  await setPluginCredential(WORKSPACE_ROOT, auth.credentialId, token, { username });
+  return { authenticated: true, username };
+}
+
+async function logoutPlugin(pluginId) {
+  const { getInstalledPlugin } = await import("./lib/runtime/plugin-registry.mjs");
+  const { removePluginCredential } = await import("./lib/runtime/config-store.mjs");
+  const plugin = await getInstalledPlugin(WORKSPACE_ROOT, pluginId);
+  if (!plugin) throw Object.assign(new Error("Plugin is not installed."), { status: 404 });
+  const auth = plugin.surface.auth;
+  if (!auth) return { authenticated: false, removed: false };
+  const result = await removePluginCredential(WORKSPACE_ROOT, auth.credentialId);
+  return { authenticated: false, removed: result.removed };
+}
+
+function validatePluginSurfaceDocument(document) {
+  if (!document || typeof document !== "object" || Array.isArray(document)) {
+    throw Object.assign(new Error("Plugin surface document must be an object."), { status: 502 });
+  }
+  const presentation = String(document.presentation || "");
+  if (Number(document.schemaVersion) !== 1 || !["collection", "dashboard"].includes(presentation)) {
+    throw Object.assign(
+      new Error("Unsupported plugin surface document schema."),
+      { status: 502 }
+    );
+  }
+  if (!String(document.title || "").trim()) {
+    throw Object.assign(new Error("Plugin surface title is required."), { status: 502 });
+  }
+  if (!Array.isArray(document.items) || document.items.length > 500) {
+    throw Object.assign(
+      new Error("Plugin surface items must be an array of at most 500 entries."),
+      { status: 502 }
+    );
+  }
+  if (presentation === "dashboard") {
+    if (!Array.isArray(document.sections) || document.sections.length > 50) {
+      throw Object.assign(
+        new Error("Plugin dashboard sections must be an array of at most 50 entries."),
+        { status: 502 }
+      );
+    }
+    for (const section of document.sections) {
+      if (!section || !["keyValue", "table"].includes(section.kind)) {
+        throw Object.assign(new Error("Unsupported plugin dashboard section."), { status: 502 });
+      }
+      if (section.kind === "keyValue" && (!Array.isArray(section.fields) || section.fields.length > 100)) {
+        throw Object.assign(new Error("Plugin key-value section is invalid."), { status: 502 });
+      }
+      if (section.kind === "table") {
+        if (!Array.isArray(section.columns) || section.columns.length > 50
+            || !Array.isArray(section.rows) || section.rows.length > 1000) {
+          throw Object.assign(new Error("Plugin table section is invalid."), { status: 502 });
+        }
+      }
+    }
+  }
 }
 
 async function readJsonBody(req) {

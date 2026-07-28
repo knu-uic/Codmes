@@ -14,6 +14,10 @@ let package = Package(
         .executableTarget(
             name: "Codmes",
             path: "Sources/Codmes"
+        ),
+        .testTarget(
+            name: "CodmesTests",
+            dependencies: ["Codmes"]
         )
     ]
 )

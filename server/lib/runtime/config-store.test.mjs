@@ -14,12 +14,42 @@ import {
   providerEnvKeys,
   readCredentials,
   readRuntimeConfig,
+  getMcpCredential,
+  getMcpCredentialStatus,
+  normalizeMcpServerConfig,
+  removeMcpCredential,
   removeProviderCredentialEntry,
   runtimeConfigDir,
+  setMcpCredential,
   selectProviderCredentialEntry,
   setCredentialValue,
   setDefaultModel
 } from "./config-store.mjs";
+
+test("remote MCP config preserves legacy stdio, validates HTTPS, and keeps bearer server-only", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-remote-mcp-"));
+  await ensureRuntimeConfig(root);
+  const legacy = normalizeMcpServerConfig({ name: "legacy", command: "node", args: ["server.mjs"] });
+  assert.equal(legacy.transport, "stdio");
+  const remote = normalizeMcpServerConfig({ name: "knu-rag", transport: "streamable_http", url: "https://example.test/api/mcp/", credential_id: "knu-rag", surfaces: ["chat"] });
+  assert.equal(remote.url.endsWith("/"), true);
+  assert.throws(() => normalizeMcpServerConfig({ ...remote, url: "http://example.test/api/mcp/" }), /HTTPS/);
+  assert.throws(() => normalizeMcpServerConfig({ ...remote, url: "https://token@example.test/api/mcp/" }), /without credentials/);
+  assert.throws(() => normalizeMcpServerConfig({ ...remote, args: ["Bearer secret"] }), /does not accept args/);
+
+  await setCredentialValue(root, "openai-api", "CODMES_OPENAI_API_KEY", "provider-secret");
+  await setMcpCredential(root, "knu-rag", "remote-bearer-secret");
+  assert.equal(await getMcpCredentialStatus(root, "knu-rag"), true);
+  assert.equal(await getMcpCredential(root, "knu-rag"), "remote-bearer-secret");
+  const authPath = path.join(runtimeConfigDir(root), "auth.json");
+  const auth = JSON.parse(await fs.readFile(authPath, "utf8"));
+  assert.equal(auth.credential_pool["openai-api"][0].access_token, "provider-secret");
+  assert.equal(auth.mcp_credentials["knu-rag"].token, "remote-bearer-secret");
+  assert.equal((await fs.stat(runtimeConfigDir(root))).mode & 0o777, 0o700);
+  assert.equal((await fs.stat(authPath)).mode & 0o777, 0o600);
+  await removeMcpCredential(root, "knu-rag");
+  assert.equal(await getMcpCredentialStatus(root, "knu-rag"), false);
+});
 
 test("provider registry only exposes usable user-facing providers", () => {
   const ids = listProviderRegistry().map((provider) => provider.id);

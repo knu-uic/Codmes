@@ -34,6 +34,7 @@ Workspace + .codmes state
 | 작업과 패치 | `server/lib/agent-engine.mjs`, `server/lib/code-agent-runtime.mjs` |
 | 설정과 인증 | `server/lib/runtime/config-store.mjs` |
 | MCP/skills/security | `server/lib/runtime/mcp-client.mjs`, `skill-registry.mjs`, `security-policy.mjs` |
+| Plugin install/surface proxy | `server/lib/runtime/plugin-registry.mjs`, `surface-registry.mjs` |
 
 ## 경계 규칙
 
@@ -63,6 +64,32 @@ client upload
 document job registry는 현재 server process memory 상태다. Apple client는 유휴 시
 2초, active job이 있으면 1초 간격으로 polling한다. Notes 상단 icon은 client
 upload queue가 아니라 이 server job 목록의 `running` 상태만 반영한다.
+
+## Plugin boundary
+
+Optional plugins are installed once in the server Workspace and become visible
+to every connected macOS/iOS client. A Manifest v1 installation atomically
+registers a declarative Surface and its Streamable HTTP MCP entry. The Apple app never
+contacts a plugin service directly:
+
+```text
+Apple SwiftUI renderer <- Codmes schema proxy <- plugin Surface JSON endpoint
+AI runtime             -> Codmes MCP client    -> plugin MCP service
+```
+
+The client never executes plugin HTML, JavaScript, or native binaries. Codmes
+validates the declarative document and renders allowlisted components/actions.
+The schema proxy does not forward the Workspace bearer or MCP credential.
+HTTPS is required for non-loopback services; plain HTTP and credential-free MCP
+are allowed only on loopback for a locally deployed plugin gateway. Tool calls
+remain subject to the normal Codmes approval policy.
+
+KNU is the first proof of concept. Its development package points directly at
+local FastAPI, exposes public notices as a native collection, and exposes its
+notice evidence MCP only on the `knu` Surface. Codmes sends the server-side
+`knu` credential as a Bearer token; Docker/Caddy is an optional deployment
+path. KNU account/portal/LMS authentication remains a KNU-service concern, not
+a Codmes account feature.
 
 ## 실시간 흐름
 

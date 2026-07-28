@@ -32,12 +32,13 @@ const CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token";
 const CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
 export class OpenAICompatibleRuntime extends EventEmitter {
-  constructor({ workspaceRoot, env = process.env, fetchImpl = globalThis.fetch } = {}) {
+  constructor({ workspaceRoot, env = process.env, fetchImpl = globalThis.fetch, mcpClientFactory = null } = {}) {
     super();
     this.name = "codmes-openai-compatible";
     this.workspaceRoot = workspaceRoot;
     this.env = env;
     this.fetch = fetchImpl;
+    this.mcpClientFactory = mcpClientFactory;
     this.sessions = new Map();
     this.mcpClients = new Map();
     this.mcpToolNameMap = new Map();
@@ -253,7 +254,28 @@ export class OpenAICompatibleRuntime extends EventEmitter {
       });
 
       for (const call of result.toolCalls) {
-        const toolResult = await this.executeToolCall(call, activeParams);
+        let toolResult;
+        try {
+          toolResult = await this.executeToolCall(call, activeParams);
+        } catch (error) {
+          if (error?.approvalRequired && error.pendingState) {
+            const assistantMessage = messages[messages.length - 1];
+            error.pendingState.continuation = {
+              messages: [
+                ...messages.slice(0, -1),
+                {
+                  ...assistantMessage,
+                  tool_calls: assistantMessage.tool_calls.filter((item) => item.id === call.id)
+                }
+              ],
+              provider: selection.provider.id,
+              model: selection.model,
+              reasoningEffort: params.reasoningEffort,
+              maxToolRounds: Math.max(0, maxToolRounds - round)
+            };
+          }
+          throw error;
+        }
         if (call.name === "tool_discovery") {
           const expansion = expandToolsForTurn(activeParams, toolResult);
           activeParams = expansion.params;
@@ -351,7 +373,7 @@ export class OpenAICompatibleRuntime extends EventEmitter {
       }
 
       for (const mcp of config.mcpServers) {
-        if (mcp.enabled !== false) {
+        if (mcp.enabled !== false && (!mcp.surfaces || mcp.surfaces.includes(params.surface || "chat"))) {
           try {
             const client = await this.getOrStartMcpClient(mcp);
             const mcpTools = await client.listTools();
@@ -388,6 +410,11 @@ export class OpenAICompatibleRuntime extends EventEmitter {
       const name = t.function.name;
       if (globallyDisabledTools.has(name)) {
         return false;
+      }
+      const mappedMcpTool = this.mcpToolNameMap.get(name);
+      if (mappedMcpTool) {
+        const mcp = config.mcpServers?.find((server) => server.name === mappedMcpTool.serverName);
+        if (mcp?.transport === "streamable_http" && mcp.surfaces?.includes(params.surface || "chat")) return true;
       }
       if (coreRecallTools.has(name)) return true;
       if (modeDisabledTools.has(name)) return false;
@@ -627,7 +654,10 @@ export class OpenAICompatibleRuntime extends EventEmitter {
     }
 
     // Gating check by tool modes (only when surface is specified)
-    if (params.surface && !mandatory.has(call.name) && !enabledTools.has(call.name) && !expandedTools.has(call.name)) {
+    const mappedMcp = this.mcpToolNameMap.get(call.name);
+    const mappedMcpConfig = mappedMcp ? config.mcpServers?.find((server) => server.name === mappedMcp.serverName) : null;
+    const allowedRemoteMcp = mappedMcpConfig?.transport === "streamable_http" && mappedMcpConfig.surfaces?.includes(params.surface || "chat");
+    if (params.surface && !allowedRemoteMcp && !mandatory.has(call.name) && !enabledTools.has(call.name) && !expandedTools.has(call.name)) {
       const errorMsg = `Tool '${call.name}' is not enabled in current mode.`;
       this.emit("event", {
         type: "tool.error",
@@ -709,6 +739,55 @@ export class OpenAICompatibleRuntime extends EventEmitter {
         return { ok: false, error: errorMsg };
       }
 
+      let argsObj = call.arguments;
+      if (typeof argsObj === "string") {
+        try {
+          argsObj = JSON.parse(argsObj);
+        } catch {
+          argsObj = {};
+        }
+      }
+
+      if (mcp.transport === "streamable_http" && mcp.requiresApproval !== false && params.approved !== true) {
+        const reason = "Remote plugin MCP tools require approval before contacting the service.";
+        const pendingState = {
+          type: "mcp.tool.call",
+          sessionId: params.sessionId,
+          taskId: params.taskId,
+          surface: params.surface || null,
+          folderId: params.folderId || null,
+          projectId: params.projectId || null,
+          expandedToolsForThisTurn: params.expandedToolsForThisTurn || [],
+          currentCodeTaskId: params.currentCodeTaskId || null,
+          currentCodeScopePath: params.currentCodeScopePath || null,
+          toolCall: call,
+          serverName: mcpName,
+          toolName: originalToolName,
+          arguments: argsObj,
+          reason
+        };
+        this.emit("event", {
+          type: "approval.required",
+          sessionId: params.sessionId,
+          taskId: params.taskId,
+          category: "mcp.tool.call",
+          summary: `Execute MCP tool '${originalToolName}' on server '${mcpName}'`,
+          reason,
+          pendingState
+        });
+        throw Object.assign(
+          new Error(`Approval required for MCP tool '${originalToolName}' on server '${mcpName}'.`),
+          {
+            status: 409,
+            approvalRequired: true,
+            category: "mcp.tool.call",
+            summary: `Execute MCP tool '${originalToolName}' on server '${mcpName}'`,
+            reason,
+            pendingState
+          }
+        );
+      }
+
       this.emit("event", {
         type: "tool.start",
         sessionId: params.sessionId,
@@ -720,14 +799,6 @@ export class OpenAICompatibleRuntime extends EventEmitter {
 
       try {
         const client = await this.getOrStartMcpClient(mcp);
-        let argsObj = call.arguments;
-        if (typeof argsObj === "string") {
-          try {
-            argsObj = JSON.parse(argsObj);
-          } catch {
-            argsObj = {};
-          }
-        }
 
         // Fetch tool metadata from client to check if it's dangerous
         const toolMeta = (client.tools || []).find(t => t.name === originalToolName) || { name: originalToolName };
@@ -957,6 +1028,47 @@ export class OpenAICompatibleRuntime extends EventEmitter {
       currentCodeScopePath: pendingState.currentCodeScopePath || params.currentCodeScopePath,
       approved: true
     });
+    const continuation = pendingState.continuation;
+    if (result?.ok !== false && continuation?.messages?.length) {
+      const continuationParams = {
+        sessionId: pendingState.sessionId || params.sessionId,
+        taskId: pendingState.taskId || params.taskId,
+        surface: pendingState.surface || params.surface,
+        folderId: pendingState.folderId || params.folderId,
+        projectId: pendingState.projectId || params.projectId,
+        expandedToolsForThisTurn: pendingState.expandedToolsForThisTurn || params.expandedToolsForThisTurn || [],
+        reasoningEffort: continuation.reasoningEffort,
+        provider: continuation.provider,
+        model: continuation.model,
+        maxToolRounds: continuation.maxToolRounds
+      };
+      const selection = await this.resolveModelSelection(continuationParams);
+      const messages = [
+        ...continuation.messages,
+        {
+          role: "tool",
+          tool_call_id: pendingState.toolCall.id,
+          name: pendingState.toolCall.name,
+          content: JSON.stringify(result)
+        }
+      ];
+      const completed = await this.runChatLoop(selection, messages, continuationParams);
+      this.emit("event", {
+        type: "turn.complete",
+        sessionId: continuationParams.sessionId,
+        taskId: continuationParams.taskId,
+        text: completed.reply
+      });
+      return {
+        ok: true,
+        status: "completed",
+        type: pendingState.type,
+        result,
+        reply: completed.reply,
+        reasoning: completed.reasoning,
+        toolRounds: completed.toolRounds
+      };
+    }
     return {
       ok: result?.ok !== false,
       status: result?.ok === false ? "failed" : "completed",
@@ -973,12 +1085,27 @@ export class OpenAICompatibleRuntime extends EventEmitter {
     }
 
     let client = this.mcpClients.get(mcpConfig.name);
+    const identity = mcpConfig.transport === "streamable_http"
+      ? `${mcpConfig.transport}:${mcpConfig.url}:${mcpConfig.credential_id}`
+      : `stdio:${mcpConfig.command}:${JSON.stringify(mcpConfig.args || [])}:${JSON.stringify(mcpConfig.env || {})}`;
+    if (client && client.connectionIdentity !== identity) {
+      try { client.stop(); } catch {}
+      this.mcpClients.delete(mcpConfig.name);
+      client = null;
+    }
     if (!client) {
-      const { McpClient } = await import("./mcp-client.mjs");
-      client = new McpClient(mcpConfig.name, mcpConfig.command, mcpConfig.args || [], {
+      const [{ createMcpClient }, { getMcpCredential }] = await Promise.all([
+        import("./mcp-client.mjs"), import("./config-store.mjs")
+      ]);
+      client = (this.mcpClientFactory || createMcpClient)(mcpConfig, {
         workspaceRoot: this.workspaceRoot,
-        env: mcpConfig.env || {}
+        env: mcpConfig.env || {},
+        tokenAccessor: () => mcpConfig.credential_id
+          ? getMcpCredential(this.workspaceRoot, mcpConfig.credential_id)
+          : null,
+        allowUnauthenticated: mcpConfig.allowUnauthenticated === true
       });
+      client.connectionIdentity = identity;
       this.mcpClients.set(mcpConfig.name, client);
     }
     if (client.status !== "running") {
@@ -1820,7 +1947,7 @@ function isMcpPublicToolName(name) {
 
 function safeToolSegment(value) {
   const safe = String(value || "")
-    .replace(/[^a-zA-Z0-9_-]/g, "_")
+    .replace(/[^a-zA-Z0-9_]/g, "_")
     .replace(/_+/g, "_")
     .replace(/^_+|_+$/g, "");
   return safe || "tool";

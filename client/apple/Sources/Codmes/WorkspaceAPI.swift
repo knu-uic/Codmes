@@ -10,11 +10,42 @@ enum WorkspaceAPIError: Error, LocalizedError {
             "Invalid workspace server URL."
         case let .badStatus(status, body):
             if status == 401 {
-                "Workspace server rejected the request. Check the server token in Settings."
+                if let message = Self.responseMessage(from: body),
+                   !Self.isWorkspaceAuthorizationMessage(message) {
+                    message
+                } else {
+                    "Workspace server rejected the request. Check the server token in Settings."
+                }
+            } else if let message = Self.responseMessage(from: body) {
+                message
             } else {
                 "Workspace server returned \(status): \(body)"
             }
         }
+    }
+
+    private static func responseMessage(from body: String) -> String? {
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        for key in ["detail", "error", "message"] {
+            if let value = object[key] as? String {
+                let message = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !message.isEmpty {
+                    return message
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func isWorkspaceAuthorizationMessage(_ message: String) -> Bool {
+        let normalized = message
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return normalized == "unauthorized"
     }
 }
 
@@ -507,6 +538,36 @@ struct WorkspaceAPI {
     func surfaces() async throws -> [WorkspaceSurface] {
         let response: WorkspaceSurfacesResponse = try await get("/api/surfaces")
         return response.surfaces
+    }
+
+    func pluginSurfaceDocument(pluginId: String, routeId: String? = nil) async throws -> PluginSurfaceDocument {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        var components = try components("/api/plugins/\(encoded)/surface-document")
+        if let routeId, !routeId.isEmpty {
+            components.queryItems = [URLQueryItem(name: "route", value: routeId)]
+        }
+        return try await request(components)
+    }
+
+    func pluginAuthStatus(pluginId: String) async throws -> PluginAuthStatus {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        return try await get("/api/plugins/\(encoded)/auth/status")
+    }
+
+    func loginPlugin(pluginId: String, username: String, password: String) async throws -> PluginAuthLoginResponse {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        return try await post(
+            "/api/plugins/\(encoded)/auth/login",
+            body: ["username": username, "password": password]
+        )
+    }
+
+    func logoutPlugin(pluginId: String) async throws -> PluginAuthLogoutResponse {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        return try await request(
+            try components("/api/plugins/\(encoded)/auth/logout"),
+            method: "DELETE"
+        )
     }
 
     func updateSurface(id: String, body: SurfaceUpdateBody) async throws -> WorkspaceSurface {

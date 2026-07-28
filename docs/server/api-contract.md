@@ -176,3 +176,36 @@ box를 반환하므로 client는 추가 baseline 보정 없이 `normalized` 값�
 
 동적 endpoint의 허용 method와 body schema를 변경할 때는 서버 route test와
 `WorkspaceAPI.swift` 호출부를 함께 수정한다.
+
+## Plugins and remote MCP
+
+`/api/mcp` accepts legacy local `stdio` entries and Streamable HTTP entries
+shaped as
+`{name, transport:"streamable_http", url, credential_id, surfaces, enabled}`.
+Remote URLs must be HTTPS and contain no userinfo, query, or fragment. A
+loopback HTTP MCP may explicitly set `allowUnauthenticated:true`; this is meant
+for a local gateway that injects the service credential. Responses expose only
+credential status and never return bearer values.
+
+Manifest v1 plugin routes:
+
+- `GET /api/plugins` lists installed plugin manifests.
+- `POST /api/plugins/install` with `{path}` installs a server-local package.
+- `DELETE /api/plugins/:pluginId` removes its Surface and MCP registration.
+- `GET /api/plugins/:pluginId/surface-document?route=<navigationId>` fetches
+  and validates one declarative route for native client rendering.
+- `GET /api/plugins/:pluginId/auth/status` returns login state without a token.
+- `POST /api/plugins/:pluginId/auth/login` accepts `{username,password}`,
+  maps those values to the manifest's `usernameField` and `passwordField`,
+  forwards them to the plugin login endpoint, discards the password, and
+  stores only the returned token server-side. External SSO verification may
+  take longer than an ordinary API login, so the bounded upstream timeout is
+  50 seconds.
+- `DELETE /api/plugins/:pluginId/auth/logout` removes that stored token.
+
+CLI-first installation uses
+`codmes plugin install <path> --root <workspace>`. Installation writes the
+validated manifest under `.codmes/plugins/<pluginId>/plugin.json` and updates
+the MCP config as one rollback-safe operation. Removal reverses both. The
+current format installs declarative configuration only; it does not download or
+execute native code.

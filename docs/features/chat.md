@@ -25,6 +25,15 @@ project/folder에 속하거나 고정된 session, 진행 중 task, approval 대�
 Apple client의 `LiveChatClient`가 `/api/live` WebSocket을 사용한다. model output,
 reasoning, tool event, approval과 완료 event가 같은 연결을 통해 전달된다.
 
+## Plugin tools
+
+A plugin can scope its MCP tools to its own Surface. For example, the KNU
+proof-of-concept exposes notice search/detail tools while `KNU` is selected, but
+does not add them to Chat/Notes/Code. Every `mcp.tool.call` follows the normal
+approval inbox: rejecting sends no remote request; approving resumes exactly
+the stored call. Service credentials are never included in prompts, schemas,
+events, approval records, or results.
+
 ## Context와 tool
 
 mention으로 file, folder 또는 Workspace를 현재 대화 context에 넣을 수 있다. 작은

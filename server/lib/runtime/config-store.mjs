@@ -61,8 +61,10 @@ export async function ensureRuntimeConfig(workspaceRoot) {
   await migrateWorkspaceState(workspaceRoot);
   const dir = runtimeConfigDir(workspaceRoot);
   await fs.mkdir(dir, { recursive: true });
+  await fs.chmod(dir, 0o700);
   await writeYamlIfMissing(path.join(dir, "config.yaml"), "model:\n  default:\n  provider:\n");
   await writeJsonIfMissing(path.join(dir, "auth.json"), { version: 1, credential_pool: {} });
+  await fs.chmod(path.join(dir, "auth.json"), 0o600);
 }
 
 export function listProviderRegistry() {
@@ -91,7 +93,7 @@ export async function readRuntimeConfig(workspaceRoot) {
       } : null,
       fallbackChain: parsed.model?.fallback_chain || [],
       disabledTools: parsed.disabled_tools || [],
-      mcpServers: parsed.mcp_servers || [],
+      mcpServers: normalizeMcpServers(parsed.mcp_servers || []),
       models: [],
       providers: {}
     };
@@ -141,11 +143,163 @@ export async function writeRuntimeConfig(workspaceRoot, value) {
     parsed.disabled_tools = value.disabledTools;
   }
   if (value.mcpServers !== undefined) {
-    parsed.mcp_servers = value.mcpServers;
+    parsed.mcp_servers = normalizeMcpServers(value.mcpServers);
   }
 
   const updatedContent = stringifyConfigYaml(existingContent, parsed);
   await fs.writeFile(filePath, updatedContent, "utf8");
+}
+
+export function normalizeMcpServers(servers) {
+  if (!Array.isArray(servers)) return [];
+  return servers.map(normalizeMcpServerConfig);
+}
+
+export function normalizeMcpServerConfig(server = {}) {
+  const name = String(server.name || "").trim();
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) throw new Error("MCP server name must contain only letters, numbers, dashes, and underscores.");
+  const transport = String(server.transport || "stdio").trim() || "stdio";
+  const enabled = server.enabled !== false;
+  const pluginId = String(server.pluginId || server.plugin_id || "").trim();
+  if (transport === "stdio") {
+    const command = String(server.command || "").trim();
+    if (!command) throw new Error("Missing MCP command.");
+    return { name, transport, command, args: Array.isArray(server.args) ? server.args.map(String) : [], enabled,
+      env: sanitizeMcpStringMap(server.env), scopePath: String(server.scopePath || server.scope_path || "").trim(),
+      ...(pluginId ? { pluginId } : {}) };
+  }
+  if (transport !== "streamable_http") throw new Error("MCP transport must be 'stdio' or 'streamable_http'.");
+  const url = String(server.url || "").trim();
+  const credentialId = String(server.credential_id || server.credentialId || "").trim();
+  const surfaces = Array.isArray(server.surfaces) ? [...new Set(server.surfaces.map(String).map((s) => s.trim()).filter(Boolean))] : [];
+  const allowUnauthenticated = server.allowUnauthenticated === true || server.allow_unauthenticated === true;
+  if (!allowUnauthenticated && (!credentialId || !/^[a-zA-Z0-9_-]+$/.test(credentialId))) {
+    throw new Error("A valid MCP credential_id is required.");
+  }
+  if (!surfaces.length || surfaces.some((surface) => !/^[a-z0-9][a-z0-9_-]*$/.test(surface))) {
+    throw new Error("MCP streamable_http requires at least one valid surface id.");
+  }
+  let parsed;
+  try { parsed = new URL(url); } catch { throw new Error("MCP streamable_http requires an absolute url."); }
+  if (parsed.username || parsed.password) {
+    throw new Error("MCP streamable_http URL must be configured without credentials.");
+  }
+  const isLoopback = ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase());
+  if ((parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLoopback))
+      || !parsed.hostname || parsed.search || parsed.hash) {
+    throw new Error("MCP streamable_http requires HTTPS, except for loopback development services.");
+  }
+  if (allowUnauthenticated && !isLoopback) {
+    throw new Error("Unauthenticated MCP is allowed only for loopback services.");
+  }
+  if ((Array.isArray(server.args) && server.args.length) || Object.keys(sanitizeMcpStringMap(server.env)).length) {
+    throw new Error("MCP streamable_http does not accept args or env; provision its credential server-side.");
+  }
+  return {
+    name,
+    transport,
+    url,
+    ...(credentialId ? { credential_id: credentialId } : {}),
+    surfaces,
+    enabled,
+    ...(allowUnauthenticated ? { allowUnauthenticated: true } : {}),
+    ...(server.requiresApproval === false || server.requires_approval === false ? { requiresApproval: false } : {}),
+    ...(pluginId ? { pluginId } : {})
+  };
+}
+
+function sanitizeMcpStringMap(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).map(([key, val]) => [String(key).trim(), String(val ?? "").trim()]).filter(([key, val]) => key && val));
+}
+
+export async function setMcpCredential(workspaceRoot, credentialId, token) {
+  await ensureRuntimeConfig(workspaceRoot);
+  const id = String(credentialId || "").trim();
+  const value = String(token || "").trim();
+  if (!/^[a-zA-Z0-9_-]+$/.test(id) || !value) throw new Error("A valid credential id and non-empty token are required.");
+  const authPath = path.join(runtimeConfigDir(workspaceRoot), "auth.json");
+  const auth = await readAuthObject(authPath);
+  auth.mcp_credentials = { ...(auth.mcp_credentials || {}), [id]: { token: value } };
+  await writeAuthObject(authPath, auth);
+  return { credentialId: id, configured: true };
+}
+
+export async function getMcpCredential(workspaceRoot, credentialId) {
+  await ensureRuntimeConfig(workspaceRoot);
+  const auth = await readAuthObject(path.join(runtimeConfigDir(workspaceRoot), "auth.json"));
+  return String(auth.mcp_credentials?.[String(credentialId || "")]?.token || "") || null;
+}
+
+export async function getMcpCredentialStatus(workspaceRoot, credentialId) {
+  return Boolean(await getMcpCredential(workspaceRoot, credentialId));
+}
+
+export async function removeMcpCredential(workspaceRoot, credentialId) {
+  await ensureRuntimeConfig(workspaceRoot);
+  const authPath = path.join(runtimeConfigDir(workspaceRoot), "auth.json");
+  const auth = await readAuthObject(authPath);
+  const id = String(credentialId || "");
+  const removed = Boolean(auth.mcp_credentials?.[id]);
+  if (auth.mcp_credentials) delete auth.mcp_credentials[id];
+  await writeAuthObject(authPath, auth);
+  return { credentialId: id, removed };
+}
+
+export async function setPluginCredential(workspaceRoot, credentialId, token, metadata = {}) {
+  await ensureRuntimeConfig(workspaceRoot);
+  const id = String(credentialId || "").trim();
+  const value = String(token || "").trim();
+  if (!/^[a-zA-Z0-9_-]+$/.test(id) || !value) {
+    throw new Error("A valid plugin credential id and non-empty token are required.");
+  }
+  const authPath = path.join(runtimeConfigDir(workspaceRoot), "auth.json");
+  const auth = await readAuthObject(authPath);
+  auth.plugin_credentials = {
+    ...(auth.plugin_credentials || {}),
+    [id]: {
+      token: value,
+      username: String(metadata.username || "").trim() || undefined,
+      updatedAt: new Date().toISOString()
+    }
+  };
+  await writeAuthObject(authPath, auth);
+  return { credentialId: id, configured: true };
+}
+
+export async function getPluginCredential(workspaceRoot, credentialId) {
+  await ensureRuntimeConfig(workspaceRoot);
+  const auth = await readAuthObject(path.join(runtimeConfigDir(workspaceRoot), "auth.json"));
+  const entry = auth.plugin_credentials?.[String(credentialId || "")];
+  if (!entry?.token) return null;
+  return {
+    token: String(entry.token),
+    username: String(entry.username || "") || null,
+    updatedAt: String(entry.updatedAt || "") || null
+  };
+}
+
+export async function removePluginCredential(workspaceRoot, credentialId) {
+  await ensureRuntimeConfig(workspaceRoot);
+  const authPath = path.join(runtimeConfigDir(workspaceRoot), "auth.json");
+  const auth = await readAuthObject(authPath);
+  const id = String(credentialId || "");
+  const removed = Boolean(auth.plugin_credentials?.[id]);
+  if (auth.plugin_credentials) delete auth.plugin_credentials[id];
+  await writeAuthObject(authPath, auth);
+  return { credentialId: id, removed };
+}
+
+async function readAuthObject(authPath) {
+  try { return JSON.parse(await fs.readFile(authPath, "utf8")); } catch { return { version: 1, credential_pool: {} }; }
+}
+
+async function writeAuthObject(authPath, value) {
+  const temp = `${authPath}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+  await fs.writeFile(temp, JSON.stringify(value, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  await fs.chmod(temp, 0o600);
+  await fs.rename(temp, authPath);
+  await fs.chmod(authPath, 0o600);
 }
 
 export async function listRuntimeModels(workspaceRoot) {

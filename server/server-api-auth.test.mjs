@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import http from "node:http";
 import { annotationsPathForDocument, documentManifestPath, documentStateDirectory } from "./lib/document-ingest.mjs";
 
 test("workspace server protects APIs with CODMES_SERVER_TOKEN and exposes management APIs", async () => {
@@ -329,6 +330,21 @@ test("workspace server protects APIs with CODMES_SERVER_TOKEN and exposes manage
     assert.equal(updatedMcp.server.scopePath, "Notes/Research");
     assert.equal(updatedMcp.server.env.EXAMPLE_MCP_MODE, "demo");
     assert.deepEqual(updatedMcp.server.args, ["start", "--scope", "Notes"]);
+    const remoteMcp = await fetchJson(`${baseUrl}/api/mcp`, {
+      token,
+      method: "POST",
+      body: {
+        name: "knu-rag",
+        transport: "streamable_http",
+        url: "https://example.test/api/mcp/",
+        credential_id: "knu-rag",
+        surfaces: ["chat"]
+      }
+    });
+    assert.equal(remoteMcp.server.transport, "streamable_http");
+    assert.equal(remoteMcp.server.credentialConfigured, false);
+    assert.equal(Object.hasOwn(remoteMcp.server, "token"), false);
+    assert.equal(JSON.stringify(remoteMcp).includes("bearer"), false);
     const listedMcp = await fetchJson(`${baseUrl}/api/mcp`, { token });
     assert.equal(typeof listedMcp.servers.find((server) => server.name === "test_mcp").enabled, "boolean");
     const disabled = await fetchJson(`${baseUrl}/api/mcp/test_mcp/disable`, { token, method: "POST" });
@@ -425,6 +441,110 @@ test("workspace server protects APIs with CODMES_SERVER_TOKEN and exposes manage
   } finally {
     server.kill("SIGTERM");
     await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test("plugin surface document is fetched server-side for native client rendering", async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-plugin-api-"));
+  const source = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-plugin-package-"));
+  const codmesPort = 28000 + Math.floor(Math.random() * 5000);
+  const token = "workspace-secret";
+  const upstreamRequests = [];
+  const surfaceDocument = {
+    schemaVersion: 1,
+    presentation: "dashboard",
+    title: "Portal",
+    subtitle: "Student data",
+    search: null,
+    filters: [],
+    items: [],
+    sections: [{
+      id: "timetable",
+      title: "Timetable",
+      subtitle: null,
+      systemImage: "calendar",
+      kind: "table",
+      columns: ["Period", "Monday"],
+      rows: [["1", "Data Structures"]]
+    }]
+  };
+  const upstream = http.createServer((req, res) => {
+    upstreamRequests.push({ url: req.url, authorization: req.headers.authorization, cookie: req.headers.cookie });
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify(surfaceDocument));
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  const upstreamPort = upstream.address().port;
+  await fs.writeFile(path.join(source, "plugin.json"), JSON.stringify({
+    schemaVersion: 1,
+    id: "com.example.portal",
+    version: "1.0.0",
+    name: "Portal",
+    platforms: ["macos", "ios"],
+    surface: {
+      id: "portal",
+      type: "declarative",
+      upstreamUrl: `http://127.0.0.1:${upstreamPort}`,
+      entryPath: "/api/codmes/surface",
+      navigation: [
+        { id: "notices", title: "Notices", path: "/api/codmes/surface" }
+      ]
+    },
+    mcp: {
+      name: "portal",
+      transport: "streamable_http",
+      url: `http://127.0.0.1:${upstreamPort}/api/mcp`,
+      surfaces: ["portal"],
+      allowUnauthenticated: true
+    }
+  }), "utf8");
+  const server = spawn(process.execPath, ["server/index.mjs"], {
+    cwd: path.resolve("."),
+    env: {
+      ...process.env,
+      NODE_ENV: "test",
+      CODMES_HOST: "127.0.0.1",
+      CODMES_PORT: String(codmesPort),
+      CODMES_WORKSPACE_ROOT: workspaceRoot,
+      CODMES_SERVER_TOKEN: token
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  try {
+    const baseUrl = `http://127.0.0.1:${codmesPort}`;
+    await waitForServer(`${baseUrl}/api/health`);
+    const unauthorized = await fetch(`${baseUrl}/api/plugins`);
+    assert.equal(unauthorized.status, 401);
+    await fetchJson(`${baseUrl}/api/plugins/install`, {
+      token,
+      method: "POST",
+      body: { path: source }
+    });
+    const surfaces = await fetchJson(`${baseUrl}/api/surfaces`, { token });
+    const registeredSurface = surfaces.surfaces.find((surface) => surface.id === "portal");
+    assert.equal(registeredSurface?.renderer, "declarative");
+    assert.equal(registeredSurface?.dataPath, "/api/plugins/com.example.portal/surface-document");
+
+    const document = await fetchJson(
+      `${baseUrl}/api/plugins/com.example.portal/surface-document`,
+      { token }
+    );
+    assert.deepEqual(document, surfaceDocument);
+    assert.deepEqual(upstreamRequests.map((request) => request.url), ["/api/codmes/surface"]);
+    assert.equal(upstreamRequests.every((request) => request.authorization === undefined), true);
+    assert.equal(upstreamRequests.every((request) => request.cookie === undefined), true);
+
+    const removed = await fetchJson(`${baseUrl}/api/plugins/com.example.portal`, {
+      token,
+      method: "DELETE"
+    });
+    assert.equal(removed.removed, true);
+  } finally {
+    server.kill("SIGTERM");
+    await new Promise((resolve) => upstream.close(resolve));
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(source, { recursive: true, force: true });
   }
 });
 

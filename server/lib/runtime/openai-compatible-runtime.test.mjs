@@ -715,6 +715,27 @@ rl.on("line", (line) => {
   runtime.close();
 });
 
+test("OpenAI-compatible runtime exposes remote MCP tools only on the configured Chat surface", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-openai-runtime-remote-mcp-"));
+  await setDefaultModel(root, "openai-api", "gpt-5.5");
+  await setCredentialValue(root, "openai-api", "CODMES_OPENAI_API_KEY", "test-key");
+  await writeRuntimeConfig(root, { defaultModel: { provider: "openai-api", model: "gpt-5.5" }, mcpServers: [{ name: "knu-rag", transport: "streamable_http", url: "https://example.test/api/mcp/", credential_id: "knu-rag", surfaces: ["chat"], enabled: true }] });
+  let sentTools = [];
+  let starts = 0;
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: root,
+    mcpClientFactory: () => ({ status: "stopped", async start() { starts += 1; this.status = "running"; }, async listTools() { return [{ name: "search_knu_notices", inputSchema: { type: "object" } }]; }, stop() {} }),
+    fetchImpl: async (_url, options) => ({ ok: true, headers: { get: () => "text/event-stream" }, body: (sentTools = JSON.parse(options.body).tools, streamChunks(['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', "data: [DONE]\n\n"])) })
+  });
+  await runtime.submitPrompt({ sessionId: "chat-remote-mcp", message: "공지 찾아줘", surface: "chat" });
+  assert.equal(starts, 1);
+  assert.equal(sentTools.some((tool) => tool.function.name === "mcp__knu_rag__search_knu_notices"), true, JSON.stringify(sentTools));
+  await runtime.submitPrompt({ sessionId: "notes-remote-mcp", message: "공지 찾아줘", surface: "notes" });
+  assert.equal(sentTools.some((tool) => tool.function.name === "mcp__knu_rag__search_knu_notices"), false);
+  assert.equal(starts, 1);
+  runtime.close();
+});
+
 test("OpenAI-compatible runtime routes MCP tools with underscores through the registry map", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-openai-runtime-mcp-underscore-"));
   await setDefaultModel(root, "openai-api", "gpt-5.5");

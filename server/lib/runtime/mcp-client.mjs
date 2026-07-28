@@ -305,6 +305,112 @@ export class McpClient {
   }
 }
 
+export class StreamableHttpMcpClient {
+  constructor(name, url, {
+    tokenAccessor,
+    allowUnauthenticated = false,
+    logger = console,
+    timeoutMs = 15000,
+    fetchImpl = globalThis.fetch
+  } = {}) {
+    this.name = name;
+    this.url = url;
+    this.tokenAccessor = tokenAccessor;
+    this.allowUnauthenticated = allowUnauthenticated;
+    this.logger = logger;
+    this.timeoutMs = timeoutMs;
+    this.fetch = fetchImpl;
+    this.client = null;
+    this.transport = null;
+    this.status = "stopped";
+    this.tools = [];
+    this.activeAbortControllers = new Set();
+  }
+
+  async start() {
+    if (this.status === "running") return;
+    this.status = "starting";
+    try {
+      const [{ Client }, { StreamableHTTPClientTransport }] = await Promise.all([
+        import("@modelcontextprotocol/sdk/client/index.js"),
+        import("@modelcontextprotocol/sdk/client/streamableHttp.js")
+      ]);
+      const authenticatedFetch = async (input, init = {}) => {
+        const token = await this.tokenAccessor?.();
+        const headers = new Headers(init.headers || {});
+        if (token) {
+          headers.set("authorization", `Bearer ${token}`);
+        } else if (!this.allowUnauthenticated) {
+          throw new Error(`MCP credential for '${this.name}' is not configured.`);
+        }
+        const controller = new AbortController();
+        this.activeAbortControllers.add(controller);
+        try { return await this.fetch(input, { ...init, headers, signal: controller.signal }); }
+        finally { this.activeAbortControllers.delete(controller); }
+      };
+      this.client = new Client({ name: "codmes-client", version: "1.0.0" }, { capabilities: {} });
+      this.transport = new StreamableHTTPClientTransport(new URL(this.url), { fetch: authenticatedFetch });
+      await this.withTimeout(this.client.connect(this.transport), "initialize");
+      this.status = "running";
+    } catch (error) {
+      this.status = "error";
+      this.stop();
+      throw redactMcpError(error);
+    }
+  }
+
+  async listTools() {
+    if (this.status !== "running") await this.start();
+    try {
+      const result = await this.withTimeout(this.client.listTools(), "tools/list");
+      this.tools = result.tools || [];
+      return this.tools;
+    } catch (error) { throw redactMcpError(error); }
+  }
+
+  async callTool(name, argumentsObj) {
+    if (this.status !== "running") await this.start();
+    try { return await this.withTimeout(this.client.callTool({ name, arguments: argumentsObj }), "tools/call"); }
+    catch (error) { throw redactMcpError(error); }
+  }
+
+  async withTimeout(promise, operation) {
+    let timer;
+    try {
+      return await Promise.race([promise, new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          for (const controller of this.activeAbortControllers) controller.abort();
+          reject(Object.assign(new Error(`MCP ${operation} timed out after ${this.timeoutMs}ms`), { code: "TIMEOUT" }));
+        }, this.timeoutMs);
+      })]);
+    } finally { if (timer) clearTimeout(timer); }
+  }
+
+  stop() {
+    const transport = this.transport;
+    this.client = null;
+    this.transport = null;
+    this.status = "stopped";
+    for (const controller of this.activeAbortControllers) controller.abort();
+    this.activeAbortControllers.clear();
+    if (transport) Promise.resolve(transport.close()).catch(() => {});
+  }
+}
+
+export function createMcpClient(config, options = {}) {
+  if (config.transport === "streamable_http") {
+    return new StreamableHttpMcpClient(config.name, config.url, options);
+  }
+  return new McpClient(config.name, config.command, config.args || [], options);
+}
+
+export function redactMcpError(error) {
+  const message = String(error?.message || error || "MCP request failed")
+    .replace(/authorization\s*[:=]\s*bearer\s+[^\s,;]+/gi, "Authorization: Bearer [REDACTED]")
+    .replace(/bearer\s+[A-Za-z0-9._~+\/-]+=*/gi, "Bearer [REDACTED]");
+  return Object.assign(new Error(message), { code: error?.code, status: error?.status });
+}
+
 function normalizeProcessEnv(env) {
   const result = {};
   for (const [key, value] of Object.entries(env || {})) {

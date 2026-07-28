@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { saveToolModeOverride } from "./tool-mode-registry.mjs";
+import { listInstalledPlugins } from "./plugin-registry.mjs";
 
 const DEFAULT_SURFACES = [
   {
@@ -82,16 +83,30 @@ export async function loadSurfaces(workspaceRoot) {
 }
 
 async function readPluginSurfaceManifests(workspaceRoot) {
+  const installed = await listInstalledPlugins(workspaceRoot);
+  const manifests = installed.map((plugin) => ({
+    id: plugin.surface.id,
+    title: plugin.surface.title,
+    description: plugin.surface.description || plugin.description,
+    icon: plugin.surface.icon,
+    order: plugin.surface.order,
+    pluginId: plugin.id,
+    kind: "plugin",
+    renderer: plugin.surface.type,
+    dataPath: `/api/plugins/${encodeURIComponent(plugin.id)}/surface-document`,
+    navigation: plugin.surface.navigation,
+    hasAuthentication: Boolean(plugin.surface.auth)
+  }));
   const pluginsDir = path.join(workspaceRoot, ".codmes", "plugins");
   let entries = [];
   try {
     entries = await fs.readdir(pluginsDir, { withFileTypes: true });
   } catch {
-    return [];
+    return manifests;
   }
-  const manifests = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    if (installed.some((plugin) => plugin.id === entry.name)) continue;
     const file = path.join(pluginsDir, entry.name, "surface.json");
     try {
       const parsed = JSON.parse(await fs.readFile(file, "utf8"));
@@ -158,7 +173,7 @@ async function writeSurfaceOverrides(workspaceRoot, overrides) {
 
 function pickSurfaceFields(value, base = {}) {
   const picked = {};
-  for (const key of ["title", "kind", "icon", "description", "prompt", "toolMode", "root", "pluginId"]) {
+  for (const key of ["title", "kind", "icon", "description", "prompt", "toolMode", "root", "pluginId", "renderer", "dataPath"]) {
     if (typeof value[key] === "string") picked[key] = value[key];
   }
   if (typeof value.enabled === "boolean") picked.enabled = value.enabled;
@@ -167,6 +182,8 @@ function pickSurfaceFields(value, base = {}) {
   if (Array.isArray(value.enabledTools)) picked.enabledTools = value.enabledTools.map(String);
   if (Array.isArray(value.disabledTools)) picked.disabledTools = value.disabledTools.map(String);
   if (Array.isArray(value.requiresApproval)) picked.requiresApproval = value.requiresApproval.map(String);
+  if (Array.isArray(value.navigation)) picked.navigation = value.navigation;
+  if (typeof value.hasAuthentication === "boolean") picked.hasAuthentication = value.hasAuthentication;
   if (base.removable === false) picked.removable = false;
   return picked;
 }

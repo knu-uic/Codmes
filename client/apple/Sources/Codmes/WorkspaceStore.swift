@@ -59,6 +59,10 @@ final class WorkspaceStore: ObservableObject {
     @Published var runtimeModelSetupMessage = ""
     @Published var workspaceSurfaces: [WorkspaceSurface] = []
     @Published var surfaceSetupMessage = ""
+    @Published private(set) var pluginAuthStatuses: [String: PluginAuthStatus] = [:]
+    @Published private(set) var pluginAuthOperations: [String: String] = [:]
+    @Published private(set) var pluginAuthErrors: [String: String] = [:]
+    @Published private(set) var pluginAuthRevision = 0
     @Published var mcpServers: [MCPServerConfig] = []
     @Published var mcpSetupMessage = ""
     @Published var searchConfig: SearchConfigResponse?
@@ -76,10 +80,144 @@ final class WorkspaceStore: ObservableObject {
     private let fileDiskCache = WorkspaceFileDiskCache()
     private let chunkedUploadThresholdBytes: Int64 = 8 * 1024 * 1024
     private let uploadChunkSize = 1024 * 1024
+    private var pluginAuthTasks: [String: Task<Void, Never>] = [:]
+    private var pluginAuthMonitorTasks: [String: Task<Void, Never>] = [:]
 
     var api: WorkspaceAPI? {
         guard let url = currentServerURL else { return nil }
         return WorkspaceAPI(baseURL: url, authToken: serverAuthToken)
+    }
+
+    func pluginAuthStatus(for pluginId: String?) -> PluginAuthStatus? {
+        guard let pluginId else { return nil }
+        return pluginAuthStatuses[pluginId]
+    }
+
+    func pluginAuthOperation(for pluginId: String?) -> String? {
+        guard let pluginId else { return nil }
+        return pluginAuthOperations[pluginId]
+    }
+
+    func pluginAuthError(for pluginId: String?) -> String? {
+        guard let pluginId else { return nil }
+        return pluginAuthErrors[pluginId]
+    }
+
+    func refreshPluginAuthStatus(pluginId: String) async {
+        guard let api else {
+            pluginAuthErrors[pluginId] = "Codmes 서버에 연결되지 않았습니다."
+            return
+        }
+        do {
+            let status = try await api.pluginAuthStatus(pluginId: pluginId)
+            updatePluginAuthStatus(status, pluginId: pluginId)
+            pluginAuthErrors[pluginId] = nil
+        } catch {
+            pluginAuthErrors[pluginId] = error.localizedDescription
+        }
+    }
+
+    func startPluginLogin(pluginId: String, username: String, password: String) {
+        guard pluginAuthTasks[pluginId] == nil else { return }
+        guard let api else {
+            pluginAuthErrors[pluginId] = "Codmes 서버에 연결되지 않았습니다."
+            return
+        }
+
+        let submittedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let submittedPassword = password
+        pluginAuthErrors[pluginId] = nil
+        pluginAuthOperations[pluginId] = "login"
+        pluginAuthTasks[pluginId] = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await api.loginPlugin(
+                    pluginId: pluginId,
+                    username: submittedUsername,
+                    password: submittedPassword
+                )
+                guard !Task.isCancelled else { return }
+                self.updatePluginAuthStatus(
+                    PluginAuthStatus(
+                        supported: true,
+                        authenticated: response.authenticated,
+                        username: response.username,
+                        reachable: true
+                    ),
+                    pluginId: pluginId
+                )
+                self.pluginAuthErrors[pluginId] = nil
+                self.finishPluginAuthOperation(pluginId)
+                self.startPluginAuthMonitoring(pluginId: pluginId)
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.pluginAuthErrors[pluginId] = error.localizedDescription
+                self.finishPluginAuthOperation(pluginId)
+            }
+        }
+    }
+
+    func startPluginLogout(pluginId: String) {
+        guard pluginAuthTasks[pluginId] == nil else { return }
+        guard let api else {
+            pluginAuthErrors[pluginId] = "Codmes 서버에 연결되지 않았습니다."
+            return
+        }
+
+        pluginAuthMonitorTasks[pluginId]?.cancel()
+        pluginAuthMonitorTasks[pluginId] = nil
+        pluginAuthErrors[pluginId] = nil
+        pluginAuthOperations[pluginId] = "logout"
+        pluginAuthTasks[pluginId] = Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await api.logoutPlugin(pluginId: pluginId)
+                guard !Task.isCancelled else { return }
+                self.updatePluginAuthStatus(
+                    PluginAuthStatus(
+                        supported: true,
+                        authenticated: false,
+                        username: nil,
+                        reachable: true
+                    ),
+                    pluginId: pluginId
+                )
+                self.pluginAuthErrors[pluginId] = nil
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.pluginAuthErrors[pluginId] = error.localizedDescription
+            }
+            self.finishPluginAuthOperation(pluginId)
+        }
+    }
+
+    private func finishPluginAuthOperation(_ pluginId: String) {
+        pluginAuthOperations[pluginId] = nil
+        pluginAuthTasks[pluginId] = nil
+    }
+
+    private func updatePluginAuthStatus(_ status: PluginAuthStatus, pluginId: String) {
+        if pluginAuthStatuses[pluginId] != status {
+            pluginAuthStatuses[pluginId] = status
+            pluginAuthRevision += 1
+        }
+    }
+
+    private func startPluginAuthMonitoring(pluginId: String) {
+        pluginAuthMonitorTasks[pluginId]?.cancel()
+        pluginAuthMonitorTasks[pluginId] = Task { [weak self] in
+            guard let self else { return }
+            for attempt in 0..<120 {
+                await self.refreshPluginAuthStatus(pluginId: pluginId)
+                guard !Task.isCancelled else { return }
+                guard self.pluginAuthStatuses[pluginId]?.authenticated == true else { break }
+                guard self.pluginAuthStatuses[pluginId]?.profileSyncing == true else { break }
+                if attempt < 119 {
+                    try? await Task.sleep(for: .seconds(3))
+                }
+            }
+            self.pluginAuthMonitorTasks[pluginId] = nil
+        }
     }
 
     var effectiveServerURLText: String {
@@ -470,7 +608,7 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
-    func saveMCPServer(name: String, command: String, argsText: String, envText: String, scopePath: String, enabled: Bool, editingExisting: Bool) async {
+    func saveMCPServer(name: String, transport: String, command: String, argsText: String, envText: String, scopePath: String, url: String, credentialId: String, enabled: Bool, editingExisting: Bool) async {
         guard let api else { return }
         let cleanedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -478,7 +616,7 @@ final class WorkspaceStore: ObservableObject {
             mcpSetupMessage = "MCP name is required."
             return
         }
-        guard !cleanedCommand.isEmpty else {
+        guard transport == "streamable_http" || !cleanedCommand.isEmpty else {
             mcpSetupMessage = "MCP command is required."
             return
         }
@@ -486,11 +624,15 @@ final class WorkspaceStore: ObservableObject {
             let updatesExistingServer = editingExisting || mcpServers.contains(where: { $0.name == cleanedName })
             let body = MCPServerUpdateBody(
                 name: updatesExistingServer ? nil : cleanedName,
-                command: cleanedCommand,
-                args: splitShellLikeArgs(argsText),
+                transport: transport,
+                command: transport == "stdio" ? cleanedCommand : nil,
+                args: transport == "stdio" ? splitShellLikeArgs(argsText) : nil,
                 enabled: enabled,
-                env: parseEnvLines(envText),
-                scopePath: scopePath.trimmingCharacters(in: .whitespacesAndNewlines)
+                env: transport == "stdio" ? parseEnvLines(envText) : nil,
+                scopePath: transport == "stdio" ? scopePath.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
+                url: transport == "streamable_http" ? url.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
+                credentialId: transport == "streamable_http" ? credentialId.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
+                surfaces: transport == "streamable_http" ? ["chat"] : nil
             )
             if updatesExistingServer {
                 _ = try await api.updateMCPServer(name: cleanedName, body: body)
@@ -2218,13 +2360,13 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func respondToApproval(lineId: UUID, approved: Bool) async {
-        guard let liveSessionId else {
-            statusMessage = "No live session"
+        guard let approvalId = chatLines.first(where: { $0.id == lineId })?.approvalId else {
+            statusMessage = "Missing approval id"
             return
         }
-        updateApprovalLine(lineId, state: approved ? .approved : .denied)
         do {
-            try await liveClient.respondToApproval(sessionId: liveSessionId, approved: approved)
+            try await liveClient.respondToApproval(approvalId: approvalId, approved: approved)
+            updateApprovalLine(lineId, state: approved ? .approved : .denied)
             statusMessage = approved ? "Approval sent" : "Denial sent"
         } catch {
             statusMessage = error.localizedDescription
@@ -2414,7 +2556,7 @@ final class WorkspaceStore: ObservableObject {
             return
         }
         if type == "approval.request" {
-            chatLines.append(ChatLine(role: "approval", text: text.isEmpty ? "Approval requested." : text, approvalState: .pending))
+            chatLines.append(ChatLine(role: "approval", text: text.isEmpty ? "Approval requested." : text, approvalState: .pending, approvalId: envelope.approvalId))
             Task {
                 await refreshApprovals()
                 await refreshAgentTasks()

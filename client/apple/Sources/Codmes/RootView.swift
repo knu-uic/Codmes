@@ -7,6 +7,7 @@ struct RootView: View {
     @EnvironmentObject private var store: WorkspaceStore
     @State private var selection: WorkspaceSection? = .chat
     @State private var selectedPluginSurfaceId: String?
+    @State private var selectedPluginRouteId: String?
     @State private var isChatPanelVisible = false
     @State private var chatPanelDragX: CGFloat = 0
     @State private var isSidebarVisible = false
@@ -101,7 +102,10 @@ struct RootView: View {
     }
 
     private var macHasSidebar: Bool {
-        activeSurfaceId == "chat" || activeSurfaceId == "notes" || activeSurfaceId == "code"
+        activeSurfaceId == "chat"
+            || activeSurfaceId == "notes"
+            || activeSurfaceId == "code"
+            || !(selectedPluginSurface?.navigation ?? []).isEmpty
     }
 
     private var activeDocumentTitle: String? {
@@ -132,12 +136,20 @@ struct RootView: View {
             FileBrowserPane(title: "Notes", root: "notes", showsHeader: false)
         } else if activeSurfaceId == "code" {
             FileBrowserPane(title: "Code", root: "code", showsHeader: false)
+        } else if let selectedPluginSurface {
+            PluginSurfaceSidebar(
+                surface: selectedPluginSurface,
+                selectedRouteId: $selectedPluginRouteId
+            )
         }
     }
 
     private func macSidebarWidth(for availableWidth: CGFloat) -> CGFloat {
         if activeSurfaceId == "chat" {
             return min(300, max(240, availableWidth * 0.24))
+        }
+        if selectedPluginSurface != nil {
+            return min(290, max(230, availableWidth * 0.24))
         }
         return min(320, max(220, availableWidth * 0.26))
     }
@@ -593,6 +605,16 @@ struct RootView: View {
                         closeSidebar()
                     }
                 }
+            } else if let selectedPluginSurface {
+                PluginSurfaceSidebar(
+                    surface: selectedPluginSurface,
+                    selectedRouteId: $selectedPluginRouteId,
+                    onSelectRoute: {
+                        if !persistent {
+                            closeSidebar()
+                        }
+                    }
+                )
             } else {
                 ContentUnavailableView(
                     "사이드바 없음",
@@ -811,6 +833,7 @@ struct RootView: View {
 
     private func selectSection(_ section: WorkspaceSection) {
         selectedPluginSurfaceId = nil
+        selectedPluginRouteId = nil
         selection = section
         store.activeChatSurface = section.runtimeSurfaceId
     }
@@ -831,6 +854,7 @@ struct RootView: View {
 
     private func selectPluginSurface(_ surface: WorkspaceSurface) {
         selectedPluginSurfaceId = surface.id
+        selectedPluginRouteId = surface.navigation?.first?.id
         selection = nil
         store.activeChatSurface = surface.id
     }
@@ -865,7 +889,11 @@ struct RootView: View {
         switch selectedSection {
         case .chat:
             if let selectedPluginSurface {
-                PluginSurfaceView(surface: selectedPluginSurface)
+                PluginSurfaceView(
+                    surface: selectedPluginSurface,
+                    routeId: selectedPluginRouteId,
+                    reloadRevision: store.pluginAuthRevision
+                )
             } else {
                 #if os(macOS)
                 ChatHomeView(
@@ -979,10 +1007,743 @@ private struct DocumentJobsPopover: View {
     }
 }
 
-struct PluginSurfaceView: View {
+struct PluginSurfaceSidebar: View {
+    @EnvironmentObject private var store: WorkspaceStore
     let surface: WorkspaceSurface
+    @Binding var selectedRouteId: String?
+    var onSelectRoute: () -> Void = {}
+
+    @State private var showingSettings = false
+
+    private var authStatus: PluginAuthStatus? {
+        store.pluginAuthStatus(for: surface.pluginId)
+    }
+
+    private var authOperation: String? {
+        store.pluginAuthOperation(for: surface.pluginId)
+    }
+
+    private var errorMessage: String? {
+        store.pluginAuthError(for: surface.pluginId)
+    }
 
     var body: some View {
+        VStack(spacing: 0) {
+            accountHeader
+
+            Divider()
+                .padding(.horizontal, 12)
+
+            ScrollView {
+                LazyVStack(spacing: 3) {
+                    ForEach(surface.navigation ?? []) { route in
+                        Button {
+                            selectedRouteId = route.id
+                            onSelectRoute()
+                        } label: {
+                            HStack(spacing: 11) {
+                                Image(systemName: route.systemImage)
+                                    .frame(width: 20)
+                                Text(route.title)
+                                    .lineLimit(1)
+                                Spacer()
+                                if route.requiresAuth == true, authStatus?.authenticated != true {
+                                    Image(systemName: "lock.fill")
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(selectedRouteId == route.id ? .primary : .secondary)
+                            .padding(.horizontal, 12)
+                            .frame(minHeight: 38)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                            .background(
+                                selectedRouteId == route.id ? Color.primary.opacity(0.09) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 8)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(10)
+            }
+        }
+        .background(.background.opacity(0.96))
+        .task(id: surface.id) {
+            if selectedRouteId == nil {
+                selectedRouteId = surface.navigation?.first?.id
+            }
+            await refreshAuthStatus()
+        }
+        .sheet(isPresented: $showingSettings, onDismiss: {
+            Task {
+                await refreshAuthStatus()
+            }
+        }) {
+            WorkspaceSettingsView(
+                isPresented: $showingSettings,
+                initialSection: .surfaces,
+                initialSurfaceId: surface.id
+            )
+            .environmentObject(store)
+        }
+    }
+
+    private var accountHeader: some View {
+        HStack(spacing: 10) {
+            Image(systemName: surface.systemImage)
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(surface.title)
+                    .font(.headline)
+                    .lineLimit(1)
+
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(authStatus?.authenticated == true ? .green : .secondary)
+                        .frame(width: 7, height: 7)
+                    Text(accountStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    if authStatus?.authenticated == true,
+                       authStatus?.profileSyncing == true {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .help(authStatus?.syncStage ?? "학교 데이터 동기화 중")
+                    }
+                }
+            }
+
+            Spacer(minLength: 6)
+
+            if authOperation != nil {
+                ProgressView()
+                    .controlSize(.small)
+            } else if authStatus?.authenticated == true {
+                Button("로그아웃") {
+                    logout()
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .controlSize(.small)
+            } else {
+                Button("로그인") {
+                    showingSettings = true
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .help(errorMessage ?? authStatus?.lmsSyncError ?? accountStatusText)
+    }
+
+    private var accountStatusText: String {
+        if authOperation == "login" {
+            return "로그인 중…"
+        }
+        if authOperation == "logout" {
+            return "로그아웃 중…"
+        }
+        if let errorMessage, !errorMessage.isEmpty {
+            return "상태 확인 불가"
+        }
+        if authStatus?.authenticated == true {
+            return authStatus?.name ?? authStatus?.username ?? "로그인됨"
+        }
+        return "로그인 필요"
+    }
+
+    @MainActor
+    private func refreshAuthStatus() async {
+        guard surface.hasAuthentication == true, let pluginId = surface.pluginId else {
+            return
+        }
+        await store.refreshPluginAuthStatus(pluginId: pluginId)
+    }
+
+    @MainActor
+    private func logout() {
+        guard let pluginId = surface.pluginId else { return }
+        store.startPluginLogout(pluginId: pluginId)
+    }
+}
+
+private struct PluginSurfaceAuthenticationSettingsView: View {
+    @EnvironmentObject private var store: WorkspaceStore
+    let surface: WorkspaceSurface
+
+    @State private var username = ""
+    @State private var password = ""
+
+    private var authStatus: PluginAuthStatus? {
+        store.pluginAuthStatus(for: surface.pluginId)
+    }
+
+    private var authOperation: String? {
+        store.pluginAuthOperation(for: surface.pluginId)
+    }
+
+    private var isWorking: Bool {
+        authOperation != nil
+    }
+
+    private var errorMessage: String? {
+        store.pluginAuthError(for: surface.pluginId)
+    }
+
+    private var isKNUPortal: Bool {
+        surface.id == "knu"
+    }
+
+    private var portalProfileNeedsRefresh: Bool {
+        isKNUPortal
+            && authStatus?.authenticated == true
+            && (
+                authStatus?.profileSyncing == true
+                    || authStatus?.name?.isEmpty != false
+            )
+    }
+
+    private var connectedAccountTitle: String {
+        if isKNUPortal {
+            return authStatus?.name
+                ?? authStatus?.studentId
+                ?? authStatus?.username
+                ?? "공주대 포털 계정"
+        }
+        return authStatus?.username ?? "\(surface.title) 계정"
+    }
+
+    private var connectedAccountDetail: String {
+        if isKNUPortal {
+            let academic = [
+                authStatus?.studentId ?? "",
+                authStatus?.major ?? "",
+                authStatus?.year.map { "\($0)학년" } ?? "",
+            ].filter { !$0.isEmpty }
+            if !academic.isEmpty {
+                return academic.joined(separator: " · ")
+            }
+            return "포털 프로필을 가져오는 중입니다."
+        }
+        return "사용자 토큰이 Codmes 서버에 저장되어 있습니다."
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if authOperation == "login" {
+                authenticationProgress
+            } else if authStatus?.authenticated == true {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(isKNUPortal ? "Connected portal account" : "Stored account")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    HStack(spacing: 10) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(connectedAccountTitle)
+                                .font(.callout.weight(.medium))
+                            Text(connectedAccountDetail)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if portalProfileNeedsRefresh {
+                            ProgressView()
+                                .controlSize(.small)
+                                .help(authStatus?.syncStage ?? "학교 데이터 동기화 중")
+                        } else {
+                            Text("Connected")
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                        }
+                    }
+                    .padding(10)
+                    .background(.quaternary.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
+
+                    if let lmsSyncError = authStatus?.lmsSyncError,
+                       !lmsSyncError.isEmpty {
+                        Label(
+                            "LMS 동기화에 실패했습니다: \(lmsSyncError)",
+                            systemImage: "exclamationmark.triangle"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    }
+                }
+
+                HStack {
+                    Label("비밀번호는 저장되지 않습니다.", systemImage: "person.badge.key")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(role: .destructive) {
+                        logout()
+                    } label: {
+                        Label("Disconnect", systemImage: "rectangle.portrait.and.arrow.right")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isWorking)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(isKNUPortal ? "Kongju portal authentication" : "Account authentication")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    TextField(
+                        isKNUPortal ? "공주대 포털 학번" : "\(surface.title) 서비스 아이디",
+                        text: $username
+                    )
+                        .textFieldStyle(.roundedBorder)
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        #endif
+                    SecureField("비밀번호", text: $password)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            login()
+                        }
+
+                    Button {
+                        login()
+                    } label: {
+                        if isWorking {
+                            HStack(spacing: 7) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text(isKNUPortal ? "포털 인증 중…" : "연결 중…")
+                            }
+                        } else {
+                            Label(
+                                isKNUPortal ? "공주대 포털 연결" : "Connect \(surface.title)",
+                                systemImage: "person.crop.circle.badge.plus"
+                            )
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        isWorking
+                            || username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || password.isEmpty
+                    )
+
+                    Label(
+                        isKNUPortal
+                            ? "학번과 비밀번호로 공주대 포털을 직접 확인합니다. 비밀번호는 인증 요청 후 폐기하고, 발급된 세션 토큰만 Codmes 서버에 저장합니다."
+                            : "비밀번호는 로그인 요청에만 사용하고 폐기하며, 발급된 사용자 토큰만 Codmes 서버에 저장합니다.",
+                        systemImage: "lock.shield"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+        }
+        .task {
+            await refreshStatus()
+        }
+    }
+
+    private var authenticationProgress: some View {
+        VStack(spacing: 14) {
+            ProgressView()
+                .controlSize(.regular)
+            VStack(spacing: 5) {
+                Text(isKNUPortal ? "공주대 포털 인증 중" : "\(surface.title) 연결 중")
+                    .font(.headline)
+                Text(
+                    isKNUPortal
+                        ? "학교 포털에서 계정을 확인하고 있습니다. 설정을 닫아도 인증은 계속됩니다."
+                        : "서비스에서 계정을 확인하고 있습니다. 설정을 닫아도 연결은 계속됩니다."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 32)
+        .padding(.horizontal, 20)
+        .background(.quaternary.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    @MainActor
+    private func refreshStatus() async {
+        guard let pluginId = surface.pluginId else { return }
+        await store.refreshPluginAuthStatus(pluginId: pluginId)
+    }
+
+    @MainActor
+    private func login() {
+        guard let pluginId = surface.pluginId else { return }
+        store.startPluginLogin(
+            pluginId: pluginId,
+            username: username,
+            password: password
+        )
+        password = ""
+    }
+
+    @MainActor
+    private func logout() {
+        guard let pluginId = surface.pluginId else { return }
+        store.startPluginLogout(pluginId: pluginId)
+    }
+}
+
+struct PluginSurfaceView: View {
+    @EnvironmentObject private var store: WorkspaceStore
+    @Environment(\.openURL) private var openURL
+    let surface: WorkspaceSurface
+    let routeId: String?
+    let reloadRevision: Int
+    @State private var document: PluginSurfaceDocument?
+    @State private var loadError: String?
+    @State private var query = ""
+    @State private var selectedFilters: [String: String] = [:]
+
+    var body: some View {
+        Group {
+            if surface.renderer == "declarative", surface.pluginId != nil {
+                if let document {
+                    if document.presentation == "dashboard" {
+                        dashboard(document)
+                    } else {
+                        collection(document)
+                    }
+                } else if let loadError {
+                    ContentUnavailableView(
+                        "Couldn’t open \(surface.title)",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text(loadError)
+                    )
+                } else {
+                    ProgressView("Loading \(surface.title)…")
+                }
+            } else {
+                placeholder
+            }
+        }
+        .task(id: "\(surface.id):\(routeId ?? ""):\(reloadRevision)") {
+            await loadSurfaceDocument()
+        }
+    }
+
+    private func collection(_ document: PluginSurfaceDocument) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(document.title)
+                        .font(.title2.weight(.semibold))
+                    if let subtitle = document.subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.bottom, 18)
+
+                if let search = document.search {
+                    HStack(spacing: 9) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(.tertiary)
+                        TextField(search.placeholder ?? "Search", text: $query)
+                            .textFieldStyle(.plain)
+                            #if os(iOS)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            #endif
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(minHeight: 38)
+                    .background(.quaternary.opacity(0.22), in: RoundedRectangle(cornerRadius: 9))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 9)
+                            .stroke(.quaternary.opacity(0.55), lineWidth: 0.5)
+                    }
+                    .padding(.bottom, 12)
+                }
+
+                ForEach(document.filters) { filter in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(filter.options) { option in
+                                filterChip(filter: filter, option: option)
+                            }
+                        }
+                    }
+                    .padding(.bottom, 14)
+                }
+
+                let items = filteredItems(in: document)
+                if items.isEmpty {
+                    ContentUnavailableView(
+                        document.emptyState?.title ?? "Nothing to show",
+                        systemImage: document.emptyState?.systemImage ?? "tray"
+                    )
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 50)
+                } else {
+                    LazyVStack(spacing: 1) {
+                        ForEach(items) { item in
+                            collectionRow(item)
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(.quaternary.opacity(0.55), lineWidth: 0.5)
+                    }
+                }
+            }
+            .frame(maxWidth: 980, alignment: .leading)
+            .padding(.horizontal, 28)
+            .padding(.vertical, 24)
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
+        .background(.background)
+        .refreshable {
+            await loadSurfaceDocument()
+        }
+    }
+
+    private func dashboard(_ document: PluginSurfaceDocument) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(document.title)
+                        .font(.title2.weight(.semibold))
+                    if let subtitle = document.subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                let sections = document.sections ?? []
+                if sections.isEmpty {
+                    ContentUnavailableView(
+                        document.emptyState?.title ?? "Nothing to show",
+                        systemImage: document.emptyState?.systemImage ?? "tray"
+                    )
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 40)
+                } else {
+                    ForEach(sections) { section in
+                        dashboardSection(section)
+                    }
+                }
+            }
+            .frame(maxWidth: 1180, alignment: .leading)
+            .padding(.horizontal, 28)
+            .padding(.vertical, 24)
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
+        .background(.background)
+        .refreshable {
+            await loadSurfaceDocument()
+        }
+    }
+
+    private func dashboardSection(_ section: PluginSurfaceSection) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                if let systemImage = section.systemImage, !systemImage.isEmpty {
+                    Image(systemName: systemImage)
+                        .foregroundStyle(.secondary)
+                }
+                Text(section.title)
+                    .font(.headline)
+            }
+            if let subtitle = section.subtitle, !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if section.kind == "keyValue" {
+                keyValueCard(section.fields ?? [])
+            } else {
+                tableCard(columns: section.columns ?? [], rows: section.rows ?? [])
+            }
+        }
+    }
+
+    private func keyValueCard(_ fields: [PluginSurfaceField]) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(fields.enumerated()), id: \.element.id) { index, field in
+                HStack(alignment: .firstTextBaseline, spacing: 18) {
+                    Text(field.label)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 82, alignment: .leading)
+                    Text(field.value)
+                        .font(.callout.weight(.medium))
+                        .textSelection(.enabled)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 15)
+                .padding(.vertical, 12)
+                if index < fields.count - 1 {
+                    Divider().padding(.leading, 15)
+                }
+            }
+        }
+        .background(.background, in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(.quaternary.opacity(0.55), lineWidth: 0.5)
+        }
+    }
+
+    private func tableCard(columns: [String], rows: [[String]]) -> some View {
+        ScrollView(.horizontal, showsIndicators: true) {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                tableRow(columns, isHeader: true)
+                ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                    Divider()
+                    tableRow(row, isHeader: false)
+                        .background(index.isMultiple(of: 2) ? Color.clear : Color.primary.opacity(0.018))
+                }
+            }
+        }
+        .background(.background, in: RoundedRectangle(cornerRadius: 10))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(.quaternary.opacity(0.55), lineWidth: 0.5)
+        }
+    }
+
+    private func tableRow(_ values: [String], isHeader: Bool) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            ForEach(Array(values.enumerated()), id: \.offset) { index, value in
+                Text(value.isEmpty ? " " : value)
+                    .font(isHeader ? .caption.weight(.semibold) : .caption)
+                    .foregroundStyle(isHeader ? .secondary : .primary)
+                    .lineLimit(4)
+                    .frame(
+                        width: index == 0 ? 112 : 154,
+                        alignment: .leading
+                    )
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, isHeader ? 10 : 11)
+            }
+        }
+        .background(isHeader ? Color.primary.opacity(0.045) : Color.clear)
+    }
+
+    private func filterChip(
+        filter: PluginSurfaceFilter,
+        option: PluginSurfaceFilterOption
+    ) -> some View {
+        let selected = selectedFilters[filter.id] == option.value
+            || (selectedFilters[filter.id] == nil && option.value == "__all__")
+        return Button {
+            selectedFilters[filter.id] = option.value
+        } label: {
+            Text(option.label)
+                .font(.caption.weight(selected ? .semibold : .regular))
+                .foregroundStyle(selected ? .primary : .secondary)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 7)
+                .background(
+                    selected ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear),
+                    in: RoundedRectangle(cornerRadius: 8)
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func collectionRow(_ item: PluginSurfaceItem) -> some View {
+        Button {
+            perform(item.action)
+        } label: {
+            VStack(alignment: .leading, spacing: 7) {
+                if let subtitle = item.subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text(item.title)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.leading)
+                if let body = item.body, !body.isEmpty {
+                    Text(body)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+                if !item.tags.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(Array(item.tags.prefix(3)), id: \.self) { tag in
+                            Text(tag)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 5))
+                        }
+                    }
+                }
+            }
+            .padding(15)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .background(.background)
+        }
+        .buttonStyle(.plain)
+        .disabled(item.action == nil)
+    }
+
+    private func filteredItems(in document: PluginSurfaceDocument) -> [PluginSurfaceItem] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return document.items.filter { item in
+            for filter in document.filters {
+                let selected = selectedFilters[filter.id] ?? "__all__"
+                if selected != "__all__", item.filterValues[filter.id] != selected {
+                    return false
+                }
+            }
+            guard !needle.isEmpty else { return true }
+            return ([item.title, item.subtitle ?? "", item.body ?? ""] + item.tags)
+                .joined(separator: " ")
+                .lowercased()
+                .contains(needle)
+        }
+    }
+
+    private func perform(_ action: PluginSurfaceAction?) {
+        guard action?.type == "openURL",
+              let value = action?.url,
+              let url = URL(string: value),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? "")
+        else { return }
+        openURL(url)
+    }
+
+    private var placeholder: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 12) {
                 Image(systemName: surface.systemImage)
@@ -1020,6 +1781,21 @@ struct PluginSurfaceView: View {
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(.background)
+    }
+
+    @MainActor
+    private func loadSurfaceDocument() async {
+        guard surface.renderer == "declarative", let pluginId = surface.pluginId else { return }
+        loadError = nil
+        guard let api = store.api else {
+            loadError = "Connect to the Codmes server first."
+            return
+        }
+        do {
+            document = try await api.pluginSurfaceDocument(pluginId: pluginId, routeId: routeId)
+        } catch {
+            loadError = error.localizedDescription
+        }
     }
 }
 
@@ -1100,7 +1876,7 @@ struct ServerStatusView: View {
     }
 }
 
-private enum SettingsSection: String, CaseIterable, Identifiable {
+enum SettingsSection: String, CaseIterable, Identifiable {
     case connection = "Connection"
     case model = "Model"
     case modelConfig = "Model Config"
@@ -1136,7 +1912,18 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
 struct WorkspaceSettingsView: View {
     @EnvironmentObject private var store: WorkspaceStore
     @Binding var isPresented: Bool
-    @State private var selectedSection: SettingsSection = .model
+    let initialSurfaceId: String?
+    @State private var selectedSection: SettingsSection
+
+    init(
+        isPresented: Binding<Bool>,
+        initialSection: SettingsSection = .model,
+        initialSurfaceId: String? = nil
+    ) {
+        _isPresented = isPresented
+        self.initialSurfaceId = initialSurfaceId
+        _selectedSection = State(initialValue: initialSection)
+    }
 
     var body: some View {
         NavigationStack {
@@ -1226,7 +2013,7 @@ struct WorkspaceSettingsView: View {
                 case .mcp:
                     MCPSettingsView()
                 case .surfaces:
-                    SurfaceSettingsView()
+                    SurfaceSettingsView(initialSurfaceId: initialSurfaceId)
                 }
             }
             .padding(18)
@@ -1604,9 +2391,12 @@ private struct MCPSettingsView: View {
     @EnvironmentObject private var store: WorkspaceStore
     @State private var name = "custom-tool"
     @State private var command = ""
+    @State private var transport = "stdio"
     @State private var argsText = ""
     @State private var scopePath = ""
     @State private var envText = ""
+    @State private var url = ""
+    @State private var credentialId = ""
     @State private var enabled = true
     @State private var editingName: String?
     @State private var pendingDelete: MCPServerConfig?
@@ -1659,6 +2449,13 @@ private struct MCPSettingsView: View {
                     .autocorrectionDisabled()
                     #endif
 
+                Picker("Transport", selection: $transport) {
+                    Text("Local process (stdio)").tag("stdio")
+                    Text("Remote HTTPS").tag("streamable_http")
+                }
+                .pickerStyle(.segmented)
+
+                if transport == "stdio" {
                 TextField("Command", text: $command)
                     .textFieldStyle(.roundedBorder)
                     #if os(iOS)
@@ -1681,6 +2478,17 @@ private struct MCPSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                } else {
+                    TextField("HTTPS MCP URL", text: $url)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Credential ID", text: $credentialId)
+                        .textFieldStyle(.roundedBorder)
+                    Text("The bearer token is server-only. Provision it with `codmes mcp credential set <id>`; it is never sent to this device.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                if transport == "stdio" {
                 TextField("Default search scope, for example Notes or Documents", text: $scopePath)
                     .textFieldStyle(.roundedBorder)
                     #if os(iOS)
@@ -1702,6 +2510,7 @@ private struct MCPSettingsView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+                }
 
                 Toggle("Enabled", isOn: $enabled)
 
@@ -1710,10 +2519,13 @@ private struct MCPSettingsView: View {
                         Task {
                             await store.saveMCPServer(
                                 name: name,
+                                transport: transport,
                                 command: command,
                                 argsText: argsText,
                                 envText: envText,
                                 scopePath: scopePath,
+                                url: url,
+                                credentialId: credentialId,
                                 enabled: enabled,
                                 editingExisting: editingName != nil
                             )
@@ -1776,10 +2588,17 @@ private struct MCPSettingsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(server.name)
                     .font(.callout.weight(.medium))
-                Text("\(server.command) \(server.argsText)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                if server.isRemote {
+                    Text("\(server.url ?? "") · credential: \(server.credentialConfigured == true ? "configured" : "not configured")")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                } else {
+                    Text("\(server.command ?? "") \(server.argsText)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
                 if let scope = server.scopePath, !scope.isEmpty {
                     Text("Scope: \(scope)")
                         .font(.caption2)
@@ -1816,10 +2635,13 @@ private struct MCPSettingsView: View {
     private func edit(_ server: MCPServerConfig) {
         editingName = server.name
         name = server.name
-        command = server.command
+        transport = server.transport ?? "stdio"
+        command = server.command ?? ""
         argsText = server.argsText
         scopePath = server.scopePath ?? ""
         envText = server.envText
+        url = server.url ?? ""
+        credentialId = server.credentialId ?? ""
         enabled = server.isEnabled
     }
 
@@ -1827,9 +2649,12 @@ private struct MCPSettingsView: View {
         editingName = nil
         name = "custom-tool"
         command = ""
+        transport = "stdio"
         argsText = ""
         scopePath = ""
         envText = ""
+        url = ""
+        credentialId = ""
         enabled = true
     }
 
@@ -1837,17 +2662,48 @@ private struct MCPSettingsView: View {
 
 private struct SurfaceSettingsView: View {
     @EnvironmentObject private var store: WorkspaceStore
+    let initialSurfaceId: String?
+    @State private var selectedSurfaceId: String?
     @State private var pluginId = ""
     @State private var pluginTitle = ""
     @State private var pluginPrompt = ""
 
+    init(initialSurfaceId: String? = nil) {
+        self.initialSurfaceId = initialSurfaceId
+        _selectedSurfaceId = State(initialValue: initialSurfaceId)
+    }
+
+    private var selectedSurface: WorkspaceSurface? {
+        guard let selectedSurfaceId else { return nil }
+        return store.workspaceSurfaces.first { $0.id == selectedSurfaceId }
+    }
+
     var body: some View {
+        Group {
+            if selectedSurface != nil {
+                surfaceDetail
+            } else {
+                surfaceOverview
+            }
+        }
+        .task {
+            await store.refreshSurfaces()
+            if let initialSurfaceId,
+               store.workspaceSurfaces.contains(where: { $0.id == initialSurfaceId }) {
+                selectedSurfaceId = initialSurfaceId
+            } else if selectedSurface == nil {
+                selectedSurfaceId = nil
+            }
+        }
+    }
+
+    private var surfaceOverview: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Surfaces")
                         .font(.headline)
-                    Text("Choose which work modes appear in the client. Plugin surfaces can provide their own prompt and tool mode.")
+                    Text("Choose which work modes appear in the client and configure each Surface.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1860,11 +2716,7 @@ private struct SurfaceSettingsView: View {
                 .buttonStyle(.plain)
             }
 
-            ForEach(store.workspaceSurfaces) { surface in
-                surfaceRow(surface)
-            }
-
-            Divider()
+            surfaceList
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Add plugin surface")
@@ -1904,27 +2756,32 @@ private struct SurfaceSettingsView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(14)
-        .background(.quaternary.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
-        .task {
-            await store.refreshSurfaces()
+    }
+
+    private var surfaceList: some View {
+        VStack(spacing: 4) {
+            ForEach(store.workspaceSurfaces) { surface in
+                surfaceRow(surface)
+            }
         }
     }
 
     private func surfaceRow(_ surface: WorkspaceSurface) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: surface.systemImage)
-                .frame(width: 20)
-                .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(surface.title)
-                    .font(.callout.weight(.medium))
-                Text(surface.description?.isEmpty == false ? surface.description! : surface.id)
-                    .font(.caption2)
+            HStack(spacing: 10) {
+                Image(systemName: surface.systemImage)
+                    .frame(width: 20)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(surface.title)
+                        .font(.callout.weight(.medium))
+                    Text(surface.kind == "plugin" ? "Plugin Surface" : "Built-in Surface")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
             }
-            Spacer()
+
             Toggle("", isOn: Binding(
                 get: { surface.isEnabled },
                 set: { enabled in
@@ -1932,18 +2789,122 @@ private struct SurfaceSettingsView: View {
                 }
             ))
             .labelsHidden()
+            .controlSize(.small)
             .disabled(surface.id == "chat")
+
+            Button {
+                selectedSurfaceId = surface.id
+            } label: {
+                Image(systemName: "gearshape")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help("Configure \(surface.title)")
+
             if surface.canRemove {
                 Button(role: .destructive) {
                     Task { await store.removeSurface(surface) }
                 } label: {
                     Image(systemName: "trash")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
             }
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 9)
+        .background(.quaternary.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private var surfaceDetail: some View {
+        if let surface = selectedSurface {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top) {
+                    HStack(spacing: 10) {
+                        Image(systemName: surface.systemImage)
+                            .font(.title3)
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(surface.title)
+                                .font(.headline)
+                            Text(surface.description?.isEmpty == false ? surface.description! : surface.id)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    Button {
+                        selectedSurfaceId = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.callout.weight(.semibold))
+                            .frame(width: 28, height: 28)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Close Surface settings")
+                }
+
+                HStack {
+                    Label(
+                        surface.isEnabled ? "Enabled" : "Disabled",
+                        systemImage: surface.isEnabled ? "checkmark.circle.fill" : "circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(surface.isEnabled ? .green : .secondary)
+                    Spacer()
+                }
+
+                VStack(alignment: .leading, spacing: 14) {
+                    if surface.hasAuthentication == true, surface.pluginId != nil {
+                        PluginSurfaceAuthenticationSettingsView(surface: surface)
+                    } else {
+                        ContentUnavailableView {
+                            Label("Surface settings", systemImage: "gearshape")
+                        } description: {
+                            if surface.kind == "core" {
+                                Text("\(surface.title)의 개별 설정은 아직 없습니다. 이 화면은 향후 기본 Surface별 설정을 추가하기 위한 자리입니다.")
+                            } else {
+                                Text("이 플러그인은 별도의 사용자 설정을 제공하지 않습니다.")
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 24)
+                    }
+                }
+                .padding(14)
+                .background(.quaternary.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+
+                if let navigation = surface.navigation, !navigation.isEmpty {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Sections")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ForEach(navigation) { item in
+                            HStack(spacing: 8) {
+                                Image(systemName: item.systemImage)
+                                    .frame(width: 18)
+                                Text(item.title)
+                                Spacer()
+                                if item.requiresAuth == true {
+                                    Image(systemName: "lock")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .font(.caption)
+                        }
+                    }
+                    .padding(10)
+                    .background(.quaternary.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        } else {
+            EmptyView()
+        }
     }
 }
 
