@@ -12,7 +12,18 @@ KNU 웹사이트를 WebView나 iframe으로 여는 구조가 아니다. KNU 서�
 
 ## 바로 실행하기
 
-이미 이 Mac에는 설치와 DB 설정이 끝나 있다. 평소에는 터미널 두 개만 열면 된다.
+아래 명령은 각 서버 컴퓨터에서 다음 조건이 충족된 상태를 기준으로 한다.
+
+- **KNU 서버 컴퓨터**: `knu-ai-assistant` 저장소, Python 가상환경,
+  `SERVER/.env`, PostgreSQL과 KNU DB가 준비되어 있다.
+- **Codmes 서버 컴퓨터**: Codmes CLI, `CodmesWorkspace`, KNU plugin과 MCP
+  credential이 설치되어 있다.
+- 두 서버를 같은 컴퓨터에서 실행한다면 KNU plugin의 기본 주소인
+  `http://127.0.0.1:8000`을 그대로 사용할 수 있다.
+- 서로 다른 컴퓨터에서 실행한다면 plugin의 KNU API/MCP 주소를 KNU 서버의 실제
+  HTTPS 주소로 설정한 뒤 plugin을 다시 설치해야 한다.
+
+조건이 충족되어 있다면 각 서버에서 다음 명령만 실행하면 된다.
 
 ### 터미널 1: KNU 서버
 
@@ -22,7 +33,7 @@ source ../.venv/bin/activate
 python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
 ```
 
-`Uvicorn running on http://127.0.0.1:8000`이 나오면 그대로 둔다.
+`Uvicorn running on http://127.0.0.1:8000`이 나오면 성공
 
 ### 터미널 2: Codmes 서버
 
@@ -33,12 +44,7 @@ CODMES_PORT="8787" \
 codmes serve
 ```
 
-역슬래시 `\` 뒤에는 공백을 넣지 않는다.
-
-`[codmes] listening on http://0.0.0.0:8787`이 나오면 그대로 둔다. 이제 평소처럼
-Codmes 앱을 실행하고 KNU를 선택하면 된다.
-
-서버를 끌 때는 두 터미널에서 각각 `Control-C`를 누른다.
+`[codmes] listening on http://0.0.0.0:8787`이 나오면 성공
 
 ## 앱에 KNU가 처음 보이지 않을 때
 
