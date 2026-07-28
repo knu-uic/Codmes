@@ -548,6 +548,160 @@ test("plugin surface document is fetched server-side for native client rendering
   }
 });
 
+test("plugin portal login polls an async job, stores the JWT, and enqueues LMS sync", async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-plugin-auth-"));
+  const source = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-plugin-auth-package-"));
+  const codmesPort = 33000 + Math.floor(Math.random() * 3000);
+  const token = "workspace-secret";
+  const startRequests = [];
+  const statusRequests = [];
+  const lmsRequests = [];
+  const attempts = new Map();
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+    res.setHeader("content-type", "application/json");
+    if (req.method === "POST" && req.url === "/api/auth/portal-login") {
+      startRequests.push({ url: req.url, body });
+      res.statusCode = 202;
+      res.end(JSON.stringify({ job_id: body.student_id === "fail" ? "job-fail" : body.student_id === "timeout" ? "job-timeout" : "job-ok" }));
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/auth/portal-login/status") {
+      statusRequests.push({ url: req.url, body });
+      const count = (attempts.get(body.job_id) || 0) + 1;
+      attempts.set(body.job_id, count);
+      if (body.job_id === "job-fail") {
+        res.end(JSON.stringify({ status: "failed", detail: "invalid portal credentials" }));
+      } else if (body.job_id === "job-timeout") {
+        res.end(JSON.stringify({ status: "queued" }));
+      } else if (count === 1) {
+        res.end(JSON.stringify({ status: "queued" }));
+      } else if (count === 2) {
+        res.end(JSON.stringify({ status: "running", step: "portal" }));
+      } else {
+        res.end(JSON.stringify({ status: "done", access_token: "jwt-from-upstream", token_type: "bearer" }));
+      }
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/lms/sync/start") {
+      lmsRequests.push({ authorization: req.headers.authorization, body });
+      res.statusCode = 202;
+      res.end(JSON.stringify({ job_id: "lms-job" }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ detail: "not found" }));
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  const upstreamPort = upstream.address().port;
+  await fs.writeFile(path.join(source, "plugin.json"), JSON.stringify({
+    schemaVersion: 1,
+    id: "com.example.knu",
+    version: "1.0.0",
+    name: "KNU",
+    platforms: ["macos"],
+    surface: {
+      id: "knu",
+      type: "declarative",
+      upstreamUrl: `http://127.0.0.1:${upstreamPort}`,
+      entryPath: "/api/codmes/surface",
+      navigation: [{ id: "portal", title: "Portal", path: "/api/codmes/surface", requiresAuth: true }],
+      auth: {
+        type: "password",
+        credentialId: "knu-user-session",
+        loginPath: "/api/auth/portal-login",
+        statusPath: "/api/me",
+        usernameField: "student_id",
+        passwordField: "password",
+        tokenField: "access_token"
+      }
+    },
+    mcp: {
+      name: "knu",
+      transport: "streamable_http",
+      url: `http://127.0.0.1:${upstreamPort}/api/mcp`,
+      surfaces: ["knu"],
+      allowUnauthenticated: true
+    }
+  }), "utf8");
+  const server = spawn(process.execPath, ["server/index.mjs"], {
+    cwd: path.resolve("."),
+    env: {
+      ...process.env,
+      NODE_ENV: "test",
+      CODMES_HOST: "127.0.0.1",
+      CODMES_PORT: String(codmesPort),
+      CODMES_WORKSPACE_ROOT: workspaceRoot,
+      CODMES_SERVER_TOKEN: token,
+      CODMES_PLUGIN_LOGIN_POLL_INTERVAL_MS: "0",
+      CODMES_PLUGIN_LOGIN_TIMEOUT_MS: "25"
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  try {
+    const baseUrl = `http://127.0.0.1:${codmesPort}`;
+    await waitForServer(`${baseUrl}/api/health`);
+    await fetchJson(`${baseUrl}/api/plugins/install`, { token, method: "POST", body: { path: source } });
+
+    const login = await fetchJson(`${baseUrl}/api/plugins/com.example.knu/auth/login`, {
+      token,
+      method: "POST",
+      body: { username: "12345", password: "portal-password" }
+    });
+    assert.deepEqual(login, { authenticated: true, username: "12345" });
+    assert.deepEqual(startRequests, [{
+      url: "/api/auth/portal-login",
+      body: { student_id: "12345", password: "portal-password" }
+    }]);
+    assert.deepEqual(statusRequests.map((request) => request.url), [
+      "/api/auth/portal-login/status",
+      "/api/auth/portal-login/status",
+      "/api/auth/portal-login/status"
+    ]);
+    assert.deepEqual(statusRequests.map((request) => request.body), [
+      { job_id: "job-ok" },
+      { job_id: "job-ok" },
+      { job_id: "job-ok" }
+    ]);
+    assert.deepEqual(lmsRequests, [{
+      authorization: "Bearer jwt-from-upstream",
+      body: { student_id: "12345", password: "portal-password" }
+    }]);
+    const stored = JSON.parse(await fs.readFile(path.join(workspaceRoot, ".codmes", "config", "auth.json"), "utf8"));
+    assert.deepEqual(stored.plugin_credentials["knu-user-session"], {
+      token: "jwt-from-upstream",
+      username: "12345",
+      updatedAt: stored.plugin_credentials["knu-user-session"].updatedAt
+    });
+
+    await fetchJson(`${baseUrl}/api/plugins/com.example.knu/auth/logout`, { token, method: "DELETE" });
+    const failed = await fetch(`${baseUrl}/api/plugins/com.example.knu/auth/login`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ username: "fail", password: "wrong" })
+    });
+    assert.equal(failed.status, 401);
+    const afterFailed = JSON.parse(await fs.readFile(path.join(workspaceRoot, ".codmes", "config", "auth.json"), "utf8"));
+    assert.equal(afterFailed.plugin_credentials?.["knu-user-session"], undefined);
+
+    const timedOut = await fetch(`${baseUrl}/api/plugins/com.example.knu/auth/login`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ username: "timeout", password: "irrelevant" })
+    });
+    assert.equal(timedOut.status, 504);
+    const afterTimeout = JSON.parse(await fs.readFile(path.join(workspaceRoot, ".codmes", "config", "auth.json"), "utf8"));
+    assert.equal(afterTimeout.plugin_credentials?.["knu-user-session"], undefined);
+  } finally {
+    server.kill("SIGTERM");
+    await new Promise((resolve) => upstream.close(resolve));
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(source, { recursive: true, force: true });
+  }
+});
+
 async function waitForServer(url) {
   let lastError;
   for (let attempt = 0; attempt < 60; attempt += 1) {

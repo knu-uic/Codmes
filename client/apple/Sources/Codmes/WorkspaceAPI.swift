@@ -558,7 +558,8 @@ struct WorkspaceAPI {
         let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
         return try await post(
             "/api/plugins/\(encoded)/auth/login",
-            body: ["username": username, "password": password]
+            body: ["username": username, "password": password],
+            timeoutInterval: 240
         )
     }
 
@@ -653,8 +654,8 @@ struct WorkspaceAPI {
         try await request(try components(path))
     }
 
-    private func post<T: Decodable, Body: Encodable>(_ path: String, body: Body) async throws -> T {
-        try await request(try components(path), method: "POST", body: body)
+    private func post<T: Decodable, Body: Encodable>(_ path: String, body: Body, timeoutInterval: TimeInterval? = nil) async throws -> T {
+        try await request(try components(path), method: "POST", body: body, timeoutInterval: timeoutInterval)
     }
 
     private func components(_ path: String) throws -> URLComponents {
@@ -665,17 +666,20 @@ struct WorkspaceAPI {
         return components
     }
 
-    private func request<T: Decodable>(_ components: URLComponents, method: String = "GET", body: (some Encodable)? = Optional<String>.none) async throws -> T {
-        let data = try await dataRequest(components, method: method, body: body)
+    private func request<T: Decodable>(_ components: URLComponents, method: String = "GET", body: (some Encodable)? = Optional<String>.none, timeoutInterval: TimeInterval? = nil) async throws -> T {
+        let data = try await dataRequest(components, method: method, body: body, timeoutInterval: timeoutInterval)
         if T.self == EmptyResponse.self {
             return EmptyResponse() as! T
         }
         return try JSONDecoder().decode(T.self, from: data)
     }
 
-    private func dataRequest(_ components: URLComponents, method: String = "GET", body: (some Encodable)? = Optional<String>.none) async throws -> Data {
+    private func dataRequest(_ components: URLComponents, method: String = "GET", body: (some Encodable)? = Optional<String>.none, timeoutInterval: TimeInterval? = nil) async throws -> Data {
         guard let url = components.url else { throw WorkspaceAPIError.invalidURL }
         var request = URLRequest(url: url)
+        if let timeoutInterval {
+            request.timeoutInterval = timeoutInterval
+        }
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "accept")
         applyAuth(to: &request)

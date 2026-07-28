@@ -3175,16 +3175,17 @@ async function loginPlugin(req, pluginId) {
   if (!username || !password) {
     throw Object.assign(new Error("Username and password are required."), { status: 400 });
   }
+  const requestBody = {
+    [auth.usernameField]: username,
+    [auth.passwordField]: password
+  };
   const url = new URL(auth.loginPath, plugin.surface.upstreamUrl);
   let response;
   try {
     response = await fetch(url, {
       method: "POST",
       headers: { accept: "application/json", "content-type": "application/json" },
-      body: JSON.stringify({
-        [auth.usernameField]: username,
-        [auth.passwordField]: password
-      }),
+      body: JSON.stringify(requestBody),
       redirect: "error",
       // University SSO verification may use a headless browser. Keep it
       // bounded below the Apple client's request timeout.
@@ -3200,9 +3201,74 @@ async function loginPlugin(req, pluginId) {
       { status: response.status === 401 ? 401 : 502 }
     );
   }
-  const token = String(result[auth.tokenField] || "");
+  let token = String(result[auth.tokenField] || "");
+  const jobId = String(result.job_id || "").trim();
+  if (!token && jobId) {
+    const pollIntervalMs = process.env.NODE_ENV === "test"
+      ? Math.max(0, Number.parseInt(process.env.CODMES_PLUGIN_LOGIN_POLL_INTERVAL_MS || "1000", 10))
+      : 1000;
+    const timeoutMs = process.env.NODE_ENV === "test"
+      ? Math.max(1, Number.parseInt(process.env.CODMES_PLUGIN_LOGIN_TIMEOUT_MS || "210000", 10))
+      : 210000;
+    const statusUrl = new URL(`${auth.loginPath.replace(/\/$/, "")}/status`, plugin.surface.upstreamUrl);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      let statusResponse;
+      try {
+        statusResponse = await fetch(statusUrl, {
+          method: "POST",
+          headers: { accept: "application/json", "content-type": "application/json" },
+          body: JSON.stringify({ job_id: jobId }),
+          redirect: "error",
+          signal: AbortSignal.timeout(10_000)
+        });
+      } catch (error) {
+        throw Object.assign(new Error(`Plugin login status is unavailable: ${error.message}`), { status: 502 });
+      }
+      const statusResult = await statusResponse.json().catch(() => ({}));
+      if (!statusResponse.ok) {
+        throw Object.assign(
+          new Error(String(statusResult.detail || statusResult.error || "Plugin login status failed.")),
+          { status: statusResponse.status === 401 || statusResponse.status === 404 ? 401 : 502 }
+        );
+      }
+      const status = String(statusResult.status || "").toLowerCase();
+      if (status === "done") {
+        token = String(statusResult[auth.tokenField] || "");
+        break;
+      }
+      if (status === "failed" || status === "not_found") {
+        throw Object.assign(
+          new Error(String(statusResult.detail || statusResult.error || "Plugin login failed.")),
+          { status: 401 }
+        );
+      }
+      if (status !== "queued" && status !== "running") {
+        throw Object.assign(new Error("Plugin login returned an invalid status."), { status: 502 });
+      }
+      if (pollIntervalMs > 0) await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    }
+    if (!token) throw Object.assign(new Error("Plugin login timed out."), { status: 504 });
+  }
   if (!token) throw Object.assign(new Error("Plugin login did not return a session token."), { status: 502 });
   await setPluginCredential(WORKSPACE_ROOT, auth.credentialId, token, { username });
+  if (jobId) {
+    try {
+      await fetch(new URL("/api/lms/sync/start", plugin.surface.upstreamUrl), {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify(requestBody),
+        redirect: "error",
+        signal: AbortSignal.timeout(10_000)
+      });
+    } catch {
+      // Portal authentication remains valid when the optional LMS enqueue is unavailable.
+    }
+  }
   return { authenticated: true, username };
 }
 

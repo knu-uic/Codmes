@@ -22,11 +22,10 @@ KNU 웹사이트를 WebView나 iframe으로 여는 구조가 아니다. KNU 서�
 - Node.js 22 이상
 - Python 3.12와 Playwright Chromium
 - PostgreSQL + pgvector
-- 선택: Redis와 ARQ worker
+- 필수: Redis와 ARQ worker (포털/LMS 로그인·동기화)
 
-Codmes plugin의 로그인 직후 포털/LMS 동기화는 KNU API 프로세스의 background
-task로 실행되므로 로컬 PoC에서는 Redis가 없어도 된다. 공지 주기 수집과 기존 KNU
-잡 큐까지 함께 운영하려면 Redis와 worker를 추가로 실행한다.
+포털 로그인과 LMS 동기화는 Redis 큐와 ARQ worker가 처리한다. API 프로세스만
+실행하면 로그인 job이 완료되지 않는다.
 
 ## Codmes에 설치하는 방법
 
@@ -140,7 +139,7 @@ python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
 curl http://127.0.0.1:8000/api/health
 ```
 
-공지 자동 수집 등 전체 KNU 서버 기능도 사용할 경우:
+Redis와 ARQ worker 실행 (포털 로그인/LMS 동기화에 필수):
 
 ```sh
 docker compose up -d redis
@@ -196,12 +195,16 @@ LMS 재인증이 필요한 경우 사용자가 다시 연결해야 한다.
 ```text
 Apple 앱
   → Codmes 서버 POST /api/plugins/kr.ac.kongju.knu/auth/login
-  → KNU 서버 POST /api/auth/portal-login
-  → 공주대 포털 SSO 검증
-  ← KNU 사용자 JWT 발급
+  → KNU 서버 POST /api/auth/portal-login {student_id,password}
+  ← {job_id} (202)
+  → KNU 서버 POST /api/auth/portal-login/status {job_id} (queued/running 반복)
+  ← {status:"done",access_token,token_type:"bearer"}
   ← Codmes 서버가 JWT를 로컬 credential store에 저장
+  → KNU 서버 POST /api/lms/sync/start (Bearer JWT, {student_id,password})
+  ← 202 (enqueue; 완료 대기 안 함)
 
-KNU 서버 background task
+Redis + ARQ worker
+  → 공주대 포털 SSO 검증
   → 검증된 임시 포털 browser session으로 KNUIS 조회
   → 같은 요청에서 받은 비밀번호로 임시 LMS session 생성
   → 학적/시간표/성적/과목/과제 등을 KNU PostgreSQL에 저장
