@@ -270,6 +270,57 @@ AI가 질문할 때 무조건 MCP를 호출하는 것은 아니다. Codmes는 KN
 결정한다. 호출에는 기본적으로 사용자 승인이 필요하다. KNU MCP는 상위 AI가 정한
 검색어와 category를 바로 검색하며 내부에서 별도의 LLM을 다시 호출하지 않는다.
 
+### 질문 분류와 MCP 인자 예시
+
+`이번 학기 국가장학금 신청 공지 찾아줘`처럼 카테고리가 분명하면 Codmes AI가
+카테고리를 tool 인자로 지정한다.
+
+```json
+{
+  "name": "search_knu_notices",
+  "arguments": {
+    "query": "이번 학기 국가장학금 신청",
+    "category": "장학",
+    "limit": 5
+  }
+}
+```
+
+`이번 주에 내가 확인할 공지 알려줘`처럼 카테고리가 불분명하면 category를
+생략한다. KNU MCP는 특정 카테고리로 제한하지 않고 전체 공지에서 관련 근거를
+검색한다.
+
+```json
+{
+  "name": "search_knu_notices",
+  "arguments": {
+    "query": "이번 주에 확인할 공지",
+    "limit": 10
+  }
+}
+```
+
+`최근 수강 관련 공지 목록 보여줘`는 category를 `수강`으로 지정한다. KNU 서버는
+`목록`, `최근`, `전체`, `여러` 같은 표현이 포함된 질문을 여러 문서를 반환하는
+목록형 검색으로 처리하고, 그 외에는 단건의 구체적 근거를 찾는 검색으로 처리한다.
+
+```text
+Codmes AI
+├─ MCP 호출 필요 여부 판단
+├─ 검색어, category, limit 결정
+└─ 사용자 승인 후 도구 호출
+
+KNU MCP
+├─ category 범위로 pgvector 후보 검색
+├─ reranker로 관련도 재정렬
+├─ reranker 장애 시 vector 유사도 순서로 fallback
+└─ 제목, 날짜, 본문 근거와 원문 URL 반환
+```
+
+따라서 카테고리 분류가 사라진 것이 아니라 Codmes AI의 tool-calling 단계로
+이동한 것이다. KNU 웹 챗봇의 기존 RAG 경로에서는 별도의 KNU LLM router를 계속
+사용한다.
+
 답변 품질은 KNU PostgreSQL에 수집·인덱싱된 공지와 검색/rerank 결과에 의존한다.
 데이터가 없거나 근거가 부족하면 MCP는 `no_results`를 반환하며 AI는 추측하지 않고
 정보가 부족하다고 답해야 한다.
