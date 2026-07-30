@@ -20,7 +20,7 @@ KNU 웹사이트를 WebView나 iframe으로 여는 구조가 아니다. KNU 서�
 아래 명령은 각 서버 컴퓨터에서 다음 조건이 충족된 상태를 기준으로 한다.
 
 - **KNU 서버 컴퓨터**: `knu-ai-assistant` 저장소, Python 가상환경,
-  `SERVER/.env`, PostgreSQL과 KNU DB가 준비되어 있다.
+  `services/api/.env`, PostgreSQL과 KNU DB가 준비되어 있다.
 - **Codmes 서버 컴퓨터**: Codmes CLI, `CodmesWorkspace`, KNU plugin과 MCP
   credential이 설치되어 있다.
 - 두 서버를 같은 컴퓨터에서 실행한다면 KNU plugin의 기본 주소인
@@ -33,8 +33,8 @@ KNU 웹사이트를 WebView나 iframe으로 여는 구조가 아니다. KNU 서�
 ### 터미널 1: KNU 서버
 
 ```sh
-cd "$HOME/Desktop/knu-ai-assistant/SERVER"
-source ../.venv/bin/activate
+cd "$HOME/Desktop/knu-ai-assistant/services/api"
+source ../../.venv/bin/activate
 python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -68,7 +68,7 @@ KNU plugin 자체를 개발하며 `plugin.json`, `surface.json`의 아직 packag
 ```sh
 cd "$HOME/Desktop/Codmes"
 node bin/codmes.mjs plugin install \
-  "$HOME/Desktop/knu-ai-assistant/CODMES_PLUGIN" \
+  "$HOME/Desktop/knu-ai-assistant/packages/codmes-plugin" \
   --root "$HOME/CodmesWorkspace"
 ```
 
@@ -147,17 +147,17 @@ cd "$KNU_REPO"
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -r SERVER/requirements-api.txt
+python -m pip install -r services/api/requirements-api.txt
 python -m playwright install chromium
 ```
 
 ### 4. KNU 로컬 환경설정 생성
 
-다음 명령은 로컬 PostgreSQL 주소와 세 개의 무작위 보안 키를 `SERVER/.env`에
+다음 명령은 로컬 PostgreSQL 주소와 세 개의 무작위 보안 키를 `services/api/.env`에
 넣는다.
 
 ```sh
-cd "$KNU_REPO/SERVER"
+cd "$KNU_REPO/services/api"
 cp .env.example .env
 
 export KNU_LOCAL_JWT_SECRET="$(python -c 'import secrets; print(secrets.token_hex(32))')"
@@ -202,8 +202,8 @@ createdb codmes_knu_dev
 KNU DB의 최초 migration과 pgvector 테이블을 생성한다.
 
 ```sh
-cd "$KNU_REPO/SERVER"
-source ../.venv/bin/activate
+cd "$KNU_REPO/services/api"
+source ../../.venv/bin/activate
 python -c "from db.schema import init_db; init_db()"
 ```
 
@@ -217,7 +217,7 @@ KNU 서버의 `.env`에 저장된 MCP 토큰을 읽어 Codmes 서버 전용 cred
 
 ```sh
 export KNU_LOCAL_MCP_TOKEN="$(
-  sed -n 's/^MCP_AUTH_TOKEN=//p' "$KNU_REPO/SERVER/.env"
+  sed -n 's/^MCP_AUTH_TOKEN=//p' "$KNU_REPO/services/api/.env"
 )"
 
 cd "$CODMES_REPO"
@@ -236,7 +236,7 @@ Codmes 서버는 Workspace의 `.codmes/config/auth.json`에서 각각 보관한�
 ```sh
 cd "$CODMES_REPO"
 node bin/codmes.mjs plugin install \
-  "$KNU_REPO/CODMES_PLUGIN" \
+  "$KNU_REPO/packages/codmes-plugin" \
   --root "$CODMES_WORKSPACE"
 ```
 
@@ -247,7 +247,7 @@ node bin/codmes.mjs plugin list --root "$CODMES_WORKSPACE"
 ```
 
 설치 명령은 `plugin.json`과 `surface.json`을 검증하고 KNU Surface와 MCP를 한
-단위로 등록한다. `CODMES_PLUGIN/plugin.json`이나 `surface.json`을 수정했을 때도
+단위로 등록한다. `packages/codmes-plugin/plugin.json`이나 `surface.json`을 수정했을 때도
 같은 설치 명령을 다시 실행해야 변경 내용이 Workspace에 반영된다.
 
 ## 개발환경 실행 명령 설명
@@ -259,10 +259,10 @@ node bin/codmes.mjs plugin list --root "$CODMES_WORKSPACE"
 ```sh
 export KNU_REPO="$HOME/Desktop/knu-ai-assistant"
 
-cd "$KNU_REPO/SERVER"
+cd "$KNU_REPO/services/api"
 export PATH="$(brew --prefix postgresql@16)/bin:$PATH"
 brew services start postgresql@16
-source ../.venv/bin/activate
+source ../../.venv/bin/activate
 python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -404,14 +404,14 @@ pg_isready -h 127.0.0.1 -p 5432
 psql -d codmes_knu_dev -c "SELECT extname FROM pg_extension WHERE extname = 'vector';"
 ```
 
-다른 포트나 DB를 사용한다면 `SERVER/.env`의 `DATABASE_URL`을 실제 주소와
+다른 포트나 DB를 사용한다면 `services/api/.env`의 `DATABASE_URL`을 실제 주소와
 일치시킨다.
 
 예를 들어 기존 개발 DB가 `55432` 포트에 있고 vector 차원이 `768`이라면 다음처럼
 바꾼다. 기존 DB의 vector 차원과 `EMBEDDING_DIM`은 반드시 같아야 한다.
 
 ```sh
-cd "$KNU_REPO/SERVER"
+cd "$KNU_REPO/services/api"
 /usr/bin/sed -i '' \
   -e "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://$(whoami)@127.0.0.1:55432/codmes_knu_dev|" \
   -e "s|^EMBEDDING_DIM=.*|EMBEDDING_DIM=768|" \
@@ -438,12 +438,12 @@ KNU PostgreSQL에 수집·인덱싱된 공지와 KNU 서버의 embedding/reranke
 
 ## 선택: Docker로 DB 실행
 
-로컬 PostgreSQL 대신 Docker를 선호할 때만 사용한다. `SERVER/.env`의
+로컬 PostgreSQL 대신 Docker를 선호할 때만 사용한다. `services/api/.env`의
 `DB_PASSWORD`를 먼저 실제 값으로 바꾸고, `DATABASE_URL`은 Docker가 Mac에 공개한
 포트와 같은 주소를 가리키게 설정한다.
 
 ```sh
-cd "$KNU_REPO/SERVER"
+cd "$KNU_REPO/services/api"
 docker compose up -d db
 docker compose ps db
 ```
@@ -457,12 +457,12 @@ docker compose ps db
 
 ```sh
 export KNU_REPO="$HOME/Desktop/knu-ai-assistant"
-cd "$KNU_REPO/SERVER"
-source ../.venv/bin/activate
+cd "$KNU_REPO/services/api"
+source ../../.venv/bin/activate
 arq workers.arq_worker.WorkerSettings
 ```
 
-worker를 사용하려면 `SERVER/.env`의 `REDIS_URL`에 연결 가능한 Redis가 별도로
+worker를 사용하려면 `services/api/.env`의 `REDIS_URL`에 연결 가능한 Redis가 별도로
 실행 중이어야 한다. KNU plugin의 포털/LMS 로그인과 화면 확인만 할 때는 worker와
 Redis가 필요 없다.
 
@@ -533,7 +533,7 @@ Chat/Notes/Code Surface에서는 KNU 도구가 노출되지 않는다.
 | 구성 요소 | 담당 | 저장하는 정보 | 저장 위치 |
 |---|---|---|---|
 | Apple 클라이언트 | native Surface 표시, 로그인 입력, 상태 polling, AI 대화 UI | 비밀번호·KNU JWT·MCP 토큰을 저장하지 않음 | 화면 상태와 일반 앱 상태만 |
-| KNU plugin package | Surface 내비게이션, 제목, 필터, native component와 data binding 정의 | 비밀정보 없음 | KNU 저장소 `CODMES_PLUGIN/plugin.json`, `surface.json`; 설치 시 Workspace manifest에 포함 |
+| KNU plugin package | Surface 내비게이션, 제목, 필터, native component와 data binding 정의 | 비밀정보 없음 | KNU 저장소 `packages/codmes-plugin/plugin.json`, `surface.json`; 설치 시 Workspace manifest에 포함 |
 | Codmes 서버 | plugin 설치, raw data 요청, Surface document 조립·검증, AI runtime, MCP 승인·호출 | KNU 사용자 JWT, MCP service token, 설치된 plugin/UI manifest | Codmes Workspace의 `.codmes/config/auth.json`, `.codmes/plugins/` |
 | KNU FastAPI 서버 | 포털 로그인 검증, JWT 발급, domain data API, 동기화 시작 | 실행 중에만 비밀번호와 임시 browser session 보유 | 프로세스 메모리/임시 디렉터리; 완료 후 폐기 |
 | KNU PostgreSQL | KNU 서비스의 영속 데이터 저장 | 공지, 학적, 시간표, 성적, LMS 과목·과제·공지·강의 | KNU 서버가 사용하는 PostgreSQL |
