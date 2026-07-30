@@ -86,7 +86,7 @@ node bin/codmes.mjs plugin verify /tmp/example-1.0.0.codmes-plugin \
 출력한다. 서명 이후 package 파일이 하나라도 바뀌었거나 다른 공개키를 사용하면
 검증에 실패한다.
 
-## 4. Registry에 공개키와 release 등록하기
+## 4. Marketplace에 공개키와 package 등록하기
 
 `publisher.json`의 값을 Registry 최상위 `publishers[].keys[]`에 등록한다.
 
@@ -107,7 +107,7 @@ node bin/codmes.mjs plugin verify /tmp/example-1.0.0.codmes-plugin \
     "id": "com.example.plugin",
     "name": "Example",
     "version": "1.0.0",
-    "packageUrl": "https://example.com/example-1.0.0.codmes-plugin",
+    "packagePath": "packages/com.example.plugin-1.0.0.codmes-plugin",
     "sha256": "...",
     "signature": {
       "algorithm": "ed25519",
@@ -137,60 +137,37 @@ node bin/codmes.mjs plugin verify /tmp/example-1.0.0.codmes-plugin \
 회전 절차로 새 key를 등록하는 것은 허용하지만, 공격자가 같은 plugin id를 다른
 publisher로 재등록해 update를 탈취하는 것은 차단한다.
 
-## 5. GitHub Release와 Registry를 함께 준비하기
+## 5. Marketplace Pull Request 제출하기
 
-`publisher prepare`는 서명 package를 만들고 Registry의 publisher 공개키와 최신
-plugin entry를 한 번에 갱신한다. GitHub에 직접 업로드하지는 않으므로 생성 결과를
-검토한 뒤 `gh` 또는 GitHub Actions로 올린다.
+Community plugin 저장소는 Codmes 저장소를 checkout하거나 공식 GitHub 조직명을
+참조하지 않는다. 개인 또는 외부 조직에서 자유롭게 관리하고, 공개 배포의 최종
+검증만 Codmes Marketplace가 담당한다.
 
-`governancePolicy: reviewed` Registry에서는 publisher와 현재 signing key가 운영자에게
-이미 승인된 `active` 상태여야 한다. `publisher prepare`가 새 publisher나 새 key를
-임의로 신뢰 목록에 추가하지 않는다.
+1. 2절의 `plugin pack` 명령으로 서명 package를 만든다.
+2. Codmes Marketplace 저장소를 fork한다.
+3. package를
+   `registry/packages/<plugin-id>-<version>.codmes-plugin`에 추가한다.
+4. `registry/index.json`에 `packagePath`, SHA-256, signature, 권한과 release note를
+   추가한다.
+5. Pull Request를 만들면 Marketplace Actions가 공식 validator로 package를
+   검증한다.
 
-```sh
-node bin/codmes.mjs plugin publisher prepare /path/to/CODMES_PLUGIN \
-  --sign-key "$HOME/.codmes-publisher/example/private-key.pem" \
-  --publisher-id com.example.publisher \
-  --package-url "https://github.com/OWNER/REPO/releases/download/com.example.plugin-v1.0.0/com.example.plugin-1.0.0.codmes-plugin" \
-  --registry /path/to/marketplace/index.json \
-  --output-dir /path/to/dist/plugins \
-  --release-notes-file /path/to/release-notes.md
+Marketplace의 `packagePath`는 다음처럼 Registry 기준 상대 경로여야 한다.
+
+```json
+{
+  "packagePath": "packages/com.example.plugin-1.0.0.codmes-plugin"
+}
 ```
 
-명령은 다음을 원자적으로 준비한다.
+검증에는 archive checksum, Publisher 서명, plugin id와 version, manifest, 권한,
+data version이 포함된다. 최초 Publisher는 공개키 소유 증명과 저장소·개인정보
+처리를 사람이 추가로 검수한다. 검증을 통과해 merge되면 Marketplace가 package와
+서명 Registry를 같은 공개 host에 배포한다.
 
-- `dist/plugins/<plugin-id>-<version>.codmes-plugin`
-- package의 SHA-256과 Ed25519 signature
-- Registry의 publisher 공개키
-- Registry의 해당 plugin 최신 version, package URL, checksum, signature
-- Registry의 `dataVersion`과 사용자에게 표시할 release note
-- GitHub tag로 사용할 `<plugin-id>-v<version>` 값
-
-결과 JSON을 확인한 뒤 release를 만든다.
-
-```sh
-gh release create "com.example.plugin-v1.0.0" \
-  "/path/to/dist/plugins/com.example.plugin-1.0.0.codmes-plugin" \
-  --repo OWNER/REPO \
-  --title "Example Plugin 1.0.0" \
-  --generate-notes
-```
-
-그 다음 갱신된 `index.json`을 HTTPS로 제공되는 GitHub Pages, 정적 CDN 또는 별도
-Registry 저장소에 배포한다. Codmes에는 그 raw HTTPS 주소를 설정한다.
-
-```sh
-node bin/codmes.mjs plugin marketplace \
-  --registry "https://plugins.example.com/index.json" \
-  --root "$HOME/CodmesWorkspace"
-
-node bin/codmes.mjs plugin install com.example.plugin \
-  --registry "https://plugins.example.com/index.json" \
-  --root "$HOME/CodmesWorkspace"
-```
-
-CI에서는 개인키 PEM을 저장소 파일로 두지 말고 GitHub Actions secret에서 임시
-파일로 복원해 사용한 뒤 job 종료와 함께 폐기한다.
+플러그인 저장소 자체의 CI 검증은 선택 사항이다. 필요하면 설치된 Codmes CLI로
+로컬 설치와 `plugin verify`를 실행하되, Codmes GitHub 저장소를 직접 checkout하는
+workflow를 배포 요구사항으로 두지 않는다.
 
 ## 6. 취약 버전 긴급 차단
 

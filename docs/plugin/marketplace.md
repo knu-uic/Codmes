@@ -54,7 +54,7 @@ Codmes Workspace server
 
 - 개발 registry: 저장소의 `marketplace/index.json`
 - 개발 package: `marketplace/packages/*.codmes-plugin`
-- 운영 배포 지원: 공개 HTTPS Registry + GitHub Release의 versioned package
+- 운영 배포 지원: 공개 HTTPS Registry + Registry-relative versioned package
 - package 확장자: `.codmes-plugin`(ZIP container)
 - 전송 무결성: registry의 SHA-256과 실제 package digest 비교
 - publisher 신원과 내용 무결성: Ed25519 package signature
@@ -145,7 +145,7 @@ Registry entry에는 다음 정보가 필요하다.
   "id": "kr.ac.kongju.knu",
   "name": "KNU",
   "version": "0.3.0",
-  "packageUrl": "https://example/releases/knu-0.3.0.codmes-plugin",
+  "packagePath": "packages/kr.ac.kongju.knu-0.3.0.codmes-plugin",
   "sha256": "<64 hex characters>",
   "signature": {
     "algorithm": "ed25519",
@@ -160,8 +160,9 @@ Registry entry에는 다음 정보가 필요하다.
 }
 ```
 
-로컬 개발 registry는 `packageUrl` 대신 registry 디렉터리 내부의 `packagePath`를
-사용할 수 있다. 외부 URL은 HTTPS만 허용하며 HTTP 예외는 loopback 개발 주소뿐이다.
+공식 Marketplace는 Registry와 함께 검증·배포되는 `packagePath`를 사용한다.
+별도 private Registry만 `packageUrl`을 사용할 수 있으며 외부 URL은 HTTPS만
+허용한다. HTTP 예외는 loopback 개발 주소뿐이다.
 
 Registry 최상위에는 publisher 공개키를 둔다.
 
@@ -238,7 +239,7 @@ provider 기준:
 - Planner 선언형 view의 할 일·달력·메모
 - Publisher CLI, Ed25519 package 서명, Registry root 분리 서명
 - 설치된 plugin의 Publisher 고정과 publisher 키 회전·폐기
-- Codmes·KNU 운영 Publisher 키와 서명된 GitHub Release package
+- Codmes·KNU 운영 Publisher 키와 Marketplace에 제출된 서명 package
 - 별도 `Codmes-Marketplace` 저장소의 외부 PR 자동 검증과 GitHub Pages 배포
 
 공식 Registry의 실제 주소와 서명 주소는
