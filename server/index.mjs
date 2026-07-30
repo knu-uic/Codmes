@@ -3233,7 +3233,11 @@ async function fetchPluginSurfaceJson(url, credential) {
 
 async function pluginAuthStatus(pluginId) {
   const { getInstalledPlugin } = await import("./lib/runtime/plugin-registry.mjs");
-  const { getPluginCredential, removePluginCredential } = await import("./lib/runtime/config-store.mjs");
+  const {
+    getPluginCredential,
+    removePluginCredential,
+    removeSharedPluginCredential
+  } = await import("./lib/runtime/config-store.mjs");
   const plugin = await getInstalledPlugin(WORKSPACE_ROOT, pluginId);
   if (!plugin) throw Object.assign(new Error("Plugin is not installed."), { status: 404 });
   const auth = plugin.surface.auth;
@@ -3248,7 +3252,10 @@ async function pluginAuthStatus(pluginId) {
       signal: AbortSignal.timeout(10_000)
     });
     if (response.status === 401 || response.status === 403) {
-      await removePluginCredential(WORKSPACE_ROOT, auth.credentialId);
+      const removeCredential = plugin.mcp?.credentialId === auth.credentialId
+        ? removeSharedPluginCredential
+        : removePluginCredential;
+      await removeCredential(WORKSPACE_ROOT, auth.credentialId);
       return { supported: true, authenticated: false, username: null };
     }
     if (!response.ok) {
@@ -3288,7 +3295,10 @@ async function pluginAuthStatus(pluginId) {
 
 async function loginPlugin(req, pluginId) {
   const { getInstalledPlugin } = await import("./lib/runtime/plugin-registry.mjs");
-  const { setPluginCredential } = await import("./lib/runtime/config-store.mjs");
+  const {
+    setPluginCredential,
+    setSharedPluginCredential
+  } = await import("./lib/runtime/config-store.mjs");
   const plugin = await getInstalledPlugin(WORKSPACE_ROOT, pluginId);
   if (!plugin) throw Object.assign(new Error("Plugin is not installed."), { status: 404 });
   const auth = plugin.surface.auth;
@@ -3326,19 +3336,53 @@ async function loginPlugin(req, pluginId) {
   }
   const token = String(result[auth.tokenField] || "");
   if (!token) throw Object.assign(new Error("Plugin login did not return a session token."), { status: 502 });
-  await setPluginCredential(WORKSPACE_ROOT, auth.credentialId, token, { username });
+  const sharesMcpCredential = plugin.mcp?.credentialId === auth.credentialId;
+  const saveCredential = sharesMcpCredential
+    ? setSharedPluginCredential
+    : setPluginCredential;
+  await saveCredential(WORKSPACE_ROOT, auth.credentialId, token, { username });
   return { authenticated: true, username };
 }
 
 async function logoutPlugin(pluginId) {
   const { getInstalledPlugin } = await import("./lib/runtime/plugin-registry.mjs");
-  const { removePluginCredential } = await import("./lib/runtime/config-store.mjs");
+  const {
+    getPluginCredential,
+    removePluginCredential,
+    removeSharedPluginCredential
+  } = await import("./lib/runtime/config-store.mjs");
   const plugin = await getInstalledPlugin(WORKSPACE_ROOT, pluginId);
   if (!plugin) throw Object.assign(new Error("Plugin is not installed."), { status: 404 });
   const auth = plugin.surface.auth;
   if (!auth) return { authenticated: false, removed: false };
-  const result = await removePluginCredential(WORKSPACE_ROOT, auth.credentialId);
-  return { authenticated: false, removed: result.removed };
+  const credential = await getPluginCredential(WORKSPACE_ROOT, auth.credentialId);
+  let remoteRevoked = null;
+  if (credential && auth.logoutPath) {
+    try {
+      const response = await fetch(new URL(auth.logoutPath, plugin.surface.upstreamUrl), {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${credential.token}`
+        },
+        redirect: "error",
+        signal: AbortSignal.timeout(10_000)
+      });
+      remoteRevoked = response.ok || response.status === 401 || response.status === 403;
+    } catch {
+      remoteRevoked = false;
+    }
+  }
+  const sharesMcpCredential = plugin.mcp?.credentialId === auth.credentialId;
+  const removeCredential = sharesMcpCredential
+    ? removeSharedPluginCredential
+    : removePluginCredential;
+  const result = await removeCredential(WORKSPACE_ROOT, auth.credentialId);
+  return {
+    authenticated: false,
+    removed: result.removed,
+    remoteRevoked
+  };
 }
 
 function validatePluginViewDocument(document) {

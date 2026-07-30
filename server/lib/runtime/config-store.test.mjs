@@ -18,13 +18,36 @@ import {
   getMcpCredentialStatus,
   normalizeMcpServerConfig,
   removeMcpCredential,
+  removeSharedPluginCredential,
   removeProviderCredentialEntry,
   runtimeConfigDir,
   setMcpCredential,
+  setSharedPluginCredential,
   selectProviderCredentialEntry,
   setCredentialValue,
   setDefaultModel
 } from "./config-store.mjs";
+
+test("shared plugin credential is stored for Surface and MCP and removed together", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-shared-plugin-auth-"));
+  await setSharedPluginCredential(root, "knu-user-session", "portal-jwt", {
+    username: "20260001"
+  });
+  assert.equal(await getMcpCredential(root, "knu-user-session"), "portal-jwt");
+  const auth = JSON.parse(
+    await fs.readFile(path.join(runtimeConfigDir(root), "auth.json"), "utf8")
+  );
+  assert.equal(auth.plugin_credentials["knu-user-session"].token, "portal-jwt");
+  assert.equal(auth.plugin_credentials["knu-user-session"].username, "20260001");
+  assert.equal(auth.mcp_credentials["knu-user-session"].token, "portal-jwt");
+
+  await removeSharedPluginCredential(root, "knu-user-session");
+  const removed = JSON.parse(
+    await fs.readFile(path.join(runtimeConfigDir(root), "auth.json"), "utf8")
+  );
+  assert.equal(removed.plugin_credentials["knu-user-session"], undefined);
+  assert.equal(removed.mcp_credentials["knu-user-session"], undefined);
+});
 
 test("remote MCP config preserves legacy stdio, validates HTTPS, and keeps bearer server-only", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-remote-mcp-"));

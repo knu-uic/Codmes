@@ -337,6 +337,9 @@ function normalizeSurfaceAuth(value) {
     type: "password",
     credentialId,
     loginPath: normalizeEntryPath(value.loginPath),
+    ...(value.logoutPath
+      ? { logoutPath: normalizeEntryPath(value.logoutPath) }
+      : {}),
     statusPath: normalizeEntryPath(value.statusPath),
     usernameField: String(value.usernameField || "username").trim(),
     passwordField: String(value.passwordField || "password").trim(),

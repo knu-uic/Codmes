@@ -10,7 +10,7 @@ Codmes의 선택형 plugin은 서버 Workspace에 한 번 설치하며, 연결�
 {
   "schemaVersion": 1,
   "id": "kr.ac.kongju.knu",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "name": "KNU",
   "platforms": ["macos", "ios", "ipados"],
   "permissions": ["network:127.0.0.1"],
@@ -28,6 +28,7 @@ Codmes의 선택형 plugin은 서버 Workspace에 한 번 설치하며, 연결�
       "type": "password",
       "credentialId": "knu-user-session",
       "loginPath": "/api/auth/portal-login",
+      "logoutPath": "/api/auth/logout",
       "statusPath": "/api/me",
       "usernameField": "student_id",
       "passwordField": "password",
@@ -39,7 +40,7 @@ Codmes의 선택형 plugin은 서버 Workspace에 한 번 설치하며, 연결�
     "transport": "streamable_http",
     "url": "http://127.0.0.1:8000/api/mcp",
     "surfaces": ["knu"],
-    "credentialId": "knu",
+    "credentialId": "knu-user-session",
     "requiresApproval": true
   }
 }
@@ -50,17 +51,19 @@ Codmes의 선택형 plugin은 서버 Workspace에 한 번 설치하며, 연결�
 - Surface와 MCP URL은 HTTPS가 원칙이며 loopback 개발 서비스만 HTTP를 허용한다.
 - MCP는 반드시 자기 Surface id를 포함한다. 다른 Surface 권한은 Manifest v1에서
   자동 부여하지 않는다.
-- 인증 없는 MCP는 loopback에서만 허용한다. KNU는 로컬 개발에서도
-  `credentialId: "knu"`를 사용해 FastAPI MCP로 Bearer를 직접 보낸다.
+- 인증 없는 MCP는 loopback에서만 허용한다. KNU는 Surface와 MCP가
+  `credentialId: "knu-user-session"`을 공유해 포털 로그인 token을 Bearer로
+  보낸다.
 - 설치는 Manifest와 `surface.ui`가 가리키는 declarative JSON을 검증해 하나의
   설치 manifest로 저장한다. 임의 native binary나 JavaScript를 Codmes process
   안에서 실행하지 않는다.
 - `surface.ui`는 package 내부 JSON 파일 또는 같은 구조의 object다. 여기에 선언한
   route가 native sidebar/계층형 내비게이션 항목이 된다. `requiresAuth`인 route는
   사용자 토큰이 없으면 Codmes가 잠금 화면을 반환한다.
-- `surface.auth`는 로그인 endpoint 계약만 선언한다. 비밀번호는 로그인 요청에만
-  사용하고 저장하지 않으며, 반환된 사용자 JWT만 Codmes 서버 credential store에
-  저장한다.
+- `surface.auth`는 로그인·상태·로그아웃 endpoint 계약을 선언한다. 비밀번호는
+  로그인 요청에만 사용하고 저장하지 않으며, 반환된 사용자 session token만 Codmes
+  서버 credential store에 저장한다. MCP가 같은 `credentialId`를 선언하면 한 번의
+  로그인으로 두 경로가 token을 공유하고 로그아웃할 때 함께 폐기한다.
 - `tools`는 package 내부 `tools.json`을 가리킨다. Manifest v1에서는 plugin 자신의
   MCP 또는 선언된 Workspace collection 도구만 등록할 수 있고, 다른 plugin,
   MCP server나 Surface 권한을 요청할 수 없다.
@@ -89,13 +92,9 @@ codmes plugin list --root /path/to/workspace
 codmes plugin remove kr.ac.kongju.knu --root /path/to/workspace
 ```
 
-KNU를 설치하기 전, KNU 서버의 `MCP_AUTH_TOKEN`과 같은 값을 Codmes 서버에
-등록한다. Manifest에는 토큰 자체가 아니라 이를 가리키는 이름만 들어간다.
-
-```sh
-printf '%s' "$MCP_AUTH_TOKEN" \
-  | codmes mcp credential set knu --root /path/to/workspace
-```
+KNU 설치 후 plugin 설정에서 포털 계정으로 로그인한다. 일반 사용자는 KNU 서버의
+`MCP_AUTH_TOKEN`을 알거나 Codmes에 직접 등록하지 않는다. 이 값은 운영자용
+loopback 점검 경로에만 사용한다.
 
 설치와 제거는 Surface manifest와 MCP config를 함께 갱신하며 실패 시 이전 상태로
 복구한다. Marketplace 설치는 package SHA-256과 metadata를 확인하고 버전별

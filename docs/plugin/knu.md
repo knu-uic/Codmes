@@ -90,6 +90,7 @@ codmes plugin list --root "$HOME/CodmesWorkspace"
 - Node.js 22 이상
 - Python 3.12
 - PostgreSQL 16과 pgvector
+- Redis 7
 - Xcode
 
 터미널에서 설치 여부를 확인한다.
@@ -98,13 +99,14 @@ codmes plugin list --root "$HOME/CodmesWorkspace"
 node --version
 python3.12 --version
 psql --version
+redis-server --version
 xcode-select -p
 ```
 
-Homebrew가 있다면 PostgreSQL과 pgvector는 다음 명령으로 설치할 수 있다.
+Homebrew가 있다면 PostgreSQL, pgvector와 Redis는 다음 명령으로 설치할 수 있다.
 
 ```sh
-brew install postgresql@16 pgvector
+brew install postgresql@16 pgvector redis
 export PATH="$(brew --prefix postgresql@16)/bin:$PATH"
 ```
 
@@ -212,28 +214,7 @@ python -c "from db.schema import init_db; init_db()"
 이 명령은 기존 데이터는 지우지 않고 필요한 migration과 pgvector 테이블만
 준비한다.
 
-### 6. 같은 MCP 토큰을 Codmes에 등록
-
-KNU 서버의 `.env`에 저장된 MCP 토큰을 읽어 Codmes 서버 전용 credential
-저장소에 등록한다.
-
-```sh
-export KNU_LOCAL_MCP_TOKEN="$(
-  sed -n 's/^MCP_AUTH_TOKEN=//p' "$KNU_REPO/services/api/.env"
-)"
-
-cd "$CODMES_REPO"
-printf '%s' "$KNU_LOCAL_MCP_TOKEN" \
-  | node bin/codmes.mjs mcp credential set knu \
-      --root "$CODMES_WORKSPACE"
-
-unset KNU_LOCAL_MCP_TOKEN
-```
-
-토큰 원문은 plugin이나 Apple 앱에 들어가지 않는다. KNU 서버는 `.env`에서,
-Codmes 서버는 Workspace의 `.codmes/config/auth.json`에서 각각 보관한다.
-
-### 7. KNU plugin 설치
+### 6. KNU plugin 설치
 
 ```sh
 cd "$CODMES_REPO"
@@ -242,7 +223,9 @@ node bin/codmes.mjs plugin install \
   --root "$CODMES_WORKSPACE"
 ```
 
-`KNU 0.3.0`이 표시되는지 확인한다.
+`KNU 0.3.1`이 표시되는지 확인한다. 설치 후 KNU 설정에서 포털 계정으로 로그인하면
+발급된 사용자 session token을 Surface와 MCP가 함께 사용한다. 일반 사용자는
+`MCP_AUTH_TOKEN`을 직접 등록하지 않는다.
 
 ```sh
 node bin/codmes.mjs plugin list --root "$CODMES_WORKSPACE"
@@ -265,6 +248,7 @@ export KNU_REPO="$HOME/Desktop/knu-ai-assistant"
 cd "$KNU_REPO/services/api"
 export PATH="$(brew --prefix postgresql@16)/bin:$PATH"
 brew services start postgresql@16
+brew services start redis
 source ../../.venv/bin/activate
 python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
 ```
@@ -465,11 +449,10 @@ source ../../.venv/bin/activate
 arq workers.arq_worker.WorkerSettings
 ```
 
-worker를 사용하려면 `services/api/.env`의 `REDIS_URL`에 연결 가능한 Redis가 별도로
-실행 중이어야 한다. KNU plugin의 포털/LMS 로그인과 화면 확인만 할 때는 worker와
-Redis가 필요 없다.
+worker와 사용자 session 인증에는 `services/api/.env`의 `REDIS_URL`에 연결 가능한
+Redis가 필요하다. 개발 환경에서도 포털 로그인 전에 Redis를 실행한다.
 
-비밀번호가 틀리면 사용자 JWT를 저장하지 않는다. LMS만 실패하면 포털 연결은
+비밀번호가 틀리면 사용자 session token을 저장하지 않는다. LMS만 실패하면 포털 연결은
 유지하며 설정 화면에 LMS 실패 원인을 따로 표시한다. 비밀번호는 저장하지 않으므로
 LMS 재인증이 필요한 경우 사용자가 다시 연결해야 한다.
 
@@ -482,8 +465,8 @@ Apple 앱
   → Codmes 서버 POST /api/plugins/kr.ac.kongju.knu/auth/login
   → KNU 서버 POST /api/auth/portal-login
   → 공주대 포털 SSO 검증
-  ← KNU 사용자 JWT 발급
-  ← Codmes 서버가 JWT를 로컬 credential store에 저장
+  ← KNU 사용자 session token 발급
+  ← Codmes 서버가 token을 Surface·MCP 공용 credential로 저장
 
 KNU 서버 background task
   → 검증된 임시 포털 browser session으로 KNUIS 조회
@@ -491,6 +474,10 @@ KNU 서버 background task
   → 학적/시간표/성적/과목/과제 등을 KNU PostgreSQL에 저장
   → 비밀번호와 임시 browser session 폐기
 ```
+
+로그아웃하면 Codmes 서버가 KNU `/api/auth/logout`을 먼저 호출해 현재 session을
+폐기하고, Workspace의 Surface·MCP credential 복사본을 함께 삭제한다. 같은 학번의
+다른 기기 session은 유지된다.
 
 Apple 앱에는 KNU JWT, 포털 cookie, MCP 토큰 또는 비밀번호가 전달되지 않는다.
 
@@ -521,13 +508,14 @@ KNU Surface가 선택된 대화에서 다음 흐름이 일어난다.
   → Codmes AI runtime이 KNU MCP tool schema를 model에 제공
   → model이 mcp__knu__search_knu_notices 호출 결정
   → Codmes approval inbox에서 사용자 승인
-  → Codmes 서버가 MCP_AUTH_TOKEN을 Bearer로 붙여 KNU /api/mcp 호출
+  → Codmes 서버가 포털 로그인 session token을 Bearer로 붙여 KNU /api/mcp 호출
   → KNU MCP가 공지 DB 검색·rerank 수행
   ← 제목, 날짜, 본문 근거, 원문 URL
   → model이 반환된 근거만 사용해 답변하고 URL을 인용
 ```
 
-MCP 토큰은 model prompt, tool argument, approval 기록과 결과에 포함되지 않는다.
+사용자 session token은 model prompt, tool argument, approval 기록과 결과에
+포함되지 않는다. KNU 서버는 token의 학번을 기준으로 사용자별 호출 한도를 적용한다.
 현재 manifest는 MCP 도구 범위를 `knu` Surface로 제한하므로 일반
 Chat/Notes/Code Surface에서는 KNU 도구가 노출되지 않는다.
 
@@ -537,8 +525,8 @@ Chat/Notes/Code Surface에서는 KNU 도구가 노출되지 않는다.
 |---|---|---|---|
 | Apple 클라이언트 | native Surface 표시, 로그인 입력, 상태 polling, AI 대화 UI | 비밀번호·KNU JWT·MCP 토큰을 저장하지 않음 | 화면 상태와 일반 앱 상태만 |
 | KNU plugin package | Surface 내비게이션, 제목, 필터, native component와 data binding 정의 | 비밀정보 없음 | 별도 `knu-uic/codmes-plugin-knu` 저장소; 설치 시 Workspace manifest에 포함 |
-| Codmes 서버 | plugin 설치, raw data 요청, Surface document 조립·검증, AI runtime, MCP 승인·호출 | KNU 사용자 JWT, MCP service token, 설치된 plugin/UI manifest | Codmes Workspace의 `.codmes/config/auth.json`, `.codmes/plugins/` |
-| KNU FastAPI 서버 | 포털 로그인 검증, JWT 발급, domain data API, 동기화 시작 | 실행 중에만 비밀번호와 임시 browser session 보유 | 프로세스 메모리/임시 디렉터리; 완료 후 폐기 |
+| Codmes 서버 | plugin 설치, raw data 요청, Surface document 조립·검증, AI runtime, MCP 승인·호출 | KNU 사용자 session token, 설치된 plugin/UI manifest | Codmes Workspace의 `.codmes/config/auth.json`, `.codmes/plugins/` |
+| KNU FastAPI 서버 | 포털 로그인 검증, session token 발급·폐기, domain data API, 동기화 시작 | 활성 session id, 실행 중 비밀번호와 임시 browser session | session은 Redis AOF, 비밀번호는 동기화 전달 후 폐기 |
 | KNU PostgreSQL | KNU 서비스의 영속 데이터 저장 | 공지, 학적, 시간표, 성적, LMS 과목·과제·공지·강의 | KNU 서버가 사용하는 PostgreSQL |
 | KNU MCP 서버 | AI용 공지 검색·상세 근거 제공 | 별도 사용자 비밀번호를 저장하지 않음 | KNU FastAPI 안에서 공지 DB를 조회 |
 | 공주대 포털/LMS | 실제 학교 계정 인증과 원천 데이터 제공 | 학교 시스템 정책에 따름 | Codmes 관리 범위 밖 |

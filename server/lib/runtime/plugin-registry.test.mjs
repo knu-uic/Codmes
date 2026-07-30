@@ -35,6 +35,7 @@ const manifest = {
       type: "password",
       credentialId: "knu-user-session",
       loginPath: "/api/auth/login",
+      logoutPath: "/api/auth/logout",
       statusPath: "/api/me"
     },
     order: 100
@@ -57,7 +58,9 @@ test("a plugin installs and removes its surface and MCP as one unit", async () =
   const installed = await installPlugin(root, source);
   assert.equal(installed.plugin.id, manifest.id);
   assert.equal((await listInstalledPlugins(root)).length, 1);
-  assert.equal((await getInstalledPlugin(root, manifest.id))?.surface.id, "knu");
+  const installedManifest = await getInstalledPlugin(root, manifest.id);
+  assert.equal(installedManifest?.surface.id, "knu");
+  assert.equal(installedManifest?.surface.auth.logoutPath, "/api/auth/logout");
 
   const config = await readRuntimeConfig(root);
   const mcp = config.mcpServers.find((server) => server.pluginId === manifest.id);

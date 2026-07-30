@@ -267,6 +267,36 @@ export async function setPluginCredential(workspaceRoot, credentialId, token, me
   return { credentialId: id, configured: true };
 }
 
+export async function setSharedPluginCredential(
+  workspaceRoot,
+  credentialId,
+  token,
+  metadata = {}
+) {
+  await ensureRuntimeConfig(workspaceRoot);
+  const id = String(credentialId || "").trim();
+  const value = String(token || "").trim();
+  if (!/^[a-zA-Z0-9_-]+$/.test(id) || !value) {
+    throw new Error("A valid shared plugin credential id and non-empty token are required.");
+  }
+  const authPath = path.join(runtimeConfigDir(workspaceRoot), "auth.json");
+  const auth = await readAuthObject(authPath);
+  auth.plugin_credentials = {
+    ...(auth.plugin_credentials || {}),
+    [id]: {
+      token: value,
+      username: String(metadata.username || "").trim() || undefined,
+      updatedAt: new Date().toISOString()
+    }
+  };
+  auth.mcp_credentials = {
+    ...(auth.mcp_credentials || {}),
+    [id]: { token: value }
+  };
+  await writeAuthObject(authPath, auth);
+  return { credentialId: id, configured: true, sharedWithMcp: true };
+}
+
 export async function getPluginCredential(workspaceRoot, credentialId) {
   await ensureRuntimeConfig(workspaceRoot);
   const auth = await readAuthObject(path.join(runtimeConfigDir(workspaceRoot), "auth.json"));
@@ -288,6 +318,18 @@ export async function removePluginCredential(workspaceRoot, credentialId) {
   if (auth.plugin_credentials) delete auth.plugin_credentials[id];
   await writeAuthObject(authPath, auth);
   return { credentialId: id, removed };
+}
+
+export async function removeSharedPluginCredential(workspaceRoot, credentialId) {
+  await ensureRuntimeConfig(workspaceRoot);
+  const authPath = path.join(runtimeConfigDir(workspaceRoot), "auth.json");
+  const auth = await readAuthObject(authPath);
+  const id = String(credentialId || "");
+  const removed = Boolean(auth.plugin_credentials?.[id] || auth.mcp_credentials?.[id]);
+  if (auth.plugin_credentials) delete auth.plugin_credentials[id];
+  if (auth.mcp_credentials) delete auth.mcp_credentials[id];
+  await writeAuthObject(authPath, auth);
+  return { credentialId: id, removed, sharedWithMcp: true };
 }
 
 async function readAuthObject(authPath) {
