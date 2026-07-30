@@ -11,7 +11,10 @@ import {
   listRuntimeViews,
   savePluginConfiguration
 } from "./plugin-runtime.mjs";
-import { getInstalledPlugin } from "./plugin-registry.mjs";
+import {
+  getInstalledPlugin,
+  readPluginManifestSource
+} from "./plugin-registry.mjs";
 
 test("Plugin Runtime exposes Chat, Notes, Code, and Planner as built-in plugins", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-plugin-runtime-"));
@@ -50,5 +53,44 @@ test("Plugin Runtime stores enablement by plugin and rejects built-in removal", 
   await assert.rejects(
     () => savePluginConfiguration(root, "com.codmes.notes", { remove: true }),
     (error) => error.code === "builtin_plugin_cannot_be_removed"
+  );
+});
+
+test("Plugin Runtime ignores stale installed copies of built-in plugins", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-plugin-deduplicate-"));
+  const manifest = await readPluginManifestSource(
+    path.resolve("bundled/plugins/planner")
+  );
+  const installRoot = path.join(
+    root,
+    ".codmes",
+    "plugins",
+    manifest.id,
+    "versions",
+    manifest.version
+  );
+  await fs.mkdir(installRoot, { recursive: true });
+  await fs.writeFile(
+    path.join(installRoot, "plugin.json"),
+    JSON.stringify(manifest, null, 2) + "\n",
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(root, ".codmes", "plugins", manifest.id, "state.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      currentVersion: manifest.version,
+      previousVersion: null
+    }, null, 2) + "\n",
+    "utf8"
+  );
+
+  assert.equal(await getInstalledPlugin(root, manifest.id) != null, true);
+  const plugins = await listRuntimePlugins(root);
+  assert.equal(plugins.filter((plugin) => plugin.id === manifest.id).length, 1);
+  assert.equal(plugins.find((plugin) => plugin.id === manifest.id).distribution, "builtin");
+  assert.equal(
+    (await listRuntimeViews(root)).filter((view) => view.id === "planner").length,
+    1
   );
 });

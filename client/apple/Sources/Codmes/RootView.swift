@@ -280,36 +280,44 @@ struct RootView: View {
                 .buttonStyle(.plain)
             }
 
-            if !store.enabledPluginViews.isEmpty {
+            ForEach(store.enabledBuiltInPluginViews) { view in
+                pluginMenuButton(view)
+            }
+
+            if !store.enabledCommunityPluginViews.isEmpty {
                 Divider()
                     .padding(.vertical, 4)
             }
 
-            ForEach(store.enabledPluginViews) { surface in
-                Button {
-                    selectPluginView(surface)
-                    showingMacPluginMenu = false
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: surface.systemImage)
-                            .frame(width: 18)
-                        Text(surface.title)
-                        Spacer()
-                        if selectedPluginViewId == surface.id {
-                            Image(systemName: "checkmark")
-                                .font(.caption.weight(.bold))
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+            ForEach(store.enabledCommunityPluginViews) { view in
+                pluginMenuButton(view)
             }
         }
         .padding(8)
         .frame(minWidth: 210)
+    }
+
+    private func pluginMenuButton(_ view: PluginView) -> some View {
+        Button {
+            selectPluginView(view)
+            showingMacPluginMenu = false
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: view.systemImage)
+                    .frame(width: 18)
+                Text(view.title)
+                Spacer()
+                if selectedPluginViewId == view.id {
+                    Image(systemName: "checkmark")
+                        .font(.caption.weight(.bold))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private struct MacToolbarIconButtonStyle: ButtonStyle {
@@ -491,16 +499,27 @@ struct RootView: View {
                                 }
                             }
 
-                            if !store.enabledPluginViews.isEmpty {
+                            ForEach(store.enabledBuiltInPluginViews) { view in
+                                Button {
+                                    selectPluginView(view)
+                                } label: {
+                                    Label(view.title, systemImage: view.systemImage)
+                                    if selectedPluginViewId == view.id {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+
+                            if !store.enabledCommunityPluginViews.isEmpty {
                                 Divider()
                             }
 
-                            ForEach(store.enabledPluginViews) { surface in
+                            ForEach(store.enabledCommunityPluginViews) { view in
                                 Button {
-                                    selectPluginView(surface)
+                                    selectPluginView(view)
                                 } label: {
-                                    Label(surface.title, systemImage: surface.systemImage)
-                                    if selectedPluginViewId == surface.id {
+                                    Label(view.title, systemImage: view.systemImage)
+                                    if selectedPluginViewId == view.id {
                                         Image(systemName: "checkmark")
                                     }
                                 }

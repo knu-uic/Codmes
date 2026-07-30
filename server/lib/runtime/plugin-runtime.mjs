@@ -20,7 +20,10 @@ export async function listRuntimePlugins(workspaceRoot) {
     listInstalledPlugins(workspaceRoot),
     readPluginSettings(workspaceRoot)
   ]);
-  const community = installed.map(createCommunityRuntimePlugin);
+  const builtInIds = new Set(builtIn.map((plugin) => plugin.id));
+  const community = installed
+    .filter((plugin) => !builtInIds.has(plugin.id))
+    .map(createCommunityRuntimePlugin);
   return [...builtIn, ...community]
     .map((plugin) => applyPluginSettings(plugin, settings[plugin.id]))
     .sort((left, right) => {

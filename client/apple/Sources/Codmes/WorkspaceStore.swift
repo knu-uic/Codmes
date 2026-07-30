@@ -944,10 +944,18 @@ final class WorkspaceStore: ObservableObject {
         return pluginViews.first { $0.id == surfaceId }?.isEnabled ?? true
     }
 
-    var enabledPluginViews: [PluginView] {
+    var enabledBuiltInPluginViews: [PluginView] {
         let primaryViewIds: Set<String> = ["chat", "notes", "code"]
         return pluginViews.filter { view in
-            !primaryViewIds.contains(view.id) && view.isEnabled
+            view.distribution == "builtin"
+                && !primaryViewIds.contains(view.id)
+                && view.isEnabled
+        }
+    }
+
+    var enabledCommunityPluginViews: [PluginView] {
+        pluginViews.filter { view in
+            view.distribution == "community" && view.isEnabled
         }
     }
 
