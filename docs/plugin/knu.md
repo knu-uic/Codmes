@@ -68,7 +68,7 @@ KNU plugin 자체를 개발하며 `plugin.json`, `surface.json`의 아직 packag
 ```sh
 cd "$HOME/Desktop/Codmes"
 node bin/codmes.mjs plugin install \
-  "$HOME/Desktop/knu-ai-assistant/packages/codmes-plugin" \
+  "$HOME/Desktop/codmes-plugin-knu" \
   --root "$HOME/CodmesWorkspace"
 ```
 
@@ -119,10 +119,12 @@ Docker는 필수가 아니다. 이 문서는 KNU API와 PostgreSQL을 모두 Mac
 ```sh
 export CODMES_REPO="$HOME/Desktop/Codmes"
 export KNU_REPO="$HOME/Desktop/knu-ai-assistant"
+export KNU_PLUGIN_REPO="$HOME/Desktop/codmes-plugin-knu"
 export CODMES_WORKSPACE="$HOME/CodmesWorkspace"
 
 test -d "$CODMES_REPO" && echo "Codmes 저장소 확인"
 test -d "$KNU_REPO" && echo "KNU 저장소 확인"
+test -d "$KNU_PLUGIN_REPO" && echo "KNU plugin 저장소 확인"
 mkdir -p "$CODMES_WORKSPACE"
 ```
 
@@ -236,7 +238,7 @@ Codmes 서버는 Workspace의 `.codmes/config/auth.json`에서 각각 보관한�
 ```sh
 cd "$CODMES_REPO"
 node bin/codmes.mjs plugin install \
-  "$KNU_REPO/packages/codmes-plugin" \
+  "$KNU_PLUGIN_REPO" \
   --root "$CODMES_WORKSPACE"
 ```
 
@@ -247,7 +249,8 @@ node bin/codmes.mjs plugin list --root "$CODMES_WORKSPACE"
 ```
 
 설치 명령은 `plugin.json`과 `surface.json`을 검증하고 KNU Surface와 MCP를 한
-단위로 등록한다. `packages/codmes-plugin/plugin.json`이나 `surface.json`을 수정했을 때도
+단위로 등록한다. `codmes-plugin-knu` 저장소의 `plugin.json`이나 `surface.json`을
+수정했을 때도
 같은 설치 명령을 다시 실행해야 변경 내용이 Workspace에 반영된다.
 
 ## 개발환경 실행 명령 설명
@@ -533,7 +536,7 @@ Chat/Notes/Code Surface에서는 KNU 도구가 노출되지 않는다.
 | 구성 요소 | 담당 | 저장하는 정보 | 저장 위치 |
 |---|---|---|---|
 | Apple 클라이언트 | native Surface 표시, 로그인 입력, 상태 polling, AI 대화 UI | 비밀번호·KNU JWT·MCP 토큰을 저장하지 않음 | 화면 상태와 일반 앱 상태만 |
-| KNU plugin package | Surface 내비게이션, 제목, 필터, native component와 data binding 정의 | 비밀정보 없음 | KNU 저장소 `packages/codmes-plugin/plugin.json`, `surface.json`; 설치 시 Workspace manifest에 포함 |
+| KNU plugin package | Surface 내비게이션, 제목, 필터, native component와 data binding 정의 | 비밀정보 없음 | 별도 `knu-uic/codmes-plugin-knu` 저장소; 설치 시 Workspace manifest에 포함 |
 | Codmes 서버 | plugin 설치, raw data 요청, Surface document 조립·검증, AI runtime, MCP 승인·호출 | KNU 사용자 JWT, MCP service token, 설치된 plugin/UI manifest | Codmes Workspace의 `.codmes/config/auth.json`, `.codmes/plugins/` |
 | KNU FastAPI 서버 | 포털 로그인 검증, JWT 발급, domain data API, 동기화 시작 | 실행 중에만 비밀번호와 임시 browser session 보유 | 프로세스 메모리/임시 디렉터리; 완료 후 폐기 |
 | KNU PostgreSQL | KNU 서비스의 영속 데이터 저장 | 공지, 학적, 시간표, 성적, LMS 과목·과제·공지·강의 | KNU 서버가 사용하는 PostgreSQL |
