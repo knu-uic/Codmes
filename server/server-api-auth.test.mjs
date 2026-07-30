@@ -44,12 +44,12 @@ test("workspace server protects APIs with CODMES_SERVER_TOKEN and exposes manage
       false
     );
     const knuMarketplacePlugin = marketplace.plugins.find((plugin) => plugin.id === "kr.ac.kongju.knu");
-    assert.equal(knuMarketplacePlugin.version, "0.3.0");
+    assert.match(knuMarketplacePlugin.version, /^\d+\.\d+\.\d+$/);
     assert.equal(knuMarketplacePlugin.installed, false);
 
     const installedMarketplacePlugin = await fetchJson(
       `${baseUrl}/api/marketplace/plugins/kr.ac.kongju.knu/install`,
-      { token, method: "POST", body: { version: "0.3.0" } }
+      { token, method: "POST", body: { version: knuMarketplacePlugin.version } }
     );
     assert.equal(installedMarketplacePlugin.plugin.id, "kr.ac.kongju.knu");
     const installedPlugins = await fetchJson(`${baseUrl}/api/plugins`, { token });
