@@ -799,7 +799,12 @@ export class OpenAICompatibleRuntime extends EventEmitter {
         }
       }
 
-      if (mcp.transport === "streamable_http" && mcp.requiresApproval !== false && params.approved !== true) {
+      if (
+        mcp.transport === "streamable_http"
+        && mcp.requiresApproval !== false
+        && accessMode !== "full"
+        && params.approved !== true
+      ) {
         const reason = "Remote plugin MCP tools require approval before contacting the service.";
         const pendingState = {
           type: "mcp.tool.call",
@@ -869,7 +874,11 @@ export class OpenAICompatibleRuntime extends EventEmitter {
           throw new Error(`Security block: ${policyCheck.reason}`);
         }
 
-        if (policyCheck.status === "approve" && params.approved !== true) {
+        if (
+          policyCheck.status === "approve"
+          && accessMode !== "full"
+          && params.approved !== true
+        ) {
           const pendingState = {
             type: "mcp.tool.call",
             sessionId: params.sessionId,

@@ -781,6 +781,13 @@ test("OpenAI-compatible runtime exposes a plugin-declared public name through th
     }
   }), "utf8");
   await installPlugin(root, source);
+  await writeSecurityConfig(root, {
+    approvalMode: "suggest",
+    allowShell: true,
+    allowedCommands: [],
+    deniedCommands: [],
+    requireApproval: []
+  });
 
   let sentTools = [];
   const runtime = new OpenAICompatibleRuntime({
@@ -840,6 +847,23 @@ test("OpenAI-compatible runtime exposes a plugin-declared public name through th
   assert.deepEqual(result.output, [{
     type: "text",
     text: "search_knu_notices:수강 철회"
+  }]);
+
+  await runtime.createSession({
+    sessionId: "knu-plugin-full",
+    accessMode: "full"
+  });
+  const fullModeResult = await runtime.executeToolCall({
+    id: "knu-search-full-call",
+    name: "knu_search_notices",
+    arguments: { query: "한미 대학생 연수" }
+  }, {
+    sessionId: "knu-plugin-full",
+    surface: "knu"
+  });
+  assert.deepEqual(fullModeResult.output, [{
+    type: "text",
+    text: "search_knu_notices:한미 대학생 연수"
   }]);
   runtime.close();
 });
