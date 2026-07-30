@@ -1126,17 +1126,23 @@ struct PluginNavigationSidebar: View {
 
                 HStack(spacing: 5) {
                     Circle()
-                        .fill(authStatus?.authenticated == true ? .green : .secondary)
+                        .fill(accountStatusColor)
                         .frame(width: 7, height: 7)
                     Text(accountStatusText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    if authStatus?.authenticated == true,
-                       authStatus?.profileSyncing == true {
+                }
+
+                if authStatus?.authenticated == true,
+                   authStatus?.profileSyncing == true {
+                    HStack(spacing: 5) {
                         ProgressView()
                             .controlSize(.mini)
-                            .help(authStatus?.syncStage ?? "학교 데이터 동기화 중")
+                        Text(authStatus?.syncStage ?? "학교 데이터 동기화 중…")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
                     }
                 }
             }
@@ -1183,12 +1189,25 @@ struct PluginNavigationSidebar: View {
             return "상태 확인 불가"
         }
         if authStatus?.authenticated == true {
-            if authStatus?.profileSyncing == true {
-                return authStatus?.syncStage ?? "학교 데이터 동기화 중…"
+            let identity = [
+                authStatus?.studentId ?? authStatus?.username ?? "",
+                authStatus?.name ?? "",
+            ].filter { !$0.isEmpty }
+            if !identity.isEmpty {
+                return identity.joined(separator: " ")
             }
-            return authStatus?.name ?? authStatus?.username ?? "로그인됨"
+            return "로그인됨"
         }
         return "로그인 필요"
+    }
+
+    private var accountStatusColor: Color {
+        guard authStatus?.authenticated == true else {
+            return .secondary
+        }
+        let hasStudentId = authStatus?.studentId?.isEmpty == false
+        let hasName = authStatus?.name?.isEmpty == false
+        return hasStudentId && hasName ? .green : .orange
     }
 
     @MainActor
@@ -4142,6 +4161,13 @@ private struct PluginSettingsView: View {
                 selectedPluginId = nil
             }
         }
+        .task(id: selectedPluginId) {
+            guard let plugin = selectedPlugin,
+                  let pluginId = plugin.views.first?.pluginId else {
+                return
+            }
+            await store.refreshPluginAuthStatus(pluginId: pluginId)
+        }
     }
 
     private var pluginOverview: some View {
@@ -4225,6 +4251,7 @@ private struct PluginSettingsView: View {
     private var pluginDetail: some View {
         if let plugin = selectedPlugin {
             let primaryView = plugin.views.first
+            let primaryAuthStatus = store.pluginAuthStatus(for: primaryView?.pluginId)
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top) {
                     HStack(spacing: 10) {
@@ -4302,9 +4329,17 @@ private struct PluginSettingsView: View {
                                 Text(item.title)
                                 Spacer()
                                 if item.requiresAuth == true {
-                                    Image(systemName: "lock")
+                                    Image(
+                                        systemName: primaryAuthStatus?.authenticated == true
+                                            ? "checkmark.circle.fill"
+                                            : "lock"
+                                    )
                                         .font(.caption2)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(
+                                            primaryAuthStatus?.authenticated == true
+                                                ? .green
+                                                : .secondary
+                                        )
                                 }
                             }
                             .font(.caption)
