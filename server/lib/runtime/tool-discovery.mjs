@@ -1,4 +1,4 @@
-import { listInstalledPlugins } from "./plugin-registry.mjs";
+import { listRuntimeToolProviders } from "./plugin-runtime.mjs";
 
 export const TOOL_DISCOVERY_DEFINITION = {
   type: "function",
@@ -104,12 +104,13 @@ export const TOOL_REGISTRY = [
 export async function executeToolDiscovery(workspaceRoot, surface, args = {}, options = {}) {
   const desiredCapability = String(args.desiredCapability || "").toLowerCase();
   const disabledTools = new Set((options.disabledTools || []).map(String));
-  const pluginTools = (await listInstalledPlugins(workspaceRoot)).flatMap((plugin) =>
+  const providers = await listRuntimeToolProviders(workspaceRoot);
+  const pluginTools = providers.flatMap((plugin) =>
     (plugin.tools || []).map((tool) => ({
       name: tool.name,
       description: tool.description,
       group: tool.group || `plugin:${plugin.id}`,
-      surfaces: tool.surfaces || [plugin.surface.id],
+      surfaces: tool.surfaces || plugin.views.map((view) => view.id),
       requiresApproval: tool.requiresApproval === true,
       provider: tool.provider.type,
       pluginId: plugin.id

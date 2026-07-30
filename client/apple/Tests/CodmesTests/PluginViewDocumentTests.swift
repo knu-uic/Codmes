@@ -1,7 +1,7 @@
 import XCTest
 @testable import Codmes
 
-final class PluginSurfaceDocumentTests: XCTestCase {
+final class PluginViewDocumentTests: XCTestCase {
     func testDashboardDocumentDecodesNativeTableSections() throws {
         let data = Data(
             #"""
@@ -39,7 +39,7 @@ final class PluginSurfaceDocumentTests: XCTestCase {
             """#.utf8
         )
 
-        let document = try JSONDecoder().decode(PluginSurfaceDocument.self, from: data)
+        let document = try JSONDecoder().decode(PluginViewDocument.self, from: data)
 
         XCTAssertEqual(document.presentation, "dashboard")
         XCTAssertEqual(document.sections?.count, 2)
@@ -77,7 +77,7 @@ final class PluginSurfaceDocumentTests: XCTestCase {
             """#.utf8
         )
 
-        let document = try JSONDecoder().decode(PluginSurfaceDocument.self, from: data)
+        let document = try JSONDecoder().decode(PluginViewDocument.self, from: data)
 
         XCTAssertEqual(document.schemaVersion, 2)
         XCTAssertEqual(document.editor?.collection, "events")

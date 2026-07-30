@@ -6,7 +6,7 @@ import UIKit
 struct RootView: View {
     @EnvironmentObject private var store: WorkspaceStore
     @State private var selection: WorkspaceSection? = .chat
-    @State private var selectedPluginSurfaceId: String?
+    @State private var selectedPluginViewId: String?
     @State private var selectedPluginRouteId: String?
     @State private var isChatPanelVisible = false
     @State private var chatPanelDragX: CGFloat = 0
@@ -15,7 +15,7 @@ struct RootView: View {
     @State private var showingGlobalSearch = false
     @State private var showingSettings = false
     @State private var isMacSidebarVisible = true
-    @State private var showingMacSurfaceMenu = false
+    @State private var showingMacPluginMenu = false
     @State private var showingDocumentJobs = false
     @State private var seenDocumentJobIds = Set<String>()
     @State private var documentJobsAutoDismissTask: Task<Void, Never>?
@@ -80,21 +80,21 @@ struct RootView: View {
         selection ?? .chat
     }
 
-    private var selectedPluginSurface: WorkspaceSurface? {
-        guard let selectedPluginSurfaceId else { return nil }
-        return store.workspaceSurfaces.first { $0.id == selectedPluginSurfaceId }
+    private var selectedPluginView: PluginView? {
+        guard let selectedPluginViewId else { return nil }
+        return store.pluginViews.first { $0.id == selectedPluginViewId }
     }
 
     private var activeSurfaceId: String {
-        selectedPluginSurface?.id ?? selectedSection.runtimeSurfaceId
+        selectedPluginView?.id ?? selectedSection.runtimeSurfaceId
     }
 
     private var activeSurfaceTitle: String {
-        selectedPluginSurface?.title ?? selectedSection.rawValue
+        selectedPluginView?.title ?? selectedSection.rawValue
     }
 
     private var activeSurfaceIcon: String {
-        selectedPluginSurface?.systemImage ?? selectedSection.systemImage
+        selectedPluginView?.systemImage ?? selectedSection.systemImage
     }
 
     private var activeSurfaceTaskKey: String {
@@ -105,7 +105,7 @@ struct RootView: View {
         activeSurfaceId == "chat"
             || activeSurfaceId == "notes"
             || activeSurfaceId == "code"
-            || !(selectedPluginSurface?.navigation ?? []).isEmpty
+            || !(selectedPluginView?.navigation ?? []).isEmpty
     }
 
     private var activeDocumentTitle: String? {
@@ -136,9 +136,9 @@ struct RootView: View {
             FileBrowserPane(title: "Notes", root: "notes", showsHeader: false)
         } else if activeSurfaceId == "code" {
             FileBrowserPane(title: "Code", root: "code", showsHeader: false)
-        } else if let selectedPluginSurface {
-            PluginSurfaceSidebar(
-                surface: selectedPluginSurface,
+        } else if let selectedPluginView {
+            PluginNavigationSidebar(
+                surface: selectedPluginView,
                 selectedRouteId: $selectedPluginRouteId
             )
         }
@@ -148,7 +148,7 @@ struct RootView: View {
         if activeSurfaceId == "chat" {
             return min(300, max(240, availableWidth * 0.24))
         }
-        if selectedPluginSurface != nil {
+        if selectedPluginView != nil {
             return min(290, max(230, availableWidth * 0.24))
         }
         return min(320, max(220, availableWidth * 0.26))
@@ -170,7 +170,7 @@ struct RootView: View {
                 }
 
                 Button {
-                    showingMacSurfaceMenu.toggle()
+                    showingMacPluginMenu.toggle()
                 } label: {
                     VStack(alignment: .leading, spacing: 0) {
                         HStack(spacing: 5) {
@@ -198,7 +198,7 @@ struct RootView: View {
                 }
                 .buttonStyle(.plain)
                 .fixedSize()
-                .popover(isPresented: $showingMacSurfaceMenu, arrowEdge: .top) {
+                .popover(isPresented: $showingMacPluginMenu, arrowEdge: .top) {
                     macSurfaceMenu
                 }
             }
@@ -260,14 +260,14 @@ struct RootView: View {
             ForEach(visibleWorkspaceSections) { section in
                 Button {
                     selectSection(section)
-                    showingMacSurfaceMenu = false
+                    showingMacPluginMenu = false
                 } label: {
                     HStack(spacing: 10) {
                         Image(systemName: section.systemImage)
                             .frame(width: 18)
                         Text(section.rawValue)
                         Spacer()
-                        if selectedPluginSurfaceId == nil && selectedSection == section {
+                        if selectedPluginViewId == nil && selectedSection == section {
                             Image(systemName: "checkmark")
                                 .font(.caption.weight(.bold))
                         }
@@ -280,22 +280,22 @@ struct RootView: View {
                 .buttonStyle(.plain)
             }
 
-            if !store.enabledPluginSurfaces.isEmpty {
+            if !store.enabledPluginViews.isEmpty {
                 Divider()
                     .padding(.vertical, 4)
             }
 
-            ForEach(store.enabledPluginSurfaces) { surface in
+            ForEach(store.enabledPluginViews) { surface in
                 Button {
-                    selectPluginSurface(surface)
-                    showingMacSurfaceMenu = false
+                    selectPluginView(surface)
+                    showingMacPluginMenu = false
                 } label: {
                     HStack(spacing: 10) {
                         Image(systemName: surface.systemImage)
                             .frame(width: 18)
                         Text(surface.title)
                         Spacer()
-                        if selectedPluginSurfaceId == surface.id {
+                        if selectedPluginViewId == surface.id {
                             Image(systemName: "checkmark")
                                 .font(.caption.weight(.bold))
                         }
@@ -485,22 +485,22 @@ struct RootView: View {
                                     selectSection(section)
                                 } label: {
                                     Label(section.rawValue, systemImage: section.systemImage)
-                                    if selectedPluginSurfaceId == nil && selectedSection == section {
+                                    if selectedPluginViewId == nil && selectedSection == section {
                                         Image(systemName: "checkmark")
                                     }
                                 }
                             }
 
-                            if !store.enabledPluginSurfaces.isEmpty {
+                            if !store.enabledPluginViews.isEmpty {
                                 Divider()
                             }
 
-                            ForEach(store.enabledPluginSurfaces) { surface in
+                            ForEach(store.enabledPluginViews) { surface in
                                 Button {
-                                    selectPluginSurface(surface)
+                                    selectPluginView(surface)
                                 } label: {
                                     Label(surface.title, systemImage: surface.systemImage)
-                                    if selectedPluginSurfaceId == surface.id {
+                                    if selectedPluginViewId == surface.id {
                                         Image(systemName: "checkmark")
                                     }
                                 }
@@ -605,9 +605,9 @@ struct RootView: View {
                         closeSidebar()
                     }
                 }
-            } else if let selectedPluginSurface {
-                PluginSurfaceSidebar(
-                    surface: selectedPluginSurface,
+            } else if let selectedPluginView {
+                PluginNavigationSidebar(
+                    surface: selectedPluginView,
                     selectedRouteId: $selectedPluginRouteId,
                     onSelectRoute: {
                         if !persistent {
@@ -832,7 +832,7 @@ struct RootView: View {
     }
 
     private func selectSection(_ section: WorkspaceSection) {
-        selectedPluginSurfaceId = nil
+        selectedPluginViewId = nil
         selectedPluginRouteId = nil
         selection = section
         store.activeChatSurface = section.runtimeSurfaceId
@@ -852,8 +852,8 @@ struct RootView: View {
         closeSidebarIfNeeded()
     }
 
-    private func selectPluginSurface(_ surface: WorkspaceSurface) {
-        selectedPluginSurfaceId = surface.id
+    private func selectPluginView(_ surface: PluginView) {
+        selectedPluginViewId = surface.id
         selectedPluginRouteId = surface.navigation?.first?.id
         selection = nil
         store.activeChatSurface = surface.id
@@ -888,9 +888,9 @@ struct RootView: View {
     private var primaryDetailView: some View {
         switch selectedSection {
         case .chat:
-            if let selectedPluginSurface {
-                PluginSurfaceView(
-                    surface: selectedPluginSurface,
+            if let selectedPluginView {
+                PluginContentView(
+                    surface: selectedPluginView,
                     routeId: selectedPluginRouteId,
                     reloadRevision: store.pluginAuthRevision
                 )
@@ -1007,9 +1007,9 @@ private struct DocumentJobsPopover: View {
     }
 }
 
-struct PluginSurfaceSidebar: View {
+struct PluginNavigationSidebar: View {
     @EnvironmentObject private var store: WorkspaceStore
-    let surface: WorkspaceSurface
+    let surface: PluginView
     @Binding var selectedRouteId: String?
     var onSelectRoute: () -> Void = {}
 
@@ -1084,7 +1084,7 @@ struct PluginSurfaceSidebar: View {
         }) {
             WorkspaceSettingsView(
                 isPresented: $showingSettings,
-                initialSection: .surfaces,
+                initialSection: .runtimePlugins,
                 initialSurfaceId: surface.id
             )
             .environmentObject(store)
@@ -1177,9 +1177,9 @@ struct PluginSurfaceSidebar: View {
     }
 }
 
-private struct PluginSurfaceAuthenticationSettingsView: View {
+private struct PluginAuthenticationSettingsView: View {
     @EnvironmentObject private var store: WorkspaceStore
-    let surface: WorkspaceSurface
+    let surface: PluginView
 
     @State private var username = ""
     @State private var password = ""
@@ -1410,13 +1410,13 @@ private struct PluginSurfaceAuthenticationSettingsView: View {
     }
 }
 
-struct PluginSurfaceView: View {
+struct PluginContentView: View {
     @EnvironmentObject private var store: WorkspaceStore
     @Environment(\.openURL) private var openURL
-    let surface: WorkspaceSurface
+    let surface: PluginView
     let routeId: String?
     let reloadRevision: Int
-    @State private var document: PluginSurfaceDocument?
+    @State private var document: PluginViewDocument?
     @State private var loadError: String?
     @State private var query = ""
     @State private var selectedFilters: [String: String] = [:]
@@ -1450,18 +1450,18 @@ struct PluginSurfaceView: View {
             }
         }
         .task(id: "\(surface.id):\(routeId ?? ""):\(reloadRevision)") {
-            await loadSurfaceDocument()
+            await loadPluginViewDocument()
         }
         .sheet(item: $calendarEditor) { context in
             CalendarEventEditor(
                 context: context,
                 onSave: { draft in
                     try await saveCalendarEvent(context: context, draft: draft)
-                    await loadSurfaceDocument()
+                    await loadPluginViewDocument()
                 },
                 onDelete: context.item == nil ? nil : {
                     try await deleteCalendarEvent(context: context)
-                    await loadSurfaceDocument()
+                    await loadPluginViewDocument()
                 }
             )
         }
@@ -1470,17 +1470,17 @@ struct PluginSurfaceView: View {
                 context: context,
                 onSave: { values in
                     try await savePluginCollectionItem(context: context, values: values)
-                    await loadSurfaceDocument()
+                    await loadPluginViewDocument()
                 },
                 onDelete: context.item == nil ? nil : {
                     try await deletePluginCollectionItem(context: context)
-                    await loadSurfaceDocument()
+                    await loadPluginViewDocument()
                 }
             )
         }
     }
 
-    private func collection(_ document: PluginSurfaceDocument) -> some View {
+    private func collection(_ document: PluginViewDocument) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .top, spacing: 12) {
@@ -1569,11 +1569,11 @@ struct PluginSurfaceView: View {
         }
         .background(.background)
         .refreshable {
-            await loadSurfaceDocument()
+            await loadPluginViewDocument()
         }
     }
 
-    private func calendar(_ document: PluginSurfaceDocument) -> some View {
+    private func calendar(_ document: PluginViewDocument) -> some View {
         let selectedItems = calendarItems(document.items, on: selectedCalendarDate)
 
         return ScrollView {
@@ -1694,7 +1694,7 @@ struct PluginSurfaceView: View {
         }
         .background(.background)
         .refreshable {
-            await loadSurfaceDocument()
+            await loadPluginViewDocument()
         }
     }
 
@@ -1887,7 +1887,7 @@ struct PluginSurfaceView: View {
         )
     }
 
-    private func dashboard(_ document: PluginSurfaceDocument) -> some View {
+    private func dashboard(_ document: PluginViewDocument) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 5) {
@@ -1921,7 +1921,7 @@ struct PluginSurfaceView: View {
         }
         .background(.background)
         .refreshable {
-            await loadSurfaceDocument()
+            await loadPluginViewDocument()
         }
     }
 
@@ -2082,7 +2082,7 @@ struct PluginSurfaceView: View {
         .disabled(item.action == nil && document?.editor == nil)
     }
 
-    private func filteredItems(in document: PluginSurfaceDocument) -> [PluginSurfaceItem] {
+    private func filteredItems(in document: PluginViewDocument) -> [PluginSurfaceItem] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return document.items.filter { item in
             for filter in document.filters {
@@ -2159,7 +2159,7 @@ struct PluginSurfaceView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(surface.title)
                         .font(.title2.weight(.semibold))
-                    Text(surface.description?.isEmpty == false ? surface.description! : "Plugin surface")
+                    Text(surface.description?.isEmpty == false ? surface.description! : "Plugin view")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -2171,7 +2171,7 @@ struct PluginSurfaceView: View {
 
             if let prompt = surface.prompt, !prompt.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Surface prompt")
+                    Text("View prompt")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                     Text(prompt)
@@ -2190,7 +2190,7 @@ struct PluginSurfaceView: View {
     }
 
     @MainActor
-    private func loadSurfaceDocument() async {
+    private func loadPluginViewDocument() async {
         guard surface.renderer == "declarative", let pluginId = surface.pluginId else { return }
         loadError = nil
         guard let api = store.api else {
@@ -2198,7 +2198,7 @@ struct PluginSurfaceView: View {
             return
         }
         do {
-            document = try await api.pluginSurfaceDocument(pluginId: pluginId, routeId: routeId)
+            document = try await api.pluginViewDocument(pluginId: pluginId, routeId: routeId)
         } catch {
             loadError = error.localizedDescription
         }
@@ -2715,8 +2715,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case modelConfig = "Model Config"
     case search = "Search"
     case mcp = "MCP"
-    case plugins = "Plugins"
-    case surfaces = "Surfaces"
+    case plugins = "Marketplace"
+    case runtimePlugins = "Plugins"
 
     var id: String { rawValue }
 
@@ -2728,7 +2728,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .search: "magnifyingglass"
         case .mcp: "point.3.connected.trianglepath.dotted"
         case .plugins: "shippingbox"
-        case .surfaces: "square.grid.2x2"
+        case .runtimePlugins: "puzzlepiece.extension"
         }
     }
 
@@ -2739,8 +2739,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .modelConfig: "Provider auth and endpoints"
         case .search: "Indexing and document search"
         case .mcp: "External MCP tools"
-        case .plugins: "Marketplace and updates"
-        case .surfaces: "Client modes and plugins"
+        case .plugins: "Discover and update community plugins"
+        case .runtimePlugins: "Built-in and installed plugins"
         }
     }
 }
@@ -2850,8 +2850,8 @@ struct WorkspaceSettingsView: View {
                     MCPSettingsView()
                 case .plugins:
                     MarketplaceSettingsView()
-                case .surfaces:
-                    SurfaceSettingsView(initialSurfaceId: initialSurfaceId)
+                case .runtimePlugins:
+                    PluginSettingsView(initialViewId: initialSurfaceId)
                 }
             }
             .padding(18)
@@ -3654,7 +3654,7 @@ private struct MarketplaceSettingsView: View {
                 pendingRemoval = nil
             }
         } message: {
-            Text("The Surface and MCP registration will be removed. Saved credentials and service data are kept.")
+            Text("Plugin views, tools, and MCP registration will be removed. Saved credentials and service data are kept.")
         }
         .confirmationDialog(
             "Allow new permissions for \(pendingPermissionUpdate?.name ?? "plugin")?",
@@ -4065,122 +4065,88 @@ private struct MarketplacePluginDetailView: View {
     }
 }
 
-private struct SurfaceSettingsView: View {
+private struct PluginSettingsView: View {
     @EnvironmentObject private var store: WorkspaceStore
-    let initialSurfaceId: String?
-    @State private var selectedSurfaceId: String?
-    @State private var pluginId = ""
-    @State private var pluginTitle = ""
-    @State private var pluginPrompt = ""
+    let initialViewId: String?
+    @State private var selectedPluginId: String?
 
-    init(initialSurfaceId: String? = nil) {
-        self.initialSurfaceId = initialSurfaceId
-        _selectedSurfaceId = State(initialValue: initialSurfaceId)
+    init(initialViewId: String? = nil) {
+        self.initialViewId = initialViewId
     }
 
-    private var selectedSurface: WorkspaceSurface? {
-        guard let selectedSurfaceId else { return nil }
-        return store.workspaceSurfaces.first { $0.id == selectedSurfaceId }
+    private var selectedPlugin: RuntimePlugin? {
+        guard let selectedPluginId else { return nil }
+        return store.runtimePlugins.first { $0.id == selectedPluginId }
     }
 
     var body: some View {
         Group {
-            if selectedSurface != nil {
-                surfaceDetail
+            if selectedPlugin != nil {
+                pluginDetail
             } else {
-                surfaceOverview
+                pluginOverview
             }
         }
         .task {
-            await store.refreshSurfaces()
-            if let initialSurfaceId,
-               store.workspaceSurfaces.contains(where: { $0.id == initialSurfaceId }) {
-                selectedSurfaceId = initialSurfaceId
-            } else if selectedSurface == nil {
-                selectedSurfaceId = nil
+            await store.refreshPlugins()
+            if let initialViewId,
+               let plugin = store.runtimePlugins.first(where: {
+                   $0.views.contains(where: { $0.id == initialViewId })
+               }) {
+                selectedPluginId = plugin.id
+            } else if selectedPlugin == nil {
+                selectedPluginId = nil
             }
         }
     }
 
-    private var surfaceOverview: some View {
+    private var pluginOverview: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Surfaces")
+                    Text("Plugins")
                         .font(.headline)
-                    Text("Choose which work modes appear in the client and configure each Surface.")
+                    Text("Built-in and Marketplace plugins use the same runtime, views, tools, storage, and settings contract.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button {
-                    Task { await store.refreshSurfaces() }
+                    Task { await store.refreshPlugins() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.plain)
             }
 
-            surfaceList
+            pluginList
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Add plugin surface")
-                    .font(.subheadline.weight(.semibold))
-                TextField("kongju-university", text: $pluginId)
-                    .textFieldStyle(.roundedBorder)
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    #endif
-                TextField("공주대학교", text: $pluginTitle)
-                    .textFieldStyle(.roundedBorder)
-                TextField("Prompt hint for this surface", text: $pluginPrompt, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
-                    .lineLimit(2...4)
-                Button {
-                    let id = pluginId
-                    let title = pluginTitle
-                    let prompt = pluginPrompt
-                    Task {
-                        await store.addPluginSurface(id: id, title: title, prompt: prompt)
-                        if store.surfaceSetupMessage.isEmpty {
-                            pluginId = ""
-                            pluginTitle = ""
-                            pluginPrompt = ""
-                        }
-                    }
-                } label: {
-                    Label("Add Surface", systemImage: "plus")
-                }
-                .buttonStyle(.bordered)
-            }
-
-            if !store.surfaceSetupMessage.isEmpty {
-                Text(store.surfaceSetupMessage)
+            if !store.pluginSetupMessage.isEmpty {
+                Text(store.pluginSetupMessage)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
     }
 
-    private var surfaceList: some View {
+    private var pluginList: some View {
         VStack(spacing: 4) {
-            ForEach(store.workspaceSurfaces) { surface in
-                surfaceRow(surface)
+            ForEach(store.runtimePlugins) { plugin in
+                pluginRow(plugin)
             }
         }
     }
 
-    private func surfaceRow(_ surface: WorkspaceSurface) -> some View {
+    private func pluginRow(_ plugin: RuntimePlugin) -> some View {
         HStack(spacing: 10) {
             HStack(spacing: 10) {
-                Image(systemName: surface.systemImage)
+                Image(systemName: plugin.systemImage)
                     .frame(width: 20)
                     .foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(surface.title)
+                    Text(plugin.name)
                         .font(.callout.weight(.medium))
-                    Text(surface.kind == "plugin" ? "Plugin Surface" : "Built-in Surface")
+                    Text(plugin.builtIn ? "Built-in Plugin" : "Community Plugin")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -4188,33 +4154,23 @@ private struct SurfaceSettingsView: View {
             }
 
             Toggle("", isOn: Binding(
-                get: { surface.isEnabled },
+                get: { plugin.enabled },
                 set: { enabled in
-                    Task { await store.setSurfaceEnabled(surface, enabled: enabled) }
+                    Task { await store.setPluginEnabled(plugin, enabled: enabled) }
                 }
             ))
             .labelsHidden()
             .controlSize(.small)
-            .disabled(surface.id == "chat")
+            .disabled(plugin.id == "com.codmes.chat")
 
             Button {
-                selectedSurfaceId = surface.id
+                selectedPluginId = plugin.id
             } label: {
                 Image(systemName: "gearshape")
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.borderless)
-            .help("Configure \(surface.title)")
-
-            if surface.canRemove {
-                Button(role: .destructive) {
-                    Task { await store.removeSurface(surface) }
-                } label: {
-                    Image(systemName: "trash")
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
-            }
+            .help("Configure \(plugin.name)")
         }
         .padding(.vertical, 8)
         .padding(.horizontal, 9)
@@ -4222,25 +4178,26 @@ private struct SurfaceSettingsView: View {
     }
 
     @ViewBuilder
-    private var surfaceDetail: some View {
-        if let surface = selectedSurface {
+    private var pluginDetail: some View {
+        if let plugin = selectedPlugin {
+            let primaryView = plugin.views.first
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top) {
                     HStack(spacing: 10) {
-                        Image(systemName: surface.systemImage)
+                        Image(systemName: plugin.systemImage)
                             .font(.title3)
                             .foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(surface.title)
+                            Text(plugin.name)
                                 .font(.headline)
-                            Text(surface.description?.isEmpty == false ? surface.description! : surface.id)
+                            Text(plugin.description)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
                     Spacer()
                     Button {
-                        selectedSurfaceId = nil
+                        selectedPluginId = nil
                     } label: {
                         Image(systemName: "xmark")
                             .font(.callout.weight(.semibold))
@@ -4249,28 +4206,33 @@ private struct SurfaceSettingsView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
-                    .help("Close Surface settings")
+                    .help("Close plugin settings")
                 }
 
                 HStack {
                     Label(
-                        surface.isEnabled ? "Enabled" : "Disabled",
-                        systemImage: surface.isEnabled ? "checkmark.circle.fill" : "circle"
+                        plugin.enabled ? "Enabled" : "Disabled",
+                        systemImage: plugin.enabled ? "checkmark.circle.fill" : "circle"
                     )
                     .font(.caption)
-                    .foregroundStyle(surface.isEnabled ? .green : .secondary)
+                    .foregroundStyle(plugin.enabled ? .green : .secondary)
                     Spacer()
+                    Text(plugin.builtIn ? "Built-in" : "Community")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
 
                 VStack(alignment: .leading, spacing: 14) {
-                    if surface.hasAuthentication == true, surface.pluginId != nil {
-                        PluginSurfaceAuthenticationSettingsView(surface: surface)
+                    if let primaryView,
+                       primaryView.hasAuthentication == true,
+                       primaryView.pluginId != nil {
+                        PluginAuthenticationSettingsView(surface: primaryView)
                     } else {
                         ContentUnavailableView {
-                            Label("Surface settings", systemImage: "gearshape")
+                            Label("Plugin settings", systemImage: "gearshape")
                         } description: {
-                            if surface.kind == "core" {
-                                Text("\(surface.title)의 개별 설정은 아직 없습니다. 이 화면은 향후 기본 Surface별 설정을 추가하기 위한 자리입니다.")
+                            if plugin.builtIn {
+                                Text("\(plugin.name)의 개별 설정은 아직 없습니다. 향후 built-in plugin 설정이 이 화면에 추가됩니다.")
                             } else {
                                 Text("이 플러그인은 별도의 사용자 설정을 제공하지 않습니다.")
                             }
@@ -4282,9 +4244,11 @@ private struct SurfaceSettingsView: View {
                 .padding(14)
                 .background(.quaternary.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
 
-                if let navigation = surface.navigation, !navigation.isEmpty {
+                if let primaryView,
+                   let navigation = primaryView.navigation,
+                   !navigation.isEmpty {
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("Sections")
+                        Text("Plugin views")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         ForEach(navigation) { item in

@@ -535,9 +535,9 @@ struct WorkspaceAPI {
         let _: EmptyResponse = try await request(components, method: "POST", body: ["pinned": pinned])
     }
 
-    func surfaces() async throws -> [WorkspaceSurface] {
-        let response: WorkspaceSurfacesResponse = try await get("/api/surfaces")
-        return response.surfaces
+    func runtimePlugins() async throws -> [RuntimePlugin] {
+        let response: RuntimePluginsResponse = try await get("/api/plugins")
+        return response.plugins
     }
 
     func marketplacePlugins() async throws -> [MarketplacePlugin] {
@@ -590,9 +590,9 @@ struct WorkspaceAPI {
         )
     }
 
-    func pluginSurfaceDocument(pluginId: String, routeId: String? = nil) async throws -> PluginSurfaceDocument {
+    func pluginViewDocument(pluginId: String, routeId: String? = nil) async throws -> PluginViewDocument {
         let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
-        var components = try components("/api/plugins/\(encoded)/surface-document")
+        var components = try components("/api/plugins/\(encoded)/view-document")
         if let routeId, !routeId.isEmpty {
             components.queryItems = [URLQueryItem(name: "route", value: routeId)]
         }
@@ -677,9 +677,13 @@ struct WorkspaceAPI {
         )
     }
 
-    func updateSurface(id: String, body: SurfaceUpdateBody) async throws -> WorkspaceSurface {
-        var components = try components("/api/surfaces/\(id)")
-        components.percentEncodedPath = "/api/surfaces/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)"
+    func updatePluginConfiguration(
+        pluginId: String,
+        body: PluginConfigurationBody
+    ) async throws -> RuntimePlugin {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        var components = try components("/api/plugins/\(encoded)/configuration")
+        components.percentEncodedPath = "/api/plugins/\(encoded)/configuration"
         return try await request(components, method: "POST", body: body)
     }
 

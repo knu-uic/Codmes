@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 
 const BLOCKED_PATH_SEGMENTS = new Set(["__proto__", "prototype", "constructor"]);
 
-export function renderPluginSurfaceDocument(route, payloads) {
+export function renderPluginViewDocument(route, payloads) {
   if (!route?.document || !payloads || typeof payloads !== "object") {
     throw new Error("Plugin Surface binding requires a route and data payloads.");
   }

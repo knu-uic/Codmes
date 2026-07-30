@@ -1,4 +1,7 @@
 export const BUILTIN_PLUGIN_IDS = Object.freeze([
+  "com.codmes.chat",
+  "com.codmes.notes",
+  "com.codmes.code",
   "com.codmes.planner"
 ]);
 

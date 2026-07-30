@@ -872,8 +872,6 @@ test("Planner calendar writes require approval in Safe mode and execute immediat
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-calendar-mode-"));
   await setDefaultModel(root, "openai-api", "gpt-5.5");
   await setCredentialValue(root, "openai-api", "CODMES_OPENAI_API_KEY", "test-key");
-  const { ensureBuiltInPlugins } = await import("./builtin-plugins.mjs");
-  await ensureBuiltInPlugins(root);
   const runtime = new OpenAICompatibleRuntime({
     workspaceRoot: root,
     fetchImpl: async () => ({

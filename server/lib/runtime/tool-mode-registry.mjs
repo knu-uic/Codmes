@@ -45,6 +45,41 @@ export const DEFAULT_TOOL_MODES = {
       "run_checks",
       "run_git_command"
     ]
+  },
+  planner: {
+    mode: "default",
+    enabledTools: [
+      "planner_list",
+      "planner_get",
+      "planner_create",
+      "planner_update",
+      "planner_delete",
+      "calendar_list",
+      "calendar_get",
+      "calendar_create",
+      "calendar_update",
+      "calendar_delete",
+      "memo_list",
+      "memo_get",
+      "memo_create",
+      "memo_update",
+      "memo_delete",
+      "conversation_search",
+      "memory_search",
+      "tool_discovery",
+      "conversation_read"
+    ],
+    requiresApproval: [
+      "planner_create",
+      "planner_update",
+      "planner_delete",
+      "calendar_create",
+      "calendar_update",
+      "calendar_delete",
+      "memo_create",
+      "memo_update",
+      "memo_delete"
+    ]
   }
 };
 

@@ -166,7 +166,8 @@ box를 반환하므로 client는 추가 baseline 보정 없이 `normalized` 값�
 - `/api/security`
 - `/api/mcp...`
 - `/api/doctor`
-- `/api/surfaces...`
+- `GET /api/plugins`
+- `POST /api/plugins/:id/configuration`
 - `/api/tool-modes...`
 - `/api/tools/available`
 - `/api/tools/discover`
@@ -187,16 +188,18 @@ loopback HTTP MCP may explicitly set `allowUnauthenticated:true`; this is meant
 for a local gateway that injects the service credential. Responses expose only
 credential status and never return bearer values.
 
-Manifest v1 plugin routes:
+Plugin Runtime routes:
 
-- `GET /api/plugins` lists installed plugin manifests.
+- `GET /api/plugins` lists built-in and installed community plugins through one
+  response contract, including each plugin's native/declarative views.
+- `POST /api/plugins/:pluginId/configuration` changes plugin enablement.
 - `POST /api/plugins/install` with `{path}` installs a server-local package.
-- `DELETE /api/plugins/:pluginId` removes its Surface and MCP registration.
-- `GET /api/plugins/:pluginId/surface-document?route=<navigationId>` loads the
+- `DELETE /api/plugins/:pluginId` removes a community plugin's view, tools, and
+  MCP registration. Built-in plugins are not removable.
+- `GET /api/plugins/:pluginId/view-document?route=<navigationId>` loads the
   installed plugin-owned route binding, fetches its domain JSON data sources,
   compiles them into one declarative document, and validates it for native
-  client rendering. Legacy full-document routes remain readable during
-  migration.
+  client rendering.
 - `GET /api/plugins/:pluginId/auth/status` returns login state without a token.
 - `POST /api/plugins/:pluginId/auth/login` accepts `{username,password}`,
   maps those values to the manifest's `usernameField` and `passwordField`,

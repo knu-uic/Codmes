@@ -13,7 +13,7 @@ import {
   resolvePluginSurfaceTarget,
   validatePluginManifest
 } from "./plugin-registry.mjs";
-import { loadSurfaces } from "./surface-registry.mjs";
+import { listRuntimeViews } from "./plugin-runtime.mjs";
 
 const manifest = {
   schemaVersion: 1,
@@ -65,9 +65,9 @@ test("a plugin installs and removes its surface and MCP as one unit", async () =
   assert.equal(mcp.allowUnauthenticated, true);
   assert.deepEqual(mcp.surfaces, ["knu"]);
 
-  const surface = (await loadSurfaces(root)).find((item) => item.id === "knu");
+  const surface = (await listRuntimeViews(root)).find((item) => item.id === "knu");
   assert.equal(surface.renderer, "declarative");
-  assert.equal(surface.dataPath, `/api/plugins/${encodeURIComponent(manifest.id)}/surface-document`);
+  assert.equal(surface.dataPath, `/api/plugins/${encodeURIComponent(manifest.id)}/view-document`);
   assert.deepEqual(surface.navigation.map((item) => item.id), ["notices", "settings"]);
   assert.equal(surface.hasAuthentication, true);
 

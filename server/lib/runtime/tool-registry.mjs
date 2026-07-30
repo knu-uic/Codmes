@@ -74,7 +74,8 @@ export function normalizeToolDescriptor(value) {
     group: String(value.group || provider.type).trim() || provider.type,
     requiresApproval: value.requiresApproval === true,
     readOnly: value.readOnly === true,
-    pluginId: String(value.pluginId || "").trim() || null
+    pluginId: String(value.pluginId || "").trim() || null,
+    storageNamespace: String(value.storageNamespace || "").trim() || null
   });
 }
 

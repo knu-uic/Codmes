@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "com.codmes.notes",
+  "version": "1.0.0",
+  "name": "Notes",
+  "description": "노트, 문서, PDF 주석과 Workspace 검색을 제공합니다.",
+  "icon": "doc.text",
+  "platforms": ["macos", "ios", "ipados"],
+  "views": [
+    {
+      "id": "notes",
+      "title": "Notes",
+      "renderer": "native",
+      "order": 20
+    }
+  ]
+}

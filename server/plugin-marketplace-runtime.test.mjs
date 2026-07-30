@@ -76,7 +76,7 @@ test("signed remote Marketplace runs install, Surface storage, update, and rollb
     );
     assert.equal(created.created, true);
     const surface = await request(
-      `${baseUrl}/api/plugins/com.example.runtime/surface-document?route=memos`,
+      `${baseUrl}/api/plugins/com.example.runtime/view-document?route=memos`,
       { token }
     );
     assert.equal(surface.items[0].title, "Runtime memo");

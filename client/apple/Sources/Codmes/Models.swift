@@ -840,8 +840,27 @@ struct GlobalSearchTarget: Codable {
     let bbox: AnnotationBoundingBox?
 }
 
-struct WorkspaceSurfacesResponse: Codable {
-    let surfaces: [WorkspaceSurface]
+struct RuntimePluginsResponse: Codable {
+    let plugins: [RuntimePlugin]
+}
+
+struct RuntimePlugin: Codable, Identifiable, Hashable {
+    let id: String
+    let version: String
+    let name: String
+    let description: String
+    let publisher: String
+    let icon: String
+    let platforms: [String]
+    let permissions: [String]
+    let distribution: String
+    let builtIn: Bool
+    let removable: Bool
+    let enabled: Bool
+    let views: [PluginView]
+    let toolNames: [String]
+
+    var systemImage: String { icon.isEmpty ? "shippingbox" : icon }
 }
 
 struct MarketplacePluginsResponse: Codable {
@@ -882,7 +901,7 @@ struct MarketplacePlugin: Codable, Identifiable, Hashable {
     var systemImage: String { icon.isEmpty ? "shippingbox" : icon }
 }
 
-struct WorkspaceSurface: Codable, Identifiable, Hashable {
+struct PluginView: Codable, Identifiable, Hashable {
     let id: String
     let title: String
     let kind: String?
@@ -894,6 +913,8 @@ struct WorkspaceSurface: Codable, Identifiable, Hashable {
     let prompt: String?
     let root: String?
     let pluginId: String?
+    let pluginName: String?
+    let distribution: String?
     let renderer: String?
     let dataPath: String?
     let navigation: [PluginSurfaceNavigationItem]?
@@ -964,7 +985,7 @@ struct PluginAuthLogoutResponse: Codable {
     let removed: Bool?
 }
 
-struct PluginSurfaceDocument: Codable {
+struct PluginViewDocument: Codable {
     let schemaVersion: Int
     let presentation: String
     let title: String
@@ -1096,17 +1117,8 @@ struct PluginSurfaceField: Codable, Identifiable {
     let value: String
 }
 
-struct SurfaceUpdateBody: Encodable {
-    let title: String?
-    let kind: String?
-    let icon: String?
-    let description: String?
-    let prompt: String?
-    let root: String?
-    let pluginId: String?
+struct PluginConfigurationBody: Encodable {
     let enabled: Bool?
-    let removable: Bool?
-    let order: Int?
     let remove: Bool?
 }
 

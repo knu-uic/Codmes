@@ -66,8 +66,22 @@ test("workspace server protects APIs with CODMES_SERVER_TOKEN and exposes manage
     );
     assert.equal(builtInPlanner.distribution, "builtin");
     assert.equal(builtInPlanner.removable, false);
+    assert.equal(builtInPlanner.views[0].id, "planner");
+    const legacySurfaces = await fetch(`${baseUrl}/api/surfaces`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    assert.equal(legacySurfaces.status, 404);
+    const disabledPlanner = await fetchJson(
+      `${baseUrl}/api/plugins/com.codmes.planner/configuration`,
+      { token, method: "POST", body: { enabled: false } }
+    );
+    assert.equal(disabledPlanner.enabled, false);
+    await fetchJson(
+      `${baseUrl}/api/plugins/com.codmes.planner/configuration`,
+      { token, method: "POST", body: { enabled: true } }
+    );
     const plannerSurface = await fetchJson(
-      `${baseUrl}/api/plugins/com.codmes.planner/surface-document?route=tasks`,
+      `${baseUrl}/api/plugins/com.codmes.planner/view-document?route=tasks`,
       { token }
     );
     assert.equal(plannerSurface.schemaVersion, 2);
@@ -92,7 +106,7 @@ test("workspace server protects APIs with CODMES_SERVER_TOKEN and exposes manage
     );
     assert.equal(createdTask.created, true);
     const populatedPlannerSurface = await fetchJson(
-      `${baseUrl}/api/plugins/com.codmes.planner/surface-document?route=tasks`,
+      `${baseUrl}/api/plugins/com.codmes.planner/view-document?route=tasks`,
       { token }
     );
     assert.equal(populatedPlannerSurface.items[0].title, "Ship Planner");
@@ -103,7 +117,7 @@ test("workspace server protects APIs with CODMES_SERVER_TOKEN and exposes manage
     );
     assert.deepEqual(calendarCollection.items, []);
     const calendarSurface = await fetchJson(
-      `${baseUrl}/api/plugins/com.codmes.planner/surface-document?route=events`,
+      `${baseUrl}/api/plugins/com.codmes.planner/view-document?route=events`,
       { token }
     );
     assert.equal(calendarSurface.schemaVersion, 2);
@@ -140,7 +154,7 @@ test("workspace server protects APIs with CODMES_SERVER_TOKEN and exposes manage
     );
     assert.equal(updatedCalendarEvent.item.title, "Updated design review");
     const populatedCalendarSurface = await fetchJson(
-      `${baseUrl}/api/plugins/com.codmes.planner/surface-document?route=events`,
+      `${baseUrl}/api/plugins/com.codmes.planner/view-document?route=events`,
       { token }
     );
     assert.equal(populatedCalendarSurface.items[0].temporal.startsAt, "2026-07-29T09:00:00+09:00");
@@ -150,7 +164,7 @@ test("workspace server protects APIs with CODMES_SERVER_TOKEN and exposes manage
     );
     assert.equal(deletedCalendarEvent.deleted, true);
     const memoSurface = await fetchJson(
-      `${baseUrl}/api/plugins/com.codmes.planner/surface-document?route=memos`,
+      `${baseUrl}/api/plugins/com.codmes.planner/view-document?route=memos`,
       { token }
     );
     assert.equal(memoSurface.schemaVersion, 2);
@@ -172,7 +186,7 @@ test("workspace server protects APIs with CODMES_SERVER_TOKEN and exposes manage
     );
     assert.equal(createdMemo.created, true);
     const populatedMemoSurface = await fetchJson(
-      `${baseUrl}/api/plugins/com.codmes.planner/surface-document?route=memos`,
+      `${baseUrl}/api/plugins/com.codmes.planner/view-document?route=memos`,
       { token }
     );
     assert.equal(populatedMemoSurface.items[0].title, "빠른 메모");
@@ -693,13 +707,16 @@ test("plugin package owns UI while the upstream returns data only", async () => 
       method: "POST",
       body: { path: source }
     });
-    const surfaces = await fetchJson(`${baseUrl}/api/surfaces`, { token });
-    const registeredSurface = surfaces.surfaces.find((surface) => surface.id === "portal");
+    const plugins = await fetchJson(`${baseUrl}/api/plugins`, { token });
+    const registeredPlugin = plugins.plugins.find(
+      (plugin) => plugin.id === "com.example.portal"
+    );
+    const registeredSurface = registeredPlugin.views.find((view) => view.id === "portal");
     assert.equal(registeredSurface?.renderer, "declarative");
-    assert.equal(registeredSurface?.dataPath, "/api/plugins/com.example.portal/surface-document");
+    assert.equal(registeredSurface?.dataPath, "/api/plugins/com.example.portal/view-document");
 
     const document = await fetchJson(
-      `${baseUrl}/api/plugins/com.example.portal/surface-document`,
+      `${baseUrl}/api/plugins/com.example.portal/view-document`,
       { token }
     );
     assert.deepEqual(document, expectedDocument);

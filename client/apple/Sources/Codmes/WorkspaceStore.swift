@@ -57,8 +57,8 @@ final class WorkspaceStore: ObservableObject {
     @Published var runtimeProviderCredentials: [String: [RuntimeCredentialEntry]] = [:]
     @Published var runtimeOAuthSessions: [String: RuntimeOAuthLoginSession] = [:]
     @Published var runtimeModelSetupMessage = ""
-    @Published var workspaceSurfaces: [WorkspaceSurface] = []
-    @Published var surfaceSetupMessage = ""
+    @Published var runtimePlugins: [RuntimePlugin] = []
+    @Published var pluginSetupMessage = ""
     @Published var marketplacePlugins: [MarketplacePlugin] = []
     @Published var marketplaceMessage = ""
     @Published var marketplaceOperations: Set<String> = []
@@ -382,7 +382,7 @@ final class WorkspaceStore: ObservableObject {
             notes = notesTree.children
             code = codeTree.children
             connectionStep = "Loading surfaces"
-            await refreshSurfaces()
+            await refreshPlugins()
             connectionStep = "Loading MCP servers"
             await refreshMCPServers()
             connectionStep = "Loading Marketplace"
@@ -532,13 +532,17 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
-    func refreshSurfaces() async {
+    var pluginViews: [PluginView] {
+        runtimePlugins.flatMap(\.views)
+    }
+
+    func refreshPlugins() async {
         guard let api else { return }
         do {
-            workspaceSurfaces = try await api.surfaces()
-            surfaceSetupMessage = ""
+            runtimePlugins = try await api.runtimePlugins()
+            pluginSetupMessage = ""
         } catch {
-            surfaceSetupMessage = error.localizedDescription
+            pluginSetupMessage = error.localizedDescription
         }
     }
 
@@ -604,7 +608,7 @@ final class WorkspaceStore: ObservableObject {
         do {
             let successMessage = try await operation(api)
             await refreshMarketplace()
-            await refreshSurfaces()
+            await refreshPlugins()
             await refreshMCPServers()
             marketplaceMessage = successMessage
         } catch {
@@ -743,83 +747,19 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
-    func setSurfaceEnabled(_ surface: WorkspaceSurface, enabled: Bool) async {
+    func setPluginEnabled(_ plugin: RuntimePlugin, enabled: Bool) async {
         guard let api else { return }
         do {
-            _ = try await api.updateSurface(
-                id: surface.id,
-                body: SurfaceUpdateBody(
-                    title: nil,
-                    kind: nil,
-                    icon: nil,
-                    description: nil,
-                    prompt: nil,
-                    root: nil,
-                    pluginId: nil,
+            _ = try await api.updatePluginConfiguration(
+                pluginId: plugin.id,
+                body: PluginConfigurationBody(
                     enabled: enabled,
-                    removable: nil,
-                    order: nil,
                     remove: nil
                 )
             )
-            await refreshSurfaces()
+            await refreshPlugins()
         } catch {
-            surfaceSetupMessage = error.localizedDescription
-        }
-    }
-
-    func addPluginSurface(id: String, title: String, prompt: String) async {
-        guard let api else { return }
-        let trimmedId = id.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedId.isEmpty else {
-            surfaceSetupMessage = "Surface id is required."
-            return
-        }
-        do {
-            _ = try await api.updateSurface(
-                id: trimmedId,
-                body: SurfaceUpdateBody(
-                    title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? trimmedId : title,
-                    kind: "plugin",
-                    icon: "square.grid.2x2",
-                    description: prompt.trimmingCharacters(in: .whitespacesAndNewlines),
-                    prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines),
-                    root: nil,
-                    pluginId: trimmedId,
-                    enabled: true,
-                    removable: true,
-                    order: nil,
-                    remove: nil
-                )
-            )
-            await refreshSurfaces()
-        } catch {
-            surfaceSetupMessage = error.localizedDescription
-        }
-    }
-
-    func removeSurface(_ surface: WorkspaceSurface) async {
-        guard let api else { return }
-        do {
-            _ = try await api.updateSurface(
-                id: surface.id,
-                body: SurfaceUpdateBody(
-                    title: nil,
-                    kind: nil,
-                    icon: nil,
-                    description: nil,
-                    prompt: nil,
-                    root: nil,
-                    pluginId: nil,
-                    enabled: nil,
-                    removable: nil,
-                    order: nil,
-                    remove: true
-                )
-            )
-            await refreshSurfaces()
-        } catch {
-            surfaceSetupMessage = error.localizedDescription
+            pluginSetupMessage = error.localizedDescription
         }
     }
 
@@ -1000,13 +940,14 @@ final class WorkspaceStore: ObservableObject {
 
     func surfaceEnabled(_ surfaceId: String) -> Bool {
         if surfaceId == "chat" { return true }
-        guard !workspaceSurfaces.isEmpty else { return true }
-        return workspaceSurfaces.first { $0.id == surfaceId }?.isEnabled ?? true
+        guard !pluginViews.isEmpty else { return true }
+        return pluginViews.first { $0.id == surfaceId }?.isEnabled ?? true
     }
 
-    var enabledPluginSurfaces: [WorkspaceSurface] {
-        workspaceSurfaces.filter { surface in
-            surface.kind == "plugin" && surface.isEnabled
+    var enabledPluginViews: [PluginView] {
+        let primaryViewIds: Set<String> = ["chat", "notes", "code"]
+        return pluginViews.filter { view in
+            !primaryViewIds.contains(view.id) && view.isEnabled
         }
     }
 

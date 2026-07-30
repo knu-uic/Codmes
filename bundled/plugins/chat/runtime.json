@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "com.codmes.chat",
+  "version": "1.0.0",
+  "name": "Chat",
+  "description": "대화, 세션, 프로젝트, 기억과 도구 탐색을 제공합니다.",
+  "icon": "message",
+  "platforms": ["macos", "ios", "ipados"],
+  "views": [
+    {
+      "id": "chat",
+      "title": "Chat",
+      "renderer": "native",
+      "order": 10
+    }
+  ]
+}

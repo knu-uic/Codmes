@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "com.codmes.planner",
+  "version": "0.2.0",
+  "name": "Planner",
+  "description": "할 일, 일정과 간단한 텍스트 메모를 제공합니다.",
+  "icon": "checklist",
+  "platforms": ["macos", "ios", "ipados"],
+  "contribution": "plugin.json",
+  "views": [
+    {
+      "id": "planner",
+      "title": "Planner",
+      "renderer": "declarative",
+      "order": 40
+    }
+  ]
+}

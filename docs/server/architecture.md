@@ -34,7 +34,8 @@ Workspace + .codmes state
 | 작업과 패치 | `server/lib/agent-engine.mjs`, `server/lib/code-agent-runtime.mjs` |
 | 설정과 인증 | `server/lib/runtime/config-store.mjs` |
 | MCP/skills/security | `server/lib/runtime/mcp-client.mjs`, `skill-registry.mjs`, `security-policy.mjs` |
-| Plugin install/surface proxy | `server/lib/runtime/plugin-registry.mjs`, `surface-registry.mjs` |
+| 통합 Plugin Runtime | `server/lib/runtime/plugin-runtime.mjs`, `builtin-plugin-registry.mjs` |
+| Community plugin 설치/배포 | `server/lib/runtime/plugin-registry.mjs`, `plugin-marketplace.mjs` |
 
 ## 경계 규칙
 
@@ -67,10 +68,13 @@ upload queue가 아니라 이 server job 목록의 `running` 상태만 반영한
 
 ## Plugin boundary
 
-Optional plugins are installed once in the server Workspace and become visible
-to every connected macOS/iOS client. A Manifest v1 installation atomically
-registers a declarative Surface and its Streamable HTTP MCP entry. The Apple app never
-contacts a plugin service directly:
+Chat·Notes·Code·Planner는 Codmes에 포함된 built-in plugin이고, KNU 같은 optional
+plugin은 Workspace 서버에 한 번 설치한다. 둘 다 `Plugin Runtime`에서 동일한
+plugin/view/tool/settings 계약으로 조회되며 연결된 macOS/iOS client에 함께
+표시된다. 별도의 Surface Registry나 `/api/surfaces` 호환 API는 없다.
+
+Community plugin 설치는 declarative view와 Streamable HTTP MCP entry를 원자적으로
+등록한다. Apple 앱은 plugin service에 직접 연결하지 않는다.
 
 ```text
 Apple SwiftUI renderer <- Codmes binding compiler <- plugin package UI JSON

@@ -14,8 +14,12 @@ import {
   executeWorkspaceTool,
   WORKSPACE_TOOL_DEFINITIONS
 } from "./workspace-tools.mjs";
-import { getInstalledPlugin, listInstalledPlugins } from "./plugin-registry.mjs";
-import { loadSurfaces } from "./surface-registry.mjs";
+import { listInstalledPlugins } from "./plugin-registry.mjs";
+import {
+  getRuntimeContribution,
+  listRuntimeToolProviders,
+  listRuntimeViews
+} from "./plugin-runtime.mjs";
 import { ToolRegistry } from "./tool-registry.mjs";
 
 const OPENAI_COMPATIBLE_DEFAULTS = {
@@ -61,7 +65,7 @@ export class OpenAICompatibleRuntime extends EventEmitter {
   }
 
   async classifySurface(params = {}) {
-    const surfaces = (await loadSurfaces(this.workspaceRoot)).filter((surface) => surface.enabled !== false);
+    const surfaces = (await listRuntimeViews(this.workspaceRoot)).filter((view) => view.enabled !== false);
     const ids = new Set(surfaces.map((surface) => surface.id));
     if (!ids.size) return null;
 
@@ -374,9 +378,12 @@ export class OpenAICompatibleRuntime extends EventEmitter {
 
     this.mcpToolNameMap.clear();
     const installedPlugins = await listInstalledPlugins(this.workspaceRoot);
-    for (const plugin of installedPlugins) {
+    const toolProviders = await listRuntimeToolProviders(this.workspaceRoot);
+    for (const plugin of toolProviders) {
       for (const descriptor of plugin.tools || []) {
-        if (descriptor.provider.type === "plugin") toolRegistry.register(descriptor);
+        if (descriptor.provider.type === "plugin") {
+          toolRegistry.register(descriptor);
+        }
       }
     }
     if (config.mcpServers) {
@@ -694,7 +701,9 @@ export class OpenAICompatibleRuntime extends EventEmitter {
     // Gating check by tool modes (only when surface is specified)
     const mappedMcp = this.resolveMcpToolName(call.name);
     const registeredTool = this.toolRegistry.get(call.name);
-    const mappedPlugin = registeredTool?.provider.type === "plugin" ? registeredTool : null;
+    const mappedPlugin = registeredTool?.provider.type === "plugin"
+      ? registeredTool
+      : null;
     const mappedMcpConfig = mappedMcp ? config.mcpServers?.find((server) => server.name === mappedMcp.serverName) : null;
     const allowedRemoteMcp = mappedMcpConfig?.transport === "streamable_http" && mappedMcpConfig.surfaces?.includes(params.surface || "chat");
     const allowedPlugin = mappedPlugin && mappedPlugin.surfaces.includes(params.surface || "chat");
@@ -957,8 +966,11 @@ export class OpenAICompatibleRuntime extends EventEmitter {
     }
 
     if (mappedPlugin) {
-      const plugin = await getInstalledPlugin(this.workspaceRoot, mappedPlugin.pluginId);
-      if (!plugin) return { ok: false, error: "Plugin is not installed." };
+      const plugin = await getRuntimeContribution(
+        this.workspaceRoot,
+        mappedPlugin.pluginId || mappedPlugin.provider.id
+      );
+      if (!plugin) return { ok: false, error: "Tool provider is not available." };
       const args = typeof call.arguments === "string" ? JSON.parse(call.arguments || "{}") : call.arguments;
       const { executePluginCollectionTool } = await import("./plugin-collection-store.mjs");
       return await executePluginCollectionTool(this.workspaceRoot, plugin, mappedPlugin, args);
@@ -1354,7 +1366,7 @@ export class OpenAICompatibleRuntime extends EventEmitter {
 
   async surfaceForPrompt(surfaceId) {
     try {
-      const surfaces = await loadSurfaces(this.workspaceRoot);
+      const surfaces = await listRuntimeViews(this.workspaceRoot);
       return surfaces.find((surface) => surface.id === surfaceId) || null;
     } catch {
       return null;

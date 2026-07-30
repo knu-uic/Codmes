@@ -34,7 +34,12 @@ export function parsePluginCollectionTool(value) {
 export async function previewPluginCollectionTool(workspaceRoot, descriptor, args = {}) {
   const operation = parsePluginCollectionTool(descriptor.provider.tool);
   const current = ["update", "delete"].includes(operation.operation)
-    ? await findItem(workspaceRoot, descriptor.pluginId, operation.collectionId, args.id)
+    ? await findItem(
+      workspaceRoot,
+      descriptor.storageNamespace || descriptor.pluginId,
+      operation.collectionId,
+      args.id
+    )
     : null;
   return {
     provider: "plugin",
@@ -52,7 +57,11 @@ export async function readPluginCollection(workspaceRoot, manifest, collectionId
   if (!manifest.storage?.collections?.some((item) => item.id === id)) {
     throw Object.assign(new Error("Plugin collection was not found."), { status: 404 });
   }
-  return await readCollection(workspaceRoot, manifest.id, id);
+  return await readCollection(
+    workspaceRoot,
+    manifest.storageNamespace || manifest.id,
+    id
+  );
 }
 
 export async function executePluginCollectionTool(workspaceRoot, manifest, descriptor, args = {}) {
@@ -80,14 +89,15 @@ export async function mutatePluginCollection(workspaceRoot, manifest, collection
 async function executeUnlocked(workspaceRoot, manifest, args, collectionId, operation) {
   const collection = manifest.storage?.collections?.find((item) => item.id === collectionId);
   if (!collection) throw Object.assign(new Error("Plugin collection is not declared."), { status: 400 });
-  const state = await readCollection(workspaceRoot, manifest.id, collectionId);
+  const storageOwner = manifest.storageNamespace || manifest.id;
+  const state = await readCollection(workspaceRoot, storageOwner, collectionId);
   if (operation === "list") return { items: state.items };
   if (operation === "get") return { item: requireItem(state.items, args.id) };
   if (operation === "create") {
     const item = { ...validatePluginCollectionItem(args.item, collection.itemSchema), id: String(args.item?.id || crypto.randomUUID()) };
     if (state.items.some((value) => value.id === item.id)) throw Object.assign(new Error("Plugin item already exists."), { status: 409 });
     state.items.push(item);
-    await writeCollection(workspaceRoot, manifest.id, collectionId, state);
+    await writeCollection(workspaceRoot, storageOwner, collectionId, state);
     return { created: true, item };
   }
   const index = state.items.findIndex((item) => item.id === String(args.id || ""));
@@ -95,12 +105,12 @@ async function executeUnlocked(workspaceRoot, manifest, args, collectionId, oper
   const before = state.items[index];
   if (operation === "delete") {
     state.items.splice(index, 1);
-    await writeCollection(workspaceRoot, manifest.id, collectionId, state);
+    await writeCollection(workspaceRoot, storageOwner, collectionId, state);
     return { deleted: true, item: before };
   }
   const item = { ...validatePluginCollectionItem({ ...before, ...(args.item || {}) }, collection.itemSchema), id: before.id };
   state.items[index] = item;
-  await writeCollection(workspaceRoot, manifest.id, collectionId, state);
+  await writeCollection(workspaceRoot, storageOwner, collectionId, state);
   return { updated: true, before, item };
 }
 
@@ -123,8 +133,11 @@ export function validatePluginCollectionItem(value, schema) {
   }
   return JSON.parse(JSON.stringify(value));
 }
-function collectionPath(root, pluginId, collectionId) {
-  return path.join(root, ".codmes", "plugin-data", pluginId, `${collectionId}.json`);
+function collectionPath(root, owner, collectionId) {
+  const surfaceMatch = /^surface:([a-z][a-z0-9_-]{0,63})$/.exec(String(owner || ""));
+  return surfaceMatch
+    ? path.join(root, ".codmes", "surface-data", surfaceMatch[1], `${collectionId}.json`)
+    : path.join(root, ".codmes", "plugin-data", owner, `${collectionId}.json`);
 }
 async function readCollection(root, pluginId, collectionId) {
   try { return JSON.parse(await fs.readFile(collectionPath(root, pluginId, collectionId), "utf8")); }

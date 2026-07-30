@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { renderPluginSurfaceDocument } from "./plugin-surface-renderer.mjs";
+import { renderPluginViewDocument } from "./plugin-view-renderer.mjs";
 
 test("plugin-owned collection binding maps raw service data into a Surface document", () => {
   const route = {
@@ -27,7 +27,7 @@ test("plugin-owned collection binding maps raw service data into a Surface docum
     }
   };
 
-  const document = renderPluginSurfaceDocument(route, {
+  const document = renderPluginViewDocument(route, {
     api: {
       notices: [{
         url: "https://example.test/1",
@@ -82,7 +82,7 @@ test("plugin-owned dashboard binding expands raw profile and table groups", () =
     }
   };
 
-  const document = renderPluginSurfaceDocument(route, {
+  const document = renderPluginViewDocument(route, {
     api: {
       profile: { name: "Test Student" },
       tables: [{
@@ -137,7 +137,7 @@ test("calendar binding exposes normalized temporal fields to native clients", ()
     }
   };
 
-  const document = renderPluginSurfaceDocument(route, {
+  const document = renderPluginViewDocument(route, {
     events: {
       items: [{
         id: "event-1",
@@ -182,7 +182,7 @@ test("Surface v2 preserves declarative editor metadata in the compiled document"
     }
   };
 
-  const document = renderPluginSurfaceDocument(route, {
+  const document = renderPluginViewDocument(route, {
     tasks: { items: [{ id: "task-1", title: "Ship Planner" }] }
   });
 

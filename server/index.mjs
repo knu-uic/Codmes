@@ -241,8 +241,8 @@ async function handleLiveCommand(engine, message) {
 async function ensureWorkspace() {
   await fs.mkdir(WORKSPACE_ROOT, { recursive: true });
   await ensureAgentWorkspaceState(WORKSPACE_ROOT);
-  const { ensureBuiltInPlugins } = await import("./lib/runtime/builtin-plugins.mjs");
-  await ensureBuiltInPlugins(WORKSPACE_ROOT);
+  const { ensurePluginRuntime } = await import("./lib/runtime/plugin-runtime.mjs");
+  await ensurePluginRuntime(WORKSPACE_ROOT);
   await fs.mkdir(path.join(WORKSPACE_ROOT, WORKSPACE_DIRS.notes), { recursive: true });
   await fs.mkdir(path.join(WORKSPACE_ROOT, WORKSPACE_DIRS.code), { recursive: true });
   await fs.mkdir(path.join(WORKSPACE_ROOT, WORKSPACE_DIRS.documents), { recursive: true });
@@ -288,13 +288,24 @@ async function handleRequest(req, res) {
       return sendJson(res, await workspaceInfo());
     }
     if (req.method === "GET" && url.pathname === "/api/plugins") {
-      const { listInstalledPlugins } = await import("./lib/runtime/plugin-registry.mjs");
-      return sendJson(res, { plugins: await listInstalledPlugins(WORKSPACE_ROOT) });
+      const { listPublicRuntimePlugins } = await import("./lib/runtime/plugin-runtime.mjs");
+      return sendJson(res, { plugins: await listPublicRuntimePlugins(WORKSPACE_ROOT) });
     }
     if (req.method === "POST" && url.pathname === "/api/plugins/install") {
       const body = await readJsonBody(req);
       const { installPlugin } = await import("./lib/runtime/plugin-registry.mjs");
       return sendJson(res, await installPlugin(WORKSPACE_ROOT, body.path), 201);
+    }
+    const pluginConfigurationMatch = url.pathname.match(
+      /^\/api\/plugins\/([^/]+)\/configuration$/
+    );
+    if (req.method === "POST" && pluginConfigurationMatch) {
+      const { savePluginConfiguration } = await import("./lib/runtime/plugin-runtime.mjs");
+      return sendJson(res, await savePluginConfiguration(
+        WORKSPACE_ROOT,
+        decodeURIComponent(pluginConfigurationMatch[1]),
+        await readJsonBody(req)
+      ));
     }
     if (req.method === "GET" && url.pathname === "/api/marketplace/plugins") {
       const { listMarketplacePlugins } = await import("./lib/runtime/plugin-marketplace.mjs");
@@ -336,10 +347,10 @@ async function handleRequest(req, res) {
     }
     const pluginCollectionMatch = url.pathname.match(/^\/api\/plugins\/([^/]+)\/collections\/([^/]+)$/);
     if (req.method === "GET" && pluginCollectionMatch) {
-      const { getInstalledPlugin } = await import("./lib/runtime/plugin-registry.mjs");
       const { readPluginCollection } = await import("./lib/runtime/plugin-collection-store.mjs");
-      const manifest = await getInstalledPlugin(WORKSPACE_ROOT, decodeURIComponent(pluginCollectionMatch[1]));
-      if (!manifest) throw Object.assign(new Error("Plugin is not installed."), { status: 404 });
+      const manifest = await resolveCollectionProvider(
+        decodeURIComponent(pluginCollectionMatch[1])
+      );
       return sendJson(res, await readPluginCollection(
         WORKSPACE_ROOT,
         manifest,
@@ -375,12 +386,12 @@ async function handleRequest(req, res) {
       const { removePlugin } = await import("./lib/runtime/plugin-registry.mjs");
       return sendJson(res, await removePlugin(WORKSPACE_ROOT, decodeURIComponent(pluginRemoveMatch[1])));
     }
-    const pluginSurfaceDocumentMatch = url.pathname.match(/^\/api\/plugins\/([^/]+)\/surface-document$/);
-    if (req.method === "GET" && pluginSurfaceDocumentMatch) {
+    const pluginViewDocumentMatch = url.pathname.match(/^\/api\/plugins\/([^/]+)\/view-document$/);
+    if (req.method === "GET" && pluginViewDocumentMatch) {
       return sendJson(
         res,
-        await fetchPluginSurfaceDocument(
-          decodeURIComponent(pluginSurfaceDocumentMatch[1]),
+        await fetchPluginViewDocument(
+          decodeURIComponent(pluginViewDocumentMatch[1]),
           url.searchParams.get("route")
         )
       );
@@ -662,19 +673,7 @@ async function handleRequest(req, res) {
     if (req.method === "POST" && url.pathname === "/api/render/code") {
       return sendJson(res, await renderCode(req));
     }
-    // --- Surface Registry Routes ---
-    if (req.method === "GET" && url.pathname === "/api/surfaces") {
-      const { loadSurfaces } = await import("./lib/runtime/surface-registry.mjs");
-      return sendJson(res, { surfaces: await loadSurfaces(WORKSPACE_ROOT) });
-    }
-    const surfaceRegistryMatch = url.pathname.match(/^\/api\/surfaces\/([^/]+)$/);
-    if (req.method === "POST" && surfaceRegistryMatch) {
-      const surface = decodeURIComponent(surfaceRegistryMatch[1]);
-      const body = await readJsonBody(req);
-      const { saveSurfaceOverride } = await import("./lib/runtime/surface-registry.mjs");
-      return sendJson(res, await saveSurfaceOverride(WORKSPACE_ROOT, surface, body));
-    }
-    // --- Tool Mode & Surface Routes ---
+    // --- Tool Mode Routes ---
     if (req.method === "GET" && url.pathname === "/api/tool-modes") {
       const { loadToolModes } = await import("./lib/runtime/tool-mode-registry.mjs");
       return sendJson(res, await loadToolModes(WORKSPACE_ROOT));
@@ -3123,15 +3122,18 @@ async function assertPathAvailable(absolutePath) {
   throw Object.assign(new Error("A file or folder already exists at that path."), { status: 409 });
 }
 
-async function fetchPluginSurfaceDocument(pluginId, routeId) {
-  const { resolvePluginSurfaceDocumentTarget } = await import("./lib/runtime/plugin-registry.mjs");
-  const { renderPluginSurfaceDocument } = await import("./lib/runtime/plugin-surface-renderer.mjs");
+async function fetchPluginViewDocument(pluginId, routeId) {
+  const {
+    resolvePluginViewDocumentTarget,
+    resolveViewDocumentTarget
+  } = await import("./lib/runtime/plugin-registry.mjs");
+  const { getRuntimeContribution } = await import("./lib/runtime/plugin-runtime.mjs");
+  const { renderPluginViewDocument } = await import("./lib/runtime/plugin-view-renderer.mjs");
   const { getPluginCredential } = await import("./lib/runtime/config-store.mjs");
-  const { manifest, navigation, uiRoute, url } = await resolvePluginSurfaceDocumentTarget(
-    WORKSPACE_ROOT,
-    pluginId,
-    routeId
-  );
+  const runtimeContribution = await getRuntimeContribution(WORKSPACE_ROOT, pluginId);
+  const { manifest, navigation, uiRoute, url } = runtimeContribution
+    ? resolveViewDocumentTarget(runtimeContribution, routeId)
+    : await resolvePluginViewDocumentTarget(WORKSPACE_ROOT, pluginId, routeId);
   if (manifest.surface.type !== "declarative") {
     throw Object.assign(new Error("Plugin does not provide a declarative surface."), { status: 400 });
   }
@@ -3164,22 +3166,18 @@ async function fetchPluginSurfaceDocument(pluginId, routeId) {
       const sourceUrl = new URL(source.path, manifest.surface.upstreamUrl);
       return [source.id, await fetchPluginSurfaceJson(sourceUrl, credential)];
     }));
-    const document = renderPluginSurfaceDocument(uiRoute, Object.fromEntries(entries));
-    validatePluginSurfaceDocument(document);
+    const document = renderPluginViewDocument(uiRoute, Object.fromEntries(entries));
+    validatePluginViewDocument(document);
     return document;
   }
   const document = await fetchPluginSurfaceJson(url, credential);
-  validatePluginSurfaceDocument(document);
+  validatePluginViewDocument(document);
   return document;
 }
 
 async function mutateInstalledPluginCollection(pluginId, collectionId, operation, args) {
-  const { getInstalledPlugin } = await import("./lib/runtime/plugin-registry.mjs");
   const { mutatePluginCollection } = await import("./lib/runtime/plugin-collection-store.mjs");
-  const manifest = await getInstalledPlugin(WORKSPACE_ROOT, pluginId);
-  if (!manifest) {
-    throw Object.assign(new Error("Plugin is not installed."), { status: 404 });
-  }
+  const manifest = await resolveCollectionProvider(pluginId);
   return await mutatePluginCollection(
     WORKSPACE_ROOT,
     manifest,
@@ -3187,6 +3185,17 @@ async function mutateInstalledPluginCollection(pluginId, collectionId, operation
     operation,
     args
   );
+}
+
+async function resolveCollectionProvider(providerId) {
+  const { getRuntimeContribution } = await import("./lib/runtime/plugin-runtime.mjs");
+  const { getInstalledPlugin } = await import("./lib/runtime/plugin-registry.mjs");
+  const manifest = await getRuntimeContribution(WORKSPACE_ROOT, providerId)
+    || await getInstalledPlugin(WORKSPACE_ROOT, providerId);
+  if (!manifest) {
+    throw Object.assign(new Error("Surface data provider is not available."), { status: 404 });
+  }
+  return manifest;
 }
 
 async function fetchPluginSurfaceJson(url, credential) {
@@ -3331,7 +3340,7 @@ async function logoutPlugin(pluginId) {
   return { authenticated: false, removed: result.removed };
 }
 
-function validatePluginSurfaceDocument(document) {
+function validatePluginViewDocument(document) {
   if (!document || typeof document !== "object" || Array.isArray(document)) {
     throw Object.assign(new Error("Plugin surface document must be an object."), { status: 502 });
   }

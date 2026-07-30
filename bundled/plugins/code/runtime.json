@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "com.codmes.code",
+  "version": "1.0.0",
+  "name": "Code",
+  "description": "코드 프로젝트, 검사, 패치, Git과 승인 작업을 제공합니다.",
+  "icon": "chevron.left.forwardslash.chevron.right",
+  "platforms": ["macos", "ios", "ipados"],
+  "views": [
+    {
+      "id": "code",
+      "title": "Code",
+      "renderer": "native",
+      "order": 30
+    }
+  ]
+}

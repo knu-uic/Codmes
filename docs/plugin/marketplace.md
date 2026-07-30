@@ -1,13 +1,13 @@
 # Codmes Plugin Marketplace
 
 Codmes Marketplace는 Workspace 서버에 plugin을 한 번 설치하고, 그 서버에 연결된
-macOS·iPhone·iPad가 같은 Surface와 도구를 사용하는 구조다. Apple 앱마다 package를
+macOS·iPhone·iPad가 같은 plugin view와 도구를 사용하는 구조다. Apple 앱마다 package를
 따로 내려받거나 임의 JavaScript/native binary를 실행하지 않는다.
 
-Planner는 Marketplace 대상이 아니다. Codmes에 포함되는 기본 Surface이며 앱과 함께
-업데이트되고 제거할 수 없다. KNU처럼 선택 설치하는 외부 서비스만 Marketplace에서
-배포한다. Planner도 내부적으로 같은 Plugin Runtime 규격을 사용하지만 배포 수명
-주기는 `builtin`, Marketplace 항목은 `community`로 분리한다.
+Chat·Notes·Code·Planner는 Codmes가 함께 배포하는 built-in plugin이다. KNU처럼
+사용자가 선택하는 community plugin만 Marketplace에서 설치한다. 두 종류는 동일한
+Plugin Runtime과 앱 UI를 사용하지만, built-in plugin은 앱과 함께 업데이트되고
+제거할 수 없다.
 
 기본 공식 Registry는 다음 공개 주소를 사용한다.
 
@@ -22,12 +22,12 @@ Publisher 서명과 SHA-256을 별도로 확인한다. 개발 Registry를 사용
 
 ## 사용자가 보는 흐름
 
-1. Codmes 앱의 `Settings > Plugins`에서 plugin 목록을 연다.
+1. Codmes 앱의 `Settings > Marketplace`에서 community plugin 목록을 연다.
 2. `Install`을 누르면 Workspace 서버가 registry에서 package를 가져온다.
-3. 서버가 SHA-256, publisher 서명, package metadata, manifest, 권한, Surface UI를
+3. 서버가 SHA-256, publisher 서명, package metadata, manifest, 권한, plugin view를
    검증한다.
-4. 성공하면 Surface와 MCP 설정을 한 단위로 활성화한다.
-5. 연결된 Mac/iPhone/iPad는 새 Surface를 새로고침해 표시한다.
+4. 성공하면 view·tool·MCP 설정을 한 단위로 활성화한다.
+5. 연결된 Mac/iPhone/iPad는 새 plugin을 새로고침해 표시한다.
 
 업데이트가 있으면 `Update`, 직전 버전이 남아 있으면 `Restore`, 설치된 plugin에는
 제거 버튼이 표시된다. 제거는 plugin 실행 등록을 없애지만 사용자 credential과
@@ -47,7 +47,7 @@ Marketplace registry (index.json)
 Codmes Workspace server
        │ 다운로드 → 검증 → versions/<version>에 staging
        │ 성공 후 state.json의 currentVersion 교체
-       ├── Surface 등록
+       ├── Plugin view/tool 등록
        └── MCP 등록
                 │
                 ▼
@@ -66,7 +66,7 @@ Codmes Workspace server
   `.codmes/plugins/<plugin-id>/state.json`
 
 업데이트는 새 버전을 먼저 별도 디렉터리에 검증·설치한 다음 활성 포인터를
-교체한다. 실패하면 기존 Surface/MCP 설정과 활성 버전을 복원한다. `previousVersion`
+교체한다. 실패하면 기존 view/tool/MCP 설정과 활성 버전을 복원한다. `previousVersion`
 한 개를 유지해 앱과 CLI에서 즉시 롤백할 수 있다.
 
 개발 Registry는 `"signaturePolicy": "optional"`로 기존 unsigned package를 허용할
@@ -133,7 +133,7 @@ node bin/codmes.mjs plugin pack /path/to/CODMES_PLUGIN \
 - `POST /api/marketplace/plugins/:id/install`: registry 버전 설치
 - `POST /api/marketplace/plugins/:id/update`: registry 최신 버전 설치
 - `POST /api/plugins/:id/rollback`: 직전 또는 지정된 설치 버전 활성화
-- `DELETE /api/plugins/:id`: Surface/MCP 실행 등록 제거
+- `DELETE /api/plugins/:id`: community plugin의 view/tool/MCP 실행 등록 제거
 
 모든 endpoint는 기존 Codmes Workspace bearer 인증을 사용한다. plugin용 서비스
 계정과 Codmes 연결 토큰은 서로 다른 credential이다.
@@ -195,12 +195,12 @@ Registry 최상위에는 publisher 공개키를 둔다.
 것이 좋다. 차단 항목은 정확한 plugin id와 version에만 적용되며 이유와 심각도를
 반드시 기록한다.
 
-## Surface와 AI Tool 방향
+## Plugin view와 AI Tool 방향
 
 Marketplace plugin은 필요한 기능만 조합한다.
 
-- UI만 필요한 plugin: declarative Surface
-- AI 기능도 필요한 plugin: Surface + Plugin Tool 또는 MCP
+- UI만 필요한 plugin: native/declarative view
+- AI 기능도 필요한 plugin: view + Plugin Tool 또는 MCP
 - UI 없이 AI 연동만 필요한 plugin: Tool/MCP
 
 Tool의 공통점은 이름·설명·입력 JSON Schema·권한·실행 provider를 registry에
@@ -213,16 +213,15 @@ planner.complete({taskId})
 ```
 
 각 도구는 서로 다른 JSON Schema를 갖고, 공통 Tool Registry가 모델 노출,
-권한 승인, surface별 활성화, 실행 기록만 일관되게 처리한다.
+권한 승인, plugin별 활성화, 실행 기록만 일관되게 처리한다.
 
 provider 기준:
 
 - `native`: DocSearch, 기본 Notes처럼 Codmes 서버가 직접 실행
-- `plugin`: Planner의 할 일·달력·메모처럼 선언과 Workspace 저장소를 이용하는
-  내장/로컬 plugin tool
+- `plugin`: built-in/community plugin의 선언과 Workspace 저장소를 이용하는 provider
 - `mcp`: KNU·Google처럼 외부 서비스 서버가 실제 데이터를 소유하고 실행
 
-따라서 Planner는 기본 Surface로 제공하면서도 native component 규격 안에서 충분히
+따라서 Planner는 built-in plugin으로 제공하면서도 native component 규격 안에서 충분히
 확장할 수 있고, AI는 같은 Tool Registry를 통해 일정 조회·생성 등을 호출한다.
 외부 서비스가 없는 기능까지 별도 MCP 서버로 쪼갤 필요는 없다.
 
@@ -231,14 +230,14 @@ provider 기준:
 현재 다음 기능이 실제 운영 경로까지 연결되어 있다.
 
 - package/Registry와 KNU Marketplace 설치
-- Planner 기본 Surface 자동 프로비저닝과 기존 Marketplace 설치의 데이터 보존 전환
+- Chat·Notes·Code·Planner의 통합 built-in Plugin Runtime 등록
 - macOS·iPhone·iPad 공용 Marketplace UI
 - 이름·설명·publisher 검색, Featured·설치됨·업데이트 상태 및 category 필터
 - 플러그인 상세 정보, 권한, 호환 platform, release note, 저장소·개인정보 링크
 - 설치·제거·update·직전 version rollback
 - update 권한 변경 재동의, 취약 version 차단, release note와 선언형 data migration
 - 공통 Tool Registry provider, Workspace collection storage
-- Planner Surface v2의 할 일·달력·메모
+- Planner 선언형 view의 할 일·달력·메모
 - Publisher CLI, Ed25519 package 서명, Registry root 분리 서명
 - 설치된 plugin의 Publisher 고정과 publisher 키 회전·폐기
 - Codmes·KNU 운영 Publisher 키와 서명된 GitHub Release package

@@ -499,7 +499,7 @@ export async function installPlugin(workspaceRoot, sourcePath, options = {}) {
   );
   const otherPlugins = (await listInstalledPlugins(workspaceRoot))
     .filter((plugin) => plugin.id !== manifest.id);
-  if (["chat", "notes", "code"].includes(manifest.surface.id)
+  if (["chat", "notes", "code", "planner"].includes(manifest.surface.id)
       || otherPlugins.some((plugin) => plugin.surface.id === manifest.surface.id)) {
     throw new Error(`Surface id '${manifest.surface.id}' is already in use.`);
   }
@@ -737,9 +737,13 @@ export async function resolvePluginSurfaceTarget(workspaceRoot, pluginId, relati
   return { manifest, url: upstream };
 }
 
-export async function resolvePluginSurfaceDocumentTarget(workspaceRoot, pluginId, routeId) {
+export async function resolvePluginViewDocumentTarget(workspaceRoot, pluginId, routeId) {
   const manifest = await getInstalledPlugin(workspaceRoot, pluginId);
   if (!manifest) throw Object.assign(new Error("Plugin is not installed."), { status: 404 });
+  return resolveViewDocumentTarget(manifest, routeId);
+}
+
+export function resolveViewDocumentTarget(manifest, routeId) {
   const route = String(routeId || manifest.surface.navigation[0]?.id || "").trim().toLowerCase();
   const navigation = manifest.surface.navigation.find((item) => item.id === route);
   if (!navigation) {
