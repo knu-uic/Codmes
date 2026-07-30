@@ -3498,10 +3498,64 @@ private struct MCPSettingsView: View {
 
 }
 
+private enum MarketplaceFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case featured = "Featured"
+    case installed = "Installed"
+    case updates = "Updates"
+
+    var id: String { rawValue }
+}
+
 private struct MarketplaceSettingsView: View {
     @EnvironmentObject private var store: WorkspaceStore
     @State private var pendingRemoval: MarketplacePlugin?
     @State private var pendingPermissionUpdate: MarketplacePlugin?
+    @State private var selectedPlugin: MarketplacePlugin?
+    @State private var searchText = ""
+    @State private var selectedFilter: MarketplaceFilter = .all
+    @State private var selectedCategory = "All"
+
+    private var categories: [String] {
+        let values = Set(
+            store.marketplacePlugins
+                .map(\.category)
+                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        )
+        return ["All"] + values.sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+    }
+
+    private var filteredPlugins: [MarketplacePlugin] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return store.marketplacePlugins.filter { plugin in
+            let matchesSearch = query.isEmpty || [
+                plugin.name,
+                plugin.description,
+                plugin.publisher,
+                plugin.category
+            ].contains {
+                $0.localizedCaseInsensitiveContains(query)
+            }
+            let matchesCategory = selectedCategory == "All" || plugin.category == selectedCategory
+            let matchesFilter: Bool = switch selectedFilter {
+            case .all:
+                true
+            case .featured:
+                plugin.featured
+            case .installed:
+                plugin.installed
+            case .updates:
+                plugin.updateAvailable || plugin.installedVersionBlocked
+            }
+            return matchesSearch && matchesCategory && matchesFilter
+        }
+        .sorted {
+            if $0.featured != $1.featured { return $0.featured && !$1.featured }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -3517,19 +3571,39 @@ private struct MarketplaceSettingsView: View {
                 Button {
                     Task { await store.refreshMarketplace() }
                 } label: {
-                    Image(systemName: "arrow.clockwise")
+                    if store.isMarketplaceLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
                 }
                 .buttonStyle(.plain)
+                .disabled(store.isMarketplaceLoading)
                 .help("Refresh Marketplace")
             }
 
+            if !store.isMarketplaceLoading || !store.marketplacePlugins.isEmpty {
+                marketplaceSummary
+            }
+            marketplaceFilters
+
             if !store.marketplaceMessage.isEmpty {
-                Text(store.marketplaceMessage)
+                Label(store.marketplaceMessage, systemImage: "info.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            if store.marketplacePlugins.isEmpty {
+            if store.isMarketplaceLoading && store.marketplacePlugins.isEmpty {
+                VStack(spacing: 10) {
+                    ProgressView()
+                    Text("Loading Marketplace…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 44)
+            } else if store.marketplacePlugins.isEmpty {
                 ContentUnavailableView {
                     Label("No plugins available", systemImage: "shippingbox")
                 } description: {
@@ -3537,9 +3611,23 @@ private struct MarketplaceSettingsView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 28)
+            } else if filteredPlugins.isEmpty {
+                ContentUnavailableView {
+                    Label("No matching plugins", systemImage: "magnifyingglass")
+                } description: {
+                    Text("Try changing the search, category, or installation filter.")
+                } actions: {
+                    Button("Clear Filters") {
+                        searchText = ""
+                        selectedFilter = .all
+                        selectedCategory = "All"
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 28)
             } else {
                 LazyVStack(spacing: 10) {
-                    ForEach(store.marketplacePlugins) { plugin in
+                    ForEach(filteredPlugins) { plugin in
                         pluginCard(plugin)
                     }
                 }
@@ -3595,6 +3683,123 @@ private struct MarketplaceSettingsView: View {
                 Text(permissionConsentMessage(plugin))
             }
         }
+        .sheet(item: $selectedPlugin) { plugin in
+            MarketplacePluginDetailView(plugin: plugin)
+        }
+        .onChange(of: categories) {
+            if !categories.contains(selectedCategory) {
+                selectedCategory = "All"
+            }
+        }
+    }
+
+    private var marketplaceSummary: some View {
+        HStack(spacing: 8) {
+            marketplaceSummaryItem(
+                "\(store.marketplacePlugins.count)",
+                label: "Available",
+                systemImage: "shippingbox"
+            )
+            marketplaceSummaryItem(
+                "\(store.marketplacePlugins.filter(\.installed).count)",
+                label: "Installed",
+                systemImage: "checkmark.circle"
+            )
+            marketplaceSummaryItem(
+                "\(store.marketplacePlugins.filter(\.updateAvailable).count)",
+                label: "Updates",
+                systemImage: "arrow.down.circle"
+            )
+        }
+    }
+
+    private func marketplaceSummaryItem(
+        _ value: String,
+        label: String,
+        systemImage: String
+    ) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: systemImage)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(value)
+                    .font(.callout.weight(.semibold).monospacedDigit())
+                Text(label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 9)
+        .padding(.horizontal, 10)
+        .background(.quaternary.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+    }
+
+    private var marketplaceFilters: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search plugins", text: $searchText)
+                    .textFieldStyle(.plain)
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear search")
+                }
+            }
+            .padding(.vertical, 8)
+            .padding(.horizontal, 10)
+            .background(.quaternary.opacity(0.14), in: RoundedRectangle(cornerRadius: 9))
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 7) {
+                    ForEach(MarketplaceFilter.allCases) { filter in
+                        marketplaceFilterButton(
+                            filter.rawValue,
+                            selected: selectedFilter == filter
+                        ) {
+                            selectedFilter = filter
+                        }
+                    }
+
+                    Divider()
+                        .frame(height: 20)
+
+                    ForEach(categories, id: \.self) { category in
+                        marketplaceFilterButton(
+                            category == "All" ? "All Categories" : category,
+                            selected: selectedCategory == category
+                        ) {
+                            selectedCategory = category
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func marketplaceFilterButton(
+        _ title: String,
+        selected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.caption.weight(selected ? .semibold : .regular))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    selected ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.09),
+                    in: Capsule()
+                )
+        }
+        .buttonStyle(.plain)
     }
 
     private func pluginCard(_ plugin: MarketplacePlugin) -> some View {
@@ -3610,6 +3815,14 @@ private struct MarketplaceSettingsView: View {
                     HStack(spacing: 5) {
                         Text(plugin.name)
                             .font(.callout.weight(.semibold))
+                        if plugin.featured {
+                            Text("Featured")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.orange)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(.orange.opacity(0.12), in: Capsule())
+                        }
                         if plugin.verified {
                             Image(systemName: "checkmark.seal.fill")
                                 .font(.caption)
@@ -3661,6 +3874,15 @@ private struct MarketplaceSettingsView: View {
                 if isWorking {
                     ProgressView()
                         .controlSize(.small)
+                } else {
+                    Button {
+                        selectedPlugin = plugin
+                    } label: {
+                        Image(systemName: "info.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("View \(plugin.name) details")
                 }
             }
 
@@ -3727,6 +3949,119 @@ private struct MarketplaceSettingsView: View {
         let permissions = plugin.addedPermissions.map { "• \($0)" }.joined(separator: "\n")
         let notes = plugin.releaseNotes.isEmpty ? "" : "\n\nWhat’s new\n\(plugin.releaseNotes)"
         return "This update requests additional access:\n\(permissions)\(notes)"
+    }
+}
+
+private struct MarketplacePluginDetailView: View {
+    @Environment(\.dismiss) private var dismiss
+    let plugin: MarketplacePlugin
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(alignment: .top, spacing: 14) {
+                        Image(systemName: plugin.systemImage)
+                            .font(.largeTitle)
+                            .frame(width: 54, height: 54)
+                            .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 6) {
+                                Text(plugin.name)
+                                    .font(.title2.weight(.semibold))
+                                if plugin.verified {
+                                    Image(systemName: "checkmark.seal.fill")
+                                        .foregroundStyle(.blue)
+                                }
+                            }
+                            Text(plugin.publisher)
+                                .foregroundStyle(.secondary)
+                            Text("Version \(plugin.version) · \(plugin.category)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    if !plugin.description.isEmpty {
+                        Text(plugin.description)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    detailSection("Compatibility") {
+                        Label(plugin.platforms.joined(separator: ", "), systemImage: "laptopcomputer.and.iphone")
+                        Label(plugin.installed ? "Installed" : "Not installed", systemImage: plugin.installed ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(plugin.installed ? .green : .secondary)
+                        if let installedVersion = plugin.installedVersion {
+                            Text("Installed version \(installedVersion)")
+                        }
+                    }
+
+                    detailSection("Permissions") {
+                        if plugin.permissions.isEmpty {
+                            Text("No additional permissions")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(plugin.permissions, id: \.self) { permission in
+                                Label(permission, systemImage: "checkmark.shield")
+                            }
+                        }
+                    }
+
+                    if !plugin.releaseNotes.isEmpty {
+                        detailSection("What’s New") {
+                            Text(plugin.releaseNotes)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    if plugin.repositoryUrl != nil || plugin.privacyUrl != nil {
+                        detailSection("Links") {
+                            if let repositoryUrl = plugin.repositoryUrl,
+                               let url = URL(string: repositoryUrl) {
+                                Link("Source Repository", destination: url)
+                            }
+                            if let privacyUrl = plugin.privacyUrl,
+                               let url = URL(string: privacyUrl) {
+                                Link("Privacy Policy", destination: url)
+                            }
+                        }
+                    }
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .navigationTitle("Plugin Details")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+        #if os(macOS)
+        .frame(minWidth: 500, minHeight: 520)
+        #endif
+    }
+
+    private func detailSection<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text(title)
+                .font(.headline)
+            VStack(alignment: .leading, spacing: 7) {
+                content()
+            }
+            .font(.callout)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(.quaternary.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+        }
     }
 }
 

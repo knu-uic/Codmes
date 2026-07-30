@@ -62,6 +62,7 @@ final class WorkspaceStore: ObservableObject {
     @Published var marketplacePlugins: [MarketplacePlugin] = []
     @Published var marketplaceMessage = ""
     @Published var marketplaceOperations: Set<String> = []
+    @Published var isMarketplaceLoading = false
     @Published private(set) var pluginAuthStatuses: [String: PluginAuthStatus] = [:]
     @Published private(set) var pluginAuthOperations: [String: String] = [:]
     @Published private(set) var pluginAuthErrors: [String: String] = [:]
@@ -384,6 +385,8 @@ final class WorkspaceStore: ObservableObject {
             await refreshSurfaces()
             connectionStep = "Loading MCP servers"
             await refreshMCPServers()
+            connectionStep = "Loading Marketplace"
+            await refreshMarketplace()
             await refreshSearchConfig()
             connectionStep = "Loading runtime metadata"
             await refreshHermesMetadata()
@@ -540,7 +543,12 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func refreshMarketplace() async {
-        guard let api else { return }
+        guard let api else {
+            marketplaceMessage = "The Workspace server URL is invalid."
+            return
+        }
+        isMarketplaceLoading = true
+        defer { isMarketplaceLoading = false }
         do {
             marketplacePlugins = try await api.marketplacePlugins()
             marketplaceMessage = ""

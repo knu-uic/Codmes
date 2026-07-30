@@ -224,16 +224,33 @@ native component 규격 안에서 충분히 확장할 수 있고, AI는 같은 T
 
 ## 구현 상태와 다음 단계
 
-현재 package/registry, KNU 설치, Apple Marketplace UI, update/rollback, 공통 Tool
-Registry provider, Workspace collection storage, Planner Surface v2의 할 일·달력·
-메모, Publisher CLI, Ed25519 package signing, GitHub Release asset/원격 Registry
-entry 준비, 권한 변경 재동의, 취약 버전 차단, release note, 선언형 데이터 migration,
-publisher 신청·승인, 키 회전·폐기, 운영 Registry 검증과 정적 호스팅 산출물 생성까지
-구현되어 있다. 기존 Notes는 학습 자료와 문서 탐색 기능으로 유지하며 Planner 메모와
-결합하지 않는다.
+현재 다음 기능이 실제 운영 경로까지 연결되어 있다.
 
-다음 순서:
+- package/Registry와 KNU·Planner Marketplace 설치
+- macOS·iPhone·iPad 공용 Marketplace UI
+- 이름·설명·publisher 검색, Featured·설치됨·업데이트 상태 및 category 필터
+- 플러그인 상세 정보, 권한, 호환 platform, release note, 저장소·개인정보 링크
+- 설치·제거·update·직전 version rollback
+- update 권한 변경 재동의, 취약 version 차단, release note와 선언형 data migration
+- 공통 Tool Registry provider, Workspace collection storage
+- Planner Surface v2의 할 일·달력·메모
+- Publisher CLI, Ed25519 package 서명, Registry root 분리 서명
+- 설치된 plugin의 Publisher 고정과 publisher 키 회전·폐기
+- Codmes·KNU 운영 Publisher 키와 서명된 GitHub Release package
+- 별도 `Codmes-Marketplace` 저장소의 외부 PR 자동 검증과 GitHub Pages 배포
 
-1. Codmes와 KNU의 실제 운영 publisher 키 발급·심사
-2. 생성된 정적 산출물을 GitHub Pages/CDN에 실제 배포
+공식 Registry 주소는 다음과 같다.
+
+```text
+https://jeongu0569-ui.github.io/Codmes-Marketplace/index.json
+```
+
+기존 Notes는 학습 자료와 문서 탐색 기능으로 유지하며 Planner 메모와 결합하지
+않는다.
+
+다음 제품화 단계:
+
+1. 검색 결과가 많아질 때를 위한 plugin 상세 screenshot·category 탐색 화면
+2. 앱 시작 시 update 확인과 선택 가능한 자동 update 정책
 3. 여러 이전 release를 보관하는 장기 rollback 정책
+4. 기능 branch를 기본 branch에 병합하고 macOS·iOS 실제 기기 release QA
