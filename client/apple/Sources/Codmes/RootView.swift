@@ -1048,10 +1048,12 @@ struct PluginNavigationSidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            accountHeader
+            if surface.hasAuthentication == true {
+                accountHeader
 
-            Divider()
-                .padding(.horizontal, 12)
+                Divider()
+                    .padding(.horizontal, 12)
+            }
 
             ScrollView {
                 LazyVStack(spacing: 3) {
