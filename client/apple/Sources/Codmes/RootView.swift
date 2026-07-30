@@ -1183,6 +1183,9 @@ struct PluginNavigationSidebar: View {
             return "상태 확인 불가"
         }
         if authStatus?.authenticated == true {
+            if authStatus?.profileSyncing == true {
+                return authStatus?.syncStage ?? "학교 데이터 동기화 중…"
+            }
             return authStatus?.name ?? authStatus?.username ?? "로그인됨"
         }
         return "로그인 필요"
@@ -1283,6 +1286,11 @@ private struct PluginAuthenticationSettingsView: View {
                             Text(connectedAccountDetail)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
+                            if portalProfileNeedsRefresh {
+                                Text(authStatus?.syncStage ?? "학교 데이터 동기화 중…")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         Spacer()
                         if portalProfileNeedsRefresh {
