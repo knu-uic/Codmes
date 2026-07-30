@@ -21,8 +21,6 @@ import {
 import { isBuiltInPluginId } from "./plugin-distribution.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const DEFAULT_REGISTRY_URL =
-  "https://knu-uic.github.io/Codmes-Marketplace/index.json";
 const TRUSTED_REGISTRIES_PATH = path.join(
   REPO_ROOT,
   "marketplace",
@@ -223,7 +221,7 @@ export async function installMarketplacePlugin(workspaceRoot, pluginId, options 
 export async function loadMarketplaceRegistry(options = {}) {
   const configured = options.registrySource
     || process.env.CODMES_MARKETPLACE_REGISTRY
-    || DEFAULT_REGISTRY_URL;
+    || await defaultMarketplaceRegistrySource(options);
   if (/^https?:\/\//i.test(configured)) {
     const url = normalizeRemoteUrl(configured, "Marketplace registry");
     const response = await fetch(url, {
@@ -287,6 +285,20 @@ export async function loadMarketplaceRegistry(options = {}) {
     publicSource: path.relative(REPO_ROOT, source) || path.basename(source),
     base: path.dirname(source)
   };
+}
+
+async function defaultMarketplaceRegistrySource(options) {
+  const document = options.trustedRegistries
+    || JSON.parse(await fs.readFile(TRUSTED_REGISTRIES_PATH, "utf8"));
+  if (!document || Number(document.schemaVersion) !== 1
+      || !Array.isArray(document.registries)) {
+    throw new Error("Trusted Marketplace Registry roots document is invalid.");
+  }
+  const source = String(document.registries[0]?.url || "").trim();
+  if (!source) {
+    throw new Error("A default Marketplace Registry is not configured.");
+  }
+  return normalizeRemoteUrl(source, "Default Marketplace registry").toString();
 }
 
 async function trustedRegistryForUrl(url, options) {

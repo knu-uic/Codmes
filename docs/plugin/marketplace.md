@@ -9,11 +9,9 @@ Chat·Notes·Code·Planner는 Codmes가 함께 배포하는 built-in plugin이�
 Plugin Runtime과 앱 UI를 사용하지만, built-in plugin은 앱과 함께 업데이트되고
 제거할 수 없다.
 
-기본 공식 Registry는 다음 공개 주소를 사용한다.
-
-```text
-https://knu-uic.github.io/Codmes-Marketplace/index.json
-```
+기본 공식 Registry 주소는 `marketplace/trusted-registry-roots.json` 한 곳에서
+관리한다. 런타임은 이 신뢰 루트 문서의 첫 번째 Registry를 기본값으로 사용하므로
+조직이나 저장소 이름이 바뀌어도 런타임 코드를 수정할 필요가 없다.
 
 앱에는 URL과 Marketplace root 공개키가 함께 고정되어 있다. 서버는
 `index.sig.json`의 detached Ed25519 서명을 먼저 확인하고, 그 다음 각 package의
@@ -243,11 +241,12 @@ provider 기준:
 - Codmes·KNU 운영 Publisher 키와 서명된 GitHub Release package
 - 별도 `Codmes-Marketplace` 저장소의 외부 PR 자동 검증과 GitHub Pages 배포
 
-공식 Registry 주소는 다음과 같다.
+공식 Registry의 실제 주소와 서명 주소는
+`marketplace/trusted-registry-roots.json`을 기준으로 확인한다.
 
-```text
-https://knu-uic.github.io/Codmes-Marketplace/index.json
-```
+Registry의 plugin package는 가능하면 `packagePath` 상대 경로로 선언한다. 그러면
+`index.json`, 서명 파일, 설치 package가 같은 배포 host에서 제공되어 Publisher
+저장소나 GitHub 조직 이름이 바뀌어도 기존 설치 경로는 영향을 받지 않는다.
 
 기존 Notes는 학습 자료와 문서 탐색 기능으로 유지하며 Planner 메모와 결합하지
 않는다.

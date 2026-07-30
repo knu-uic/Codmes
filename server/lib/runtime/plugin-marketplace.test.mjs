@@ -245,7 +245,7 @@ test("Marketplace blocks a vulnerable target version before downloading it", asy
   );
 });
 
-test("Marketplace installs a signed plugin from a remote loopback registry and release asset", async () => {
+test("Marketplace installs a signed plugin from a Registry-relative package path", async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-marketplace-remote-workspace-"));
   const releaseDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-marketplace-remote-release-"));
   const source = await createPluginSource("2.0.0");
@@ -263,7 +263,7 @@ test("Marketplace installs a signed plugin from a remote loopback registry and r
       response.end(JSON.stringify(registry));
       return;
     }
-    if (request.url === `/releases/${filename}`) {
+    if (request.url === `/packages/${filename}`) {
       response.setHeader("content-type", "application/octet-stream");
       response.end(await fs.readFile(packagePath));
       return;
@@ -291,7 +291,7 @@ test("Marketplace installs a signed plugin from a remote loopback registry and r
         id: "com.example.demo",
         name: "Demo",
         version: "2.0.0",
-        packageUrl: `http://127.0.0.1:${port}/releases/${filename}`,
+        packagePath: `packages/${filename}`,
         sha256: packed.sha256,
         signature: packed.signature
       }]
