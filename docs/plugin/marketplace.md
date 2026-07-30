@@ -4,6 +4,11 @@ Codmes Marketplace는 Workspace 서버에 plugin을 한 번 설치하고, 그 �
 macOS·iPhone·iPad가 같은 Surface와 도구를 사용하는 구조다. Apple 앱마다 package를
 따로 내려받거나 임의 JavaScript/native binary를 실행하지 않는다.
 
+Planner는 Marketplace 대상이 아니다. Codmes에 포함되는 기본 Surface이며 앱과 함께
+업데이트되고 제거할 수 없다. KNU처럼 선택 설치하는 외부 서비스만 Marketplace에서
+배포한다. Planner도 내부적으로 같은 Plugin Runtime 규격을 사용하지만 배포 수명
+주기는 `builtin`, Marketplace 항목은 `community`로 분리한다.
+
 기본 공식 Registry는 다음 공개 주소를 사용한다.
 
 ```text
@@ -213,20 +218,20 @@ planner.complete({taskId})
 provider 기준:
 
 - `native`: DocSearch, 기본 Notes처럼 Codmes 서버가 직접 실행
-- `plugin`: Planner의 할 일·달력·메모처럼 package의 선언과 Workspace 저장소를
-  이용하는 공식/로컬 plugin tool
+- `plugin`: Planner의 할 일·달력·메모처럼 선언과 Workspace 저장소를 이용하는
+  내장/로컬 plugin tool
 - `mcp`: KNU·Google처럼 외부 서비스 서버가 실제 데이터를 소유하고 실행
 
-따라서 Calendar와 Planner를 공식 Marketplace plugin으로 제공해도 UI 자유도는
-native component 규격 안에서 충분히 확장할 수 있고, AI는 같은 Tool Registry를
-통해 일정 조회·생성 등을 호출한다. 외부 서비스가 없는 기능까지 별도 MCP 서버로
-쪼갤 필요는 없다.
+따라서 Planner는 기본 Surface로 제공하면서도 native component 규격 안에서 충분히
+확장할 수 있고, AI는 같은 Tool Registry를 통해 일정 조회·생성 등을 호출한다.
+외부 서비스가 없는 기능까지 별도 MCP 서버로 쪼갤 필요는 없다.
 
 ## 구현 상태와 다음 단계
 
 현재 다음 기능이 실제 운영 경로까지 연결되어 있다.
 
-- package/Registry와 KNU·Planner Marketplace 설치
+- package/Registry와 KNU Marketplace 설치
+- Planner 기본 Surface 자동 프로비저닝과 기존 Marketplace 설치의 데이터 보존 전환
 - macOS·iPhone·iPad 공용 Marketplace UI
 - 이름·설명·publisher 검색, Featured·설치됨·업데이트 상태 및 category 필터
 - 플러그인 상세 정보, 권한, 호환 platform, release note, 저장소·개인정보 링크

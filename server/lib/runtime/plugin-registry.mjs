@@ -12,6 +12,10 @@ import {
   normalizePluginMigrations,
   preparePluginDataMigration
 } from "./plugin-data-migration.mjs";
+import {
+  isBuiltInPluginId,
+  pluginDistribution
+} from "./plugin-distribution.mjs";
 
 const PLUGIN_SCHEMA_VERSION = 1;
 const PLUGIN_ID_PATTERN = /^[a-z0-9]+(?:[._-][a-z0-9]+)+$/;
@@ -131,7 +135,9 @@ export function validatePluginManifest(value) {
     storage,
     tools,
     dataVersion,
-    migrations
+    migrations,
+    distribution: pluginDistribution(id),
+    removable: !isBuiltInPluginId(id)
   };
 }
 
@@ -466,6 +472,12 @@ export async function getPluginVersionManifest(workspaceRoot, pluginId, version)
 
 export async function installPlugin(workspaceRoot, sourcePath, options = {}) {
   const manifest = await readPluginManifestSource(sourcePath);
+  if (isBuiltInPluginId(manifest.id) && options.source?.type !== "builtin") {
+    throw Object.assign(
+      new Error("Built-in plugins are installed and updated with Codmes."),
+      { status: 409, code: "builtin_plugin_managed_by_codmes" }
+    );
+  }
   await ensureRuntimeConfig(workspaceRoot);
   const directory = await ensurePluginsDirectory(workspaceRoot);
   const target = path.join(directory, manifest.id);
@@ -585,6 +597,12 @@ export async function installPlugin(workspaceRoot, sourcePath, options = {}) {
 
 export async function rollbackPlugin(workspaceRoot, pluginId, targetVersion = null) {
   const id = normalizePluginId(pluginId);
+  if (isBuiltInPluginId(id)) {
+    throw Object.assign(
+      new Error("Built-in plugins are updated with Codmes and cannot be rolled back separately."),
+      { status: 409, code: "builtin_plugin_managed_by_codmes" }
+    );
+  }
   const root = path.join(pluginsDirectory(workspaceRoot), id);
   const current = await getInstalledPlugin(workspaceRoot, id);
   const state = await getPluginInstallState(workspaceRoot, id);
@@ -636,6 +654,12 @@ export async function rollbackPlugin(workspaceRoot, pluginId, targetVersion = nu
 
 export async function removePlugin(workspaceRoot, pluginId) {
   const id = normalizePluginId(pluginId);
+  if (isBuiltInPluginId(id)) {
+    throw Object.assign(
+      new Error("Built-in plugins cannot be removed."),
+      { status: 409, code: "builtin_plugin_cannot_be_removed" }
+    );
+  }
   const manifest = await getInstalledPlugin(workspaceRoot, id);
   if (!manifest) return { removed: false, pluginId: id };
 

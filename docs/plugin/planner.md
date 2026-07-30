@@ -1,21 +1,20 @@
-# Planner plugin
+# Planner 기본 플러그인
 
 Planner 0.2.0은 외부 backend나 MCP 없이 Codmes Workspace 안에서 실행되는 공식
-Marketplace plugin이다. 하나의 package에 할 일, 달력, 간단한 텍스트 메모를
-함께 제공한다.
+기본 플러그인이다. Chat·Notes·Code와 마찬가지로 Codmes 저장소와 앱에 포함되며,
+내부 구현에서 Plugin Runtime의 선언형 Surface·Tool·Workspace collection 규격을
+재사용한다.
 
-## 설치
+## 제공 방식
 
-앱에서 `Settings > Plugins > Planner > Install`을 누른다. CLI에서는:
+- 새 Workspace를 시작하면 Codmes 서버가 Planner를 자동으로 준비한다.
+- Marketplace에서 별도로 설치하거나 제거하지 않는다.
+- Planner 코드와 UI 규격은 Codmes 앱 버전과 함께 업데이트된다.
+- 과거 Marketplace 버전이 설치된 Workspace는 서버 시작 시 `builtin` 출처로
+  자동 전환하며 기존 할 일·일정·메모 데이터는 유지한다.
 
-```sh
-cd "$HOME/Desktop/Codmes"
-node bin/codmes.mjs plugin install com.codmes.planner \
-  --root "$HOME/CodmesWorkspace"
-```
-
-설치하면 `Planner` Surface의 `플래너`, `달력`, `메모` 섹션과 다음 AI 도구가
-함께 등록된다.
+`Planner` Surface의 `플래너`, `달력`, `메모` 섹션과 다음 AI 도구가 기본으로
+등록된다.
 
 - `planner_list`, `planner_get`
 - `planner_create`, `planner_update`, `planner_delete`
@@ -35,7 +34,7 @@ CodmesWorkspace/.codmes/plugin-data/com.codmes.planner/memos.json
 ```
 
 Mac, iPhone, iPad는 같은 Workspace 서버 API를 사용하므로 별도 클라우드 계정 없이
-같은 데이터를 본다. plugin 제거 시 사용자 데이터는 자동 삭제하지 않는다.
+같은 데이터를 본다. Planner는 기본 기능이라 사용자가 제거할 수 없다.
 
 ## 모드별 쓰기
 

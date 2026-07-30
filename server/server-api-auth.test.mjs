@@ -39,6 +39,10 @@ test("workspace server protects APIs with CODMES_SERVER_TOKEN and exposes manage
     assert.equal(workspace.runtime.owner, "codmes");
 
     const marketplace = await fetchJson(`${baseUrl}/api/marketplace/plugins`, { token });
+    assert.equal(
+      marketplace.plugins.some((plugin) => plugin.id === "com.codmes.planner"),
+      false
+    );
     const knuMarketplacePlugin = marketplace.plugins.find((plugin) => plugin.id === "kr.ac.kongju.knu");
     assert.equal(knuMarketplacePlugin.version, "0.3.0");
     assert.equal(knuMarketplacePlugin.installed, false);
@@ -56,11 +60,12 @@ test("workspace server protects APIs with CODMES_SERVER_TOKEN and exposes manage
     );
     assert.equal(removedMarketplacePlugin.removed, true);
 
-    const installedCalendar = await fetchJson(
-      `${baseUrl}/api/marketplace/plugins/com.codmes.planner/install`,
-      { token, method: "POST", body: { version: "0.2.0" } }
+    const builtInPlugins = await fetchJson(`${baseUrl}/api/plugins`, { token });
+    const builtInPlanner = builtInPlugins.plugins.find(
+      (plugin) => plugin.id === "com.codmes.planner"
     );
-    assert.equal(installedCalendar.plugin.id, "com.codmes.planner");
+    assert.equal(builtInPlanner.distribution, "builtin");
+    assert.equal(builtInPlanner.removable, false);
     const plannerSurface = await fetchJson(
       `${baseUrl}/api/plugins/com.codmes.planner/surface-document?route=tasks`,
       { token }
@@ -80,7 +85,7 @@ test("workspace server protects APIs with CODMES_SERVER_TOKEN and exposes manage
             completed: false,
             priority: 1,
             project: "Codmes",
-            notes: "Marketplace MVP"
+            notes: "Built-in Planner"
           }
         }
       }

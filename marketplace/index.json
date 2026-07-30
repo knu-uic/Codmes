@@ -1,28 +1,11 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-07-29T00:00:00+09:00",
+  "updatedAt": "2026-07-30T15:29:06+09:00",
   "signaturePolicy": "optional",
   "governancePolicy": "open",
   "publishers": [],
   "blockedVersions": [],
   "plugins": [
-    {
-      "id": "com.codmes.planner",
-      "name": "Planner",
-      "version": "0.2.0",
-      "description": "할 일, 일정, 간단한 텍스트 메모를 한곳에서 관리하는 native Planner Surface와 AI 도구를 제공합니다.",
-      "publisher": "Codmes",
-      "category": "Productivity",
-      "icon": "checklist",
-      "verified": true,
-      "featured": true,
-      "packagePath": "packages/com.codmes.planner-0.2.0.codmes-plugin",
-      "sha256": "8adccb4f66b75bbc272f0802f387b58cef4a321a9edf18417653b0f64f0d513b",
-      "platforms": ["macos", "ios", "ipados"],
-      "permissions": ["storage:workspace"],
-      "dataVersion": 1,
-      "releaseNotes": "Planner에 간단한 텍스트 메모 섹션과 AI 메모 도구를 추가했습니다."
-    },
     {
       "id": "kr.ac.kongju.knu",
       "name": "KNU",

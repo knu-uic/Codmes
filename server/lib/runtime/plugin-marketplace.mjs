@@ -18,6 +18,7 @@ import {
   normalizeRegistryRootIdentity,
   verifyMarketplaceRegistrySignature
 } from "./plugin-registry-signature.mjs";
+import { isBuiltInPluginId } from "./plugin-distribution.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const DEFAULT_REGISTRY_URL =
@@ -36,6 +37,7 @@ export async function listMarketplacePlugins(workspaceRoot, options = {}) {
   const loaded = await loadMarketplaceRegistry(options);
   const plugins = [];
   for (const entry of loaded.registry.plugins) {
+    if (isBuiltInPluginId(entry.id)) continue;
     const installed = await getInstalledPlugin(workspaceRoot, entry.id);
     const state = installed ? await getPluginInstallState(workspaceRoot, entry.id) : null;
     const acceptedPermissions = state?.acceptedPermissions || installed?.permissions || [];
@@ -85,6 +87,12 @@ export async function listMarketplacePlugins(workspaceRoot, options = {}) {
 
 export async function getMarketplacePlugin(pluginId, options = {}) {
   const id = normalizePluginId(pluginId);
+  if (isBuiltInPluginId(id)) {
+    throw Object.assign(
+      new Error("Built-in plugins are included with Codmes and are not installed from Marketplace."),
+      { status: 409, code: "builtin_plugin_not_in_marketplace" }
+    );
+  }
   const loaded = await loadMarketplaceRegistry(options);
   const plugin = loaded.registry.plugins.find((entry) => entry.id === id);
   if (!plugin) throw Object.assign(new Error("Marketplace plugin was not found."), { status: 404 });

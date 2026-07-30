@@ -241,6 +241,8 @@ async function handleLiveCommand(engine, message) {
 async function ensureWorkspace() {
   await fs.mkdir(WORKSPACE_ROOT, { recursive: true });
   await ensureAgentWorkspaceState(WORKSPACE_ROOT);
+  const { ensureBuiltInPlugins } = await import("./lib/runtime/builtin-plugins.mjs");
+  await ensureBuiltInPlugins(WORKSPACE_ROOT);
   await fs.mkdir(path.join(WORKSPACE_ROOT, WORKSPACE_DIRS.notes), { recursive: true });
   await fs.mkdir(path.join(WORKSPACE_ROOT, WORKSPACE_DIRS.code), { recursive: true });
   await fs.mkdir(path.join(WORKSPACE_ROOT, WORKSPACE_DIRS.documents), { recursive: true });
