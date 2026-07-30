@@ -1,6 +1,6 @@
 # Codmes
 
-[![check](https://github.com/jeongu0569-ui/Codmes/actions/workflows/check.yml/badge.svg)](https://github.com/jeongu0569-ui/Codmes/actions/workflows/check.yml)
+[![check](https://github.com/knu-uic/Codmes/actions/workflows/check.yml/badge.svg)](https://github.com/knu-uic/Codmes/actions/workflows/check.yml)
 
 Codmes는 Chat, Notes, Code 등 여러 작업을 하나의 환경에서 연결하는 통합 AI 워크스페이스입니다.
 
@@ -45,7 +45,7 @@ Codmes는 단순한 AI 채팅 앱이 아니라, 사용자의 지식과 파일, �
 - 사용할 AI provider 또는 local model server
 
 ```bash
-git clone https://github.com/jeongu0569-ui/Codmes.git
+git clone https://github.com/knu-uic/Codmes.git
 cd Codmes
 npm install
 npm link

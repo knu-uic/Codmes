@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "registries": [
     {
-      "url": "https://jeongu0569-ui.github.io/Codmes-Marketplace/index.json",
-      "signatureUrl": "https://jeongu0569-ui.github.io/Codmes-Marketplace/index.sig.json",
+      "url": "https://knu-uic.github.io/Codmes-Marketplace/index.json",
+      "signatureUrl": "https://knu-uic.github.io/Codmes-Marketplace/index.sig.json",
       "root": {
         "schemaVersion": 1,
         "rootId": "com.codmes.marketplace",

@@ -12,7 +12,7 @@ Plugin Runtime과 앱 UI를 사용하지만, built-in plugin은 앱과 함께 �
 기본 공식 Registry는 다음 공개 주소를 사용한다.
 
 ```text
-https://jeongu0569-ui.github.io/Codmes-Marketplace/index.json
+https://knu-uic.github.io/Codmes-Marketplace/index.json
 ```
 
 앱에는 URL과 Marketplace root 공개키가 함께 고정되어 있다. 서버는
@@ -246,7 +246,7 @@ provider 기준:
 공식 Registry 주소는 다음과 같다.
 
 ```text
-https://jeongu0569-ui.github.io/Codmes-Marketplace/index.json
+https://knu-uic.github.io/Codmes-Marketplace/index.json
 ```
 
 기존 Notes는 학습 자료와 문서 탐색 기능으로 유지하며 Planner 메모와 결합하지

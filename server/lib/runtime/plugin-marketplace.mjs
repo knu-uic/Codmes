@@ -22,7 +22,7 @@ import { isBuiltInPluginId } from "./plugin-distribution.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const DEFAULT_REGISTRY_URL =
-  "https://jeongu0569-ui.github.io/Codmes-Marketplace/index.json";
+  "https://knu-uic.github.io/Codmes-Marketplace/index.json";
 const TRUSTED_REGISTRIES_PATH = path.join(
   REPO_ROOT,
   "marketplace",
