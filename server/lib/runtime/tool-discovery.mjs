@@ -1,3 +1,5 @@
+import { listInstalledPlugins } from "./plugin-registry.mjs";
+
 export const TOOL_DISCOVERY_DEFINITION = {
   type: "function",
   function: {
@@ -102,13 +104,25 @@ export const TOOL_REGISTRY = [
 export async function executeToolDiscovery(workspaceRoot, surface, args = {}, options = {}) {
   const desiredCapability = String(args.desiredCapability || "").toLowerCase();
   const disabledTools = new Set((options.disabledTools || []).map(String));
+  const pluginTools = (await listInstalledPlugins(workspaceRoot)).flatMap((plugin) =>
+    (plugin.tools || []).map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      group: tool.group || `plugin:${plugin.id}`,
+      surfaces: tool.surfaces || [plugin.surface.id],
+      requiresApproval: tool.requiresApproval === true,
+      provider: tool.provider.type,
+      pluginId: plugin.id
+    }))
+  );
+  const availableTools = [...TOOL_REGISTRY, ...pluginTools];
   const queryWords = desiredCapability
     .split(/[^a-zA-Z0-9가-힣_/-]+/)
     .map((word) => word.trim())
     .filter((word) => word.length >= 2);
   
   // Find matching tool groups based on desiredCapability keywords or description match
-  const matchedTools = TOOL_REGISTRY.filter(tool => {
+  const matchedTools = availableTools.filter(tool => {
     if (queryWords.length === 0) return false;
     return queryWords.some(word => {
       const inName = tool.name.toLowerCase().includes(word);
@@ -134,7 +148,9 @@ export async function executeToolDiscovery(workspaceRoot, surface, args = {}, op
       name: tool.name,
       description: tool.description,
       disabledByUser: disabledTools.has(tool.name),
-      requiresApproval: Boolean(tool.requiresApproval)
+      requiresApproval: Boolean(tool.requiresApproval),
+      provider: tool.provider || "native",
+      pluginId: tool.pluginId || null
     });
     if (tool.requiresApproval) {
       g.requiresApproval = true;

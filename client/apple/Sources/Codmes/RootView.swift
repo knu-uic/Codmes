@@ -1420,12 +1420,18 @@ struct PluginSurfaceView: View {
     @State private var loadError: String?
     @State private var query = ""
     @State private var selectedFilters: [String: String] = [:]
+    @State private var selectedCalendarDate = Date()
+    @State private var visibleCalendarMonth = Date()
+    @State private var calendarEditor: CalendarEventEditorContext?
+    @State private var collectionEditor: PluginCollectionEditorContext?
 
     var body: some View {
         Group {
             if surface.renderer == "declarative", surface.pluginId != nil {
                 if let document {
-                    if document.presentation == "dashboard" {
+                    if document.presentation == "calendar" {
+                        calendar(document)
+                    } else if document.presentation == "dashboard" {
                         dashboard(document)
                     } else {
                         collection(document)
@@ -1446,18 +1452,59 @@ struct PluginSurfaceView: View {
         .task(id: "\(surface.id):\(routeId ?? ""):\(reloadRevision)") {
             await loadSurfaceDocument()
         }
+        .sheet(item: $calendarEditor) { context in
+            CalendarEventEditor(
+                context: context,
+                onSave: { draft in
+                    try await saveCalendarEvent(context: context, draft: draft)
+                    await loadSurfaceDocument()
+                },
+                onDelete: context.item == nil ? nil : {
+                    try await deleteCalendarEvent(context: context)
+                    await loadSurfaceDocument()
+                }
+            )
+        }
+        .sheet(item: $collectionEditor) { context in
+            PluginCollectionEditor(
+                context: context,
+                onSave: { values in
+                    try await savePluginCollectionItem(context: context, values: values)
+                    await loadSurfaceDocument()
+                },
+                onDelete: context.item == nil ? nil : {
+                    try await deletePluginCollectionItem(context: context)
+                    await loadSurfaceDocument()
+                }
+            )
+        }
     }
 
     private func collection(_ document: PluginSurfaceDocument) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(document.title)
-                        .font(.title2.weight(.semibold))
-                    if let subtitle = document.subtitle, !subtitle.isEmpty {
-                        Text(subtitle)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(document.title)
+                            .font(.title2.weight(.semibold))
+                        if let subtitle = document.subtitle, !subtitle.isEmpty {
+                            Text(subtitle)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    if let editor = document.editor {
+                        Button {
+                            collectionEditor = PluginCollectionEditorContext(
+                                editor: editor,
+                                item: nil
+                            )
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("새 항목")
                     }
                 }
                 .padding(.bottom, 18)
@@ -1524,6 +1571,320 @@ struct PluginSurfaceView: View {
         .refreshable {
             await loadSurfaceDocument()
         }
+    }
+
+    private func calendar(_ document: PluginSurfaceDocument) -> some View {
+        let selectedItems = calendarItems(document.items, on: selectedCalendarDate)
+
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(document.title)
+                            .font(.title2.weight(.semibold))
+                        if let subtitle = document.subtitle, !subtitle.isEmpty {
+                            Text(subtitle)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    Button("오늘") {
+                        let now = Date()
+                        selectedCalendarDate = now
+                        visibleCalendarMonth = now
+                    }
+                    .buttonStyle(.borderless)
+                    if let collectionId = document.editor?.collection {
+                        Button {
+                            calendarEditor = CalendarEventEditorContext(
+                                collectionId: collectionId,
+                                item: nil,
+                                defaultDate: selectedCalendarDate
+                            )
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("새 일정")
+                    }
+                }
+
+                VStack(spacing: 12) {
+                    HStack {
+                        Button {
+                            moveCalendarMonth(by: -1)
+                        } label: {
+                            Image(systemName: "chevron.left")
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("이전 달")
+
+                        Spacer()
+                        Text(calendarMonthTitle(visibleCalendarMonth))
+                            .font(.headline)
+                        Spacer()
+
+                        Button {
+                            moveCalendarMonth(by: 1)
+                        } label: {
+                            Image(systemName: "chevron.right")
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("다음 달")
+                    }
+                    .padding(.horizontal, 4)
+
+                    LazyVGrid(
+                        columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7),
+                        spacing: 5
+                    ) {
+                        ForEach(Array(calendarWeekdaySymbols().enumerated()), id: \.offset) { _, symbol in
+                            Text(symbol)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity)
+                        }
+
+                        ForEach(Array(calendarMonthDates().enumerated()), id: \.offset) { _, date in
+                            if let date {
+                                calendarDayCell(date, items: calendarItems(document.items, on: date))
+                            } else {
+                                Color.clear
+                                    .frame(minHeight: 46)
+                            }
+                        }
+                    }
+                }
+                .padding(16)
+                .background(.quaternary.opacity(0.16), in: RoundedRectangle(cornerRadius: 14))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(.quaternary.opacity(0.55), lineWidth: 0.5)
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(calendarDayTitle(selectedCalendarDate))
+                        .font(.headline)
+                    if selectedItems.isEmpty {
+                        ContentUnavailableView(
+                            "이 날짜에는 일정이 없습니다.",
+                            systemImage: "calendar"
+                        )
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 26)
+                    } else {
+                        LazyVStack(spacing: 1) {
+                            ForEach(selectedItems) { item in
+                                calendarEventRow(item)
+                            }
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(.quaternary.opacity(0.55), lineWidth: 0.5)
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: 980, alignment: .leading)
+            .padding(.horizontal, 28)
+            .padding(.vertical, 24)
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
+        .background(.background)
+        .refreshable {
+            await loadSurfaceDocument()
+        }
+    }
+
+    private func calendarDayCell(_ date: Date, items: [PluginSurfaceItem]) -> some View {
+        let calendar = Calendar.autoupdatingCurrent
+        let selected = calendar.isDate(date, inSameDayAs: selectedCalendarDate)
+        let today = calendar.isDateInToday(date)
+
+        return Button {
+            selectedCalendarDate = date
+        } label: {
+            VStack(spacing: 5) {
+                Text(String(calendar.component(.day, from: date)))
+                    .font(.callout.weight(today || selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? Color.white : Color.primary)
+                HStack(spacing: 2) {
+                    ForEach(0..<min(items.count, 3), id: \.self) { _ in
+                        Circle()
+                            .fill(selected ? Color.white.opacity(0.9) : Color.accentColor)
+                            .frame(width: 4, height: 4)
+                    }
+                }
+                .frame(height: 4)
+            }
+            .frame(maxWidth: .infinity, minHeight: 46)
+            .background(
+                selected ? Color.accentColor : (today ? Color.accentColor.opacity(0.1) : Color.clear),
+                in: RoundedRectangle(cornerRadius: 9)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(calendarDayTitle(date))
+        .accessibilityValue(items.isEmpty ? "일정 없음" : "일정 \(items.count)개")
+    }
+
+    private func calendarEventRow(_ item: PluginSurfaceItem) -> some View {
+        Button {
+            if let collectionId = document?.editor?.collection {
+                calendarEditor = CalendarEventEditorContext(
+                    collectionId: collectionId,
+                    item: item,
+                    defaultDate: selectedCalendarDate
+                )
+            } else {
+                perform(item.action)
+            }
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color.accentColor)
+                    .frame(width: 3)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(calendarTimeText(item))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(item.title)
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(.primary)
+                    if let location = item.tags.first, !location.isEmpty {
+                        Label(location, systemImage: "mappin.and.ellipse")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let body = item.body, !body.isEmpty {
+                        Text(body)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .background(.background)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func calendarItems(_ items: [PluginSurfaceItem], on date: Date) -> [PluginSurfaceItem] {
+        let calendar = Calendar.autoupdatingCurrent
+        return items
+            .filter { item in
+                guard let startsAt = pluginDate(item.temporal?.startsAt) else { return false }
+                return calendar.isDate(startsAt, inSameDayAs: date)
+            }
+            .sorted {
+                (pluginDate($0.temporal?.startsAt) ?? .distantFuture)
+                    < (pluginDate($1.temporal?.startsAt) ?? .distantFuture)
+            }
+    }
+
+    private func moveCalendarMonth(by value: Int) {
+        guard let next = Calendar.autoupdatingCurrent.date(
+            byAdding: .month,
+            value: value,
+            to: visibleCalendarMonth
+        ) else { return }
+        visibleCalendarMonth = next
+        selectedCalendarDate = next
+    }
+
+    private func calendarMonthDates() -> [Date?] {
+        let calendar = Calendar.autoupdatingCurrent
+        guard let interval = calendar.dateInterval(of: .month, for: visibleCalendarMonth),
+              let dayRange = calendar.range(of: .day, in: .month, for: interval.start)
+        else { return [] }
+        let weekday = calendar.component(.weekday, from: interval.start)
+        let leading = (weekday - calendar.firstWeekday + 7) % 7
+        return Array(repeating: nil, count: leading) + dayRange.compactMap { day in
+            calendar.date(byAdding: .day, value: day - 1, to: interval.start)
+        }.map(Optional.some)
+    }
+
+    private func calendarWeekdaySymbols() -> [String] {
+        let calendar = Calendar.autoupdatingCurrent
+        let symbols = calendar.veryShortStandaloneWeekdaySymbols
+        let offset = max(0, min(symbols.count - 1, calendar.firstWeekday - 1))
+        return Array(symbols[offset...] + symbols[..<offset])
+    }
+
+    private func calendarMonthTitle(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale.autoupdatingCurrent
+        formatter.setLocalizedDateFormatFromTemplate("yyyyMMMM")
+        return formatter.string(from: date)
+    }
+
+    private func calendarDayTitle(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale.autoupdatingCurrent
+        formatter.dateStyle = .full
+        return formatter.string(from: date)
+    }
+
+    private func calendarTimeText(_ item: PluginSurfaceItem) -> String {
+        guard let temporal = item.temporal else { return "" }
+        if temporal.allDay { return "종일" }
+        guard let start = pluginDate(temporal.startsAt) else { return temporal.startsAt }
+        let formatter = DateFormatter()
+        formatter.locale = Locale.autoupdatingCurrent
+        formatter.timeStyle = .short
+        let startText = formatter.string(from: start)
+        guard let end = pluginDate(temporal.endsAt) else { return startText }
+        return "\(startText) – \(formatter.string(from: end))"
+    }
+
+    private func pluginDate(_ value: String?) -> Date? {
+        parsePluginSurfaceDate(value)
+    }
+
+    @MainActor
+    private func saveCalendarEvent(
+        context: CalendarEventEditorContext,
+        draft: CalendarEventDraft
+    ) async throws {
+        guard let api = store.api, let pluginId = surface.pluginId else {
+            throw WorkspaceAPIError.invalidURL
+        }
+        if let item = context.item {
+            try await api.updatePluginCollectionItem(
+                pluginId: pluginId,
+                collectionId: context.collectionId,
+                itemId: item.id,
+                item: draft
+            )
+        } else {
+            try await api.createPluginCollectionItem(
+                pluginId: pluginId,
+                collectionId: context.collectionId,
+                item: draft
+            )
+        }
+    }
+
+    @MainActor
+    private func deleteCalendarEvent(context: CalendarEventEditorContext) async throws {
+        guard let api = store.api,
+              let pluginId = surface.pluginId,
+              let item = context.item
+        else {
+            throw WorkspaceAPIError.invalidURL
+        }
+        try await api.deletePluginCollectionItem(
+            pluginId: pluginId,
+            collectionId: context.collectionId,
+            itemId: item.id
+        )
     }
 
     private func dashboard(_ document: PluginSurfaceDocument) -> some View {
@@ -1676,7 +2037,11 @@ struct PluginSurfaceView: View {
 
     private func collectionRow(_ item: PluginSurfaceItem) -> some View {
         Button {
-            perform(item.action)
+            if let editor = document?.editor {
+                collectionEditor = PluginCollectionEditorContext(editor: editor, item: item)
+            } else {
+                perform(item.action)
+            }
         } label: {
             VStack(alignment: .leading, spacing: 7) {
                 if let subtitle = item.subtitle, !subtitle.isEmpty {
@@ -1714,7 +2079,7 @@ struct PluginSurfaceView: View {
             .background(.background)
         }
         .buttonStyle(.plain)
-        .disabled(item.action == nil)
+        .disabled(item.action == nil && document?.editor == nil)
     }
 
     private func filteredItems(in document: PluginSurfaceDocument) -> [PluginSurfaceItem] {
@@ -1741,6 +2106,47 @@ struct PluginSurfaceView: View {
               ["http", "https"].contains(url.scheme?.lowercased() ?? "")
         else { return }
         openURL(url)
+    }
+
+    @MainActor
+    private func savePluginCollectionItem(
+        context: PluginCollectionEditorContext,
+        values: [String: PluginSurfaceEditorValue]
+    ) async throws {
+        guard let api = store.api, let pluginId = surface.pluginId else {
+            throw WorkspaceAPIError.invalidURL
+        }
+        if let item = context.item {
+            try await api.updatePluginCollectionItem(
+                pluginId: pluginId,
+                collectionId: context.editor.collection,
+                itemId: item.id,
+                item: values
+            )
+        } else {
+            try await api.createPluginCollectionItem(
+                pluginId: pluginId,
+                collectionId: context.editor.collection,
+                item: values
+            )
+        }
+    }
+
+    @MainActor
+    private func deletePluginCollectionItem(
+        context: PluginCollectionEditorContext
+    ) async throws {
+        guard let api = store.api,
+              let pluginId = surface.pluginId,
+              let item = context.item
+        else {
+            throw WorkspaceAPIError.invalidURL
+        }
+        try await api.deletePluginCollectionItem(
+            pluginId: pluginId,
+            collectionId: context.editor.collection,
+            itemId: item.id
+        )
     }
 
     private var placeholder: some View {
@@ -1797,6 +2203,433 @@ struct PluginSurfaceView: View {
             loadError = error.localizedDescription
         }
     }
+}
+
+private struct PluginCollectionEditorContext: Identifiable {
+    let id = UUID()
+    let editor: PluginSurfaceEditor
+    let item: PluginSurfaceItem?
+}
+
+private struct PluginCollectionEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    let context: PluginCollectionEditorContext
+    let onSave: ([String: PluginSurfaceEditorValue]) async throws -> Void
+    let onDelete: (() async throws -> Void)?
+
+    @State private var textValues: [String: String]
+    @State private var booleanValues: [String: Bool]
+    @State private var dateValues: [String: Date]
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+    @State private var showDeleteConfirmation = false
+
+    init(
+        context: PluginCollectionEditorContext,
+        onSave: @escaping ([String: PluginSurfaceEditorValue]) async throws -> Void,
+        onDelete: (() async throws -> Void)?
+    ) {
+        self.context = context
+        self.onSave = onSave
+        self.onDelete = onDelete
+        var texts: [String: String] = [:]
+        var booleans: [String: Bool] = [:]
+        var dates: [String: Date] = [:]
+        for field in context.editor.fields ?? [] {
+            let value = context.item?.editorValues?[field.id]
+            if field.type == "boolean" {
+                booleans[field.id] = value?.booleanValue ?? false
+            } else if field.type == "date" || field.type == "dateTime" {
+                dates[field.id] = parsePluginSurfaceDate(value?.stringValue) ?? Date()
+            } else {
+                texts[field.id] = value?.stringValue ?? ""
+            }
+        }
+        _textValues = State(initialValue: texts)
+        _booleanValues = State(initialValue: booleans)
+        _dateValues = State(initialValue: dates)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                ForEach(context.editor.fields ?? []) { field in
+                    editorField(field)
+                }
+                if onDelete != nil {
+                    Section {
+                        Button("삭제", role: .destructive) {
+                            showDeleteConfirmation = true
+                        }
+                        .disabled(isSaving)
+                    }
+                }
+            }
+            .navigationTitle(context.item == nil ? "새 항목" : "항목 편집")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("취소") { dismiss() }
+                        .disabled(isSaving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("저장") {
+                        Task { await save() }
+                    }
+                    .disabled(isSaving || !requiredFieldsAreValid)
+                }
+            }
+            .overlay {
+                if isSaving {
+                    ProgressView()
+                        .padding(18)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+            .alert(
+                "변경사항을 저장하지 못했습니다.",
+                isPresented: Binding(
+                    get: { errorMessage != nil },
+                    set: { if !$0 { errorMessage = nil } }
+                )
+            ) {
+                Button("확인", role: .cancel) {}
+            } message: {
+                Text(errorMessage ?? "")
+            }
+            .confirmationDialog(
+                "이 항목을 삭제할까요?",
+                isPresented: $showDeleteConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("삭제", role: .destructive) {
+                    Task { await delete() }
+                }
+                Button("취소", role: .cancel) {}
+            }
+        }
+        #if os(macOS)
+        .frame(width: 480, height: 580)
+        #endif
+    }
+
+    @ViewBuilder
+    private func editorField(_ field: PluginSurfaceEditorField) -> some View {
+        if field.type == "boolean" {
+            Toggle(
+                field.label,
+                isOn: Binding(
+                    get: { booleanValues[field.id] ?? false },
+                    set: { booleanValues[field.id] = $0 }
+                )
+            )
+        } else if field.type == "date" || field.type == "dateTime" {
+            DatePicker(
+                field.label,
+                selection: Binding(
+                    get: { dateValues[field.id] ?? Date() },
+                    set: { dateValues[field.id] = $0 }
+                ),
+                displayedComponents: field.type == "date" ? [.date] : [.date, .hourAndMinute]
+            )
+        } else if field.type == "multiline" {
+            Section(field.label) {
+                TextEditor(text: textBinding(field))
+                    .frame(minHeight: 100)
+            }
+        } else {
+            TextField(field.placeholder ?? field.label, text: textBinding(field))
+            #if os(iOS)
+                .keyboardType(field.type == "number" ? .decimalPad : .default)
+            #endif
+        }
+    }
+
+    private func textBinding(_ field: PluginSurfaceEditorField) -> Binding<String> {
+        Binding(
+            get: { textValues[field.id] ?? "" },
+            set: { textValues[field.id] = $0 }
+        )
+    }
+
+    private var requiredFieldsAreValid: Bool {
+        (context.editor.fields ?? []).allSatisfy { field in
+            guard field.required else { return true }
+            if ["text", "multiline", "number"].contains(field.type) {
+                return !(textValues[field.id] ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .isEmpty
+            }
+            return true
+        }
+    }
+
+    private func encodedValues() -> [String: PluginSurfaceEditorValue] {
+        var values: [String: PluginSurfaceEditorValue] = [:]
+        for field in context.editor.fields ?? [] {
+            if field.type == "boolean" {
+                values[field.id] = .boolean(booleanValues[field.id] ?? false)
+            } else if field.type == "number" {
+                let text = (textValues[field.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if let number = Double(text) {
+                    values[field.id] = .number(number)
+                }
+            } else if field.type == "date" || field.type == "dateTime" {
+                let date = dateValues[field.id] ?? Date()
+                if field.type == "date" {
+                    let formatter = DateFormatter()
+                    formatter.locale = Locale(identifier: "en_US_POSIX")
+                    formatter.calendar = Calendar(identifier: .gregorian)
+                    formatter.dateFormat = "yyyy-MM-dd"
+                    values[field.id] = .string(formatter.string(from: date))
+                } else {
+                    let formatter = ISO8601DateFormatter()
+                    formatter.formatOptions = [.withInternetDateTime]
+                    values[field.id] = .string(formatter.string(from: date))
+                }
+            } else {
+                values[field.id] = .string(
+                    (textValues[field.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            }
+        }
+        return values
+    }
+
+    @MainActor
+    private func save() async {
+        isSaving = true
+        defer { isSaving = false }
+        do {
+            try await onSave(encodedValues())
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func delete() async {
+        guard let onDelete else { return }
+        isSaving = true
+        defer { isSaving = false }
+        do {
+            try await onDelete()
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private struct CalendarEventEditorContext: Identifiable {
+    let id = UUID()
+    let collectionId: String
+    let item: PluginSurfaceItem?
+    let defaultDate: Date
+}
+
+private struct CalendarEventDraft: Encodable {
+    let title: String
+    let startsAt: String
+    let endsAt: String
+    let allDay: Bool
+    let location: String
+    let notes: String
+}
+
+private struct CalendarEventEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    let context: CalendarEventEditorContext
+    let onSave: (CalendarEventDraft) async throws -> Void
+    let onDelete: (() async throws -> Void)?
+
+    @State private var title: String
+    @State private var startsAt: Date
+    @State private var endsAt: Date
+    @State private var allDay: Bool
+    @State private var location: String
+    @State private var notes: String
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+    @State private var showDeleteConfirmation = false
+
+    init(
+        context: CalendarEventEditorContext,
+        onSave: @escaping (CalendarEventDraft) async throws -> Void,
+        onDelete: (() async throws -> Void)?
+    ) {
+        self.context = context
+        self.onSave = onSave
+        self.onDelete = onDelete
+        let item = context.item
+        let start = parsePluginSurfaceDate(item?.temporal?.startsAt) ?? context.defaultDate
+        let end = parsePluginSurfaceDate(item?.temporal?.endsAt)
+            ?? Calendar.autoupdatingCurrent.date(byAdding: .hour, value: 1, to: start)
+            ?? start
+        _title = State(initialValue: item?.title ?? "")
+        _startsAt = State(initialValue: start)
+        _endsAt = State(initialValue: end)
+        _allDay = State(initialValue: item?.temporal?.allDay ?? false)
+        _location = State(initialValue: item?.tags.first ?? "")
+        _notes = State(initialValue: item?.body ?? "")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("일정") {
+                    TextField("제목", text: $title)
+                    TextField("장소", text: $location)
+                }
+
+                Section("시간") {
+                    Toggle("종일", isOn: $allDay)
+                    if allDay {
+                        DatePicker("시작", selection: $startsAt, displayedComponents: .date)
+                        DatePicker("종료", selection: $endsAt, in: startsAt..., displayedComponents: .date)
+                    } else {
+                        DatePicker(
+                            "시작",
+                            selection: $startsAt,
+                            displayedComponents: [.date, .hourAndMinute]
+                        )
+                        DatePicker(
+                            "종료",
+                            selection: $endsAt,
+                            in: startsAt...,
+                            displayedComponents: [.date, .hourAndMinute]
+                        )
+                    }
+                }
+
+                Section("메모") {
+                    TextEditor(text: $notes)
+                        .frame(minHeight: 100)
+                }
+
+                if onDelete != nil {
+                    Section {
+                        Button("일정 삭제", role: .destructive) {
+                            showDeleteConfirmation = true
+                        }
+                        .disabled(isSaving)
+                    }
+                }
+            }
+            .navigationTitle(context.item == nil ? "새 일정" : "일정 편집")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("취소") { dismiss() }
+                        .disabled(isSaving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("저장") {
+                        Task { await save() }
+                    }
+                    .disabled(isSaving || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .overlay {
+                if isSaving {
+                    ProgressView()
+                        .padding(18)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+            .alert(
+                "일정을 저장하지 못했습니다.",
+                isPresented: Binding(
+                    get: { errorMessage != nil },
+                    set: { if !$0 { errorMessage = nil } }
+                )
+            ) {
+                Button("확인", role: .cancel) {}
+            } message: {
+                Text(errorMessage ?? "")
+            }
+            .confirmationDialog(
+                "이 일정을 삭제할까요?",
+                isPresented: $showDeleteConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("삭제", role: .destructive) {
+                    Task { await delete() }
+                }
+                Button("취소", role: .cancel) {}
+            }
+        }
+        #if os(macOS)
+        .frame(width: 480, height: 590)
+        #endif
+        .onChange(of: startsAt) {
+            if endsAt < startsAt {
+                endsAt = startsAt
+            }
+        }
+    }
+
+    @MainActor
+    private func save() async {
+        isSaving = true
+        defer { isSaving = false }
+        do {
+            try await onSave(makeDraft())
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func delete() async {
+        guard let onDelete else { return }
+        isSaving = true
+        defer { isSaving = false }
+        do {
+            try await onDelete()
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func makeDraft() -> CalendarEventDraft {
+        CalendarEventDraft(
+            title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+            startsAt: encodeCalendarDate(startsAt, allDay: allDay),
+            endsAt: encodeCalendarDate(endsAt, allDay: allDay),
+            allDay: allDay,
+            location: location.trimmingCharacters(in: .whitespacesAndNewlines),
+            notes: notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+
+    private func encodeCalendarDate(_ date: Date, allDay: Bool) -> String {
+        if allDay {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.calendar = Calendar(identifier: .gregorian)
+            formatter.dateFormat = "yyyy-MM-dd"
+            return formatter.string(from: date)
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: date)
+    }
+}
+
+private func parsePluginSurfaceDate(_ value: String?) -> Date? {
+    guard let value, !value.isEmpty else { return nil }
+    let iso = ISO8601DateFormatter()
+    iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = iso.date(from: value) { return date }
+    iso.formatOptions = [.withInternetDateTime]
+    if let date = iso.date(from: value) { return date }
+    let day = DateFormatter()
+    day.locale = Locale(identifier: "en_US_POSIX")
+    day.calendar = Calendar(identifier: .gregorian)
+    day.dateFormat = "yyyy-MM-dd"
+    return day.date(from: value)
 }
 
 struct ServerStatusView: View {
@@ -1882,6 +2715,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case modelConfig = "Model Config"
     case search = "Search"
     case mcp = "MCP"
+    case plugins = "Plugins"
     case surfaces = "Surfaces"
 
     var id: String { rawValue }
@@ -1893,6 +2727,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .modelConfig: "key"
         case .search: "magnifyingglass"
         case .mcp: "point.3.connected.trianglepath.dotted"
+        case .plugins: "shippingbox"
         case .surfaces: "square.grid.2x2"
         }
     }
@@ -1904,6 +2739,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .modelConfig: "Provider auth and endpoints"
         case .search: "Indexing and document search"
         case .mcp: "External MCP tools"
+        case .plugins: "Marketplace and updates"
         case .surfaces: "Client modes and plugins"
         }
     }
@@ -2012,6 +2848,8 @@ struct WorkspaceSettingsView: View {
                     SearchSettingsView()
                 case .mcp:
                     MCPSettingsView()
+                case .plugins:
+                    MarketplaceSettingsView()
                 case .surfaces:
                     SurfaceSettingsView(initialSurfaceId: initialSurfaceId)
                 }
@@ -2658,6 +3496,238 @@ private struct MCPSettingsView: View {
         enabled = true
     }
 
+}
+
+private struct MarketplaceSettingsView: View {
+    @EnvironmentObject private var store: WorkspaceStore
+    @State private var pendingRemoval: MarketplacePlugin?
+    @State private var pendingPermissionUpdate: MarketplacePlugin?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Plugin Marketplace")
+                        .font(.headline)
+                    Text("Install once on the Workspace server. Connected Mac, iPhone, and iPad clients use the same plugin.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    Task { await store.refreshMarketplace() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .help("Refresh Marketplace")
+            }
+
+            if !store.marketplaceMessage.isEmpty {
+                Text(store.marketplaceMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if store.marketplacePlugins.isEmpty {
+                ContentUnavailableView {
+                    Label("No plugins available", systemImage: "shippingbox")
+                } description: {
+                    Text("Check the Marketplace registry and Workspace server connection.")
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 28)
+            } else {
+                LazyVStack(spacing: 10) {
+                    ForEach(store.marketplacePlugins) { plugin in
+                        pluginCard(plugin)
+                    }
+                }
+            }
+        }
+        .task {
+            await store.refreshMarketplace()
+        }
+        .confirmationDialog(
+            "Remove \(pendingRemoval?.name ?? "plugin")?",
+            isPresented: Binding(
+                get: { pendingRemoval != nil },
+                set: { if !$0 { pendingRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let plugin = pendingRemoval {
+                Button("Remove Plugin", role: .destructive) {
+                    pendingRemoval = nil
+                    Task { await store.removeMarketplacePlugin(plugin) }
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                pendingRemoval = nil
+            }
+        } message: {
+            Text("The Surface and MCP registration will be removed. Saved credentials and service data are kept.")
+        }
+        .confirmationDialog(
+            "Allow new permissions for \(pendingPermissionUpdate?.name ?? "plugin")?",
+            isPresented: Binding(
+                get: { pendingPermissionUpdate != nil },
+                set: { if !$0 { pendingPermissionUpdate = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let plugin = pendingPermissionUpdate {
+                Button("Allow and Update") {
+                    pendingPermissionUpdate = nil
+                    Task {
+                        await store.updateMarketplacePlugin(
+                            plugin,
+                            acceptedPermissions: plugin.addedPermissions
+                        )
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                pendingPermissionUpdate = nil
+            }
+        } message: {
+            if let plugin = pendingPermissionUpdate {
+                Text(permissionConsentMessage(plugin))
+            }
+        }
+    }
+
+    private func pluginCard(_ plugin: MarketplacePlugin) -> some View {
+        let isWorking = store.marketplaceOperations.contains(plugin.id)
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: plugin.systemImage)
+                    .font(.title2)
+                    .frame(width: 34, height: 34)
+                    .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 5) {
+                        Text(plugin.name)
+                            .font(.callout.weight(.semibold))
+                        if plugin.verified {
+                            Image(systemName: "checkmark.seal.fill")
+                                .font(.caption)
+                                .foregroundStyle(.blue)
+                                .help("Verified publisher")
+                        }
+                    }
+                    Text("\(plugin.publisher) · \(plugin.category)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    if !plugin.description.isEmpty {
+                        Text(plugin.description)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if plugin.installedVersionBlocked {
+                        Label(
+                            plugin.installedBlockReason ?? "The installed version is blocked.",
+                            systemImage: "exclamationmark.shield.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                    } else if plugin.blocked {
+                        Label(
+                            plugin.blockReason ?? "This version is blocked.",
+                            systemImage: "exclamationmark.shield"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                    } else if plugin.updateAvailable, !plugin.releaseNotes.isEmpty {
+                        Text("What’s new: \(plugin.releaseNotes)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if plugin.previousVersion != nil,
+                       !plugin.canRollback,
+                       let rollbackBlockedReason = plugin.rollbackBlockedReason {
+                        Label(rollbackBlockedReason, systemImage: "arrow.uturn.backward.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                if isWorking {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Text("v\(plugin.version)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                if plugin.installed, let installedVersion = plugin.installedVersion {
+                    Text(plugin.updateAvailable ? "Installed v\(installedVersion)" : "Installed")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(plugin.updateAvailable ? .orange : .green)
+                }
+                Spacer()
+                pluginActions(plugin, isWorking: isWorking)
+            }
+        }
+        .padding(13)
+        .background(.quaternary.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder
+    private func pluginActions(_ plugin: MarketplacePlugin, isWorking: Bool) -> some View {
+        if plugin.installed {
+            if plugin.canRollback {
+                Button("Restore v\(plugin.previousVersion ?? "")") {
+                    Task { await store.rollbackMarketplacePlugin(plugin) }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(isWorking)
+            }
+            if plugin.updateAvailable {
+                Button("Update") {
+                    if plugin.permissionChangeRequired {
+                        pendingPermissionUpdate = plugin
+                    } else {
+                        Task { await store.updateMarketplacePlugin(plugin) }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(isWorking || plugin.blocked)
+            }
+            Button(role: .destructive) {
+                pendingRemoval = plugin
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(isWorking)
+            .help("Remove \(plugin.name)")
+        } else {
+            Button("Install") {
+                Task { await store.installMarketplacePlugin(plugin) }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(isWorking || plugin.blocked)
+        }
+    }
+
+    private func permissionConsentMessage(_ plugin: MarketplacePlugin) -> String {
+        let permissions = plugin.addedPermissions.map { "• \($0)" }.joined(separator: "\n")
+        let notes = plugin.releaseNotes.isEmpty ? "" : "\n\nWhat’s new\n\(plugin.releaseNotes)"
+        return "This update requests additional access:\n\(permissions)\(notes)"
+    }
 }
 
 private struct SurfaceSettingsView: View {

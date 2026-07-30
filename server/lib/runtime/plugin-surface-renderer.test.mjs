@@ -114,3 +114,79 @@ test("plugin-owned dashboard binding expands raw profile and table groups", () =
     }
   ]);
 });
+
+test("calendar binding exposes normalized temporal fields to native clients", () => {
+  const route = {
+    title: "Calendar",
+    document: {
+      schemaVersion: 1,
+      presentation: "calendar",
+      title: "Calendar",
+      collection: {
+        source: "events.items",
+        item: {
+          id: "id",
+          title: "title",
+          temporal: {
+            startsAt: "startsAt",
+            endsAt: "endsAt",
+            allDay: "allDay"
+          }
+        }
+      }
+    }
+  };
+
+  const document = renderPluginSurfaceDocument(route, {
+    events: {
+      items: [{
+        id: "event-1",
+        title: "Project review",
+        startsAt: "2026-07-29T09:00:00+09:00",
+        endsAt: "2026-07-29T10:00:00+09:00",
+        allDay: false
+      }]
+    }
+  });
+
+  assert.equal(document.presentation, "calendar");
+  assert.deepEqual(document.items[0].temporal, {
+    startsAt: "2026-07-29T09:00:00+09:00",
+    endsAt: "2026-07-29T10:00:00+09:00",
+    allDay: false
+  });
+});
+
+test("Surface v2 preserves declarative editor metadata in the compiled document", () => {
+  const route = {
+    title: "Tasks",
+    document: {
+      schemaVersion: 2,
+      presentation: "collection",
+      title: "Tasks",
+      editor: {
+        collection: "tasks",
+        fields: [{
+          id: "title",
+          label: "Title",
+          type: "text",
+          required: true,
+          placeholder: "Task title",
+          role: "title"
+        }]
+      },
+      collection: {
+        source: "tasks.items",
+        item: { id: "id", title: "title" }
+      }
+    }
+  };
+
+  const document = renderPluginSurfaceDocument(route, {
+    tasks: { items: [{ id: "task-1", title: "Ship Planner" }] }
+  });
+
+  assert.equal(document.schemaVersion, 2);
+  assert.deepEqual(document.editor, route.document.editor);
+  assert.deepEqual(document.items[0].editorValues, { title: "Ship Planner" });
+});

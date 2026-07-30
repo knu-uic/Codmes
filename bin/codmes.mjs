@@ -24,9 +24,36 @@ import { createModelTuiLaunch } from "../server/lib/runtime/model-config-tui.mjs
 import { migrateWorkspaceStateSync } from "../server/lib/runtime/state-dir.mjs";
 import {
   installPlugin,
+  getPluginInstallState,
   listInstalledPlugins,
-  removePlugin
+  removePlugin,
+  rollbackPlugin
 } from "../server/lib/runtime/plugin-registry.mjs";
+import {
+  assertMarketplaceVersionAllowed,
+  installMarketplacePlugin,
+  listMarketplacePlugins
+} from "../server/lib/runtime/plugin-marketplace.mjs";
+import {
+  createPublisherKeyPair,
+  packPluginPackage,
+  verifyPluginPackageSignature
+} from "../server/lib/runtime/plugin-package.mjs";
+import { preparePluginRelease } from "../server/lib/runtime/plugin-publisher.mjs";
+import {
+  approvePublisherApplication,
+  buildStaticMarketplaceRegistry,
+  createPublisherApplication,
+  removeBlockedMarketplaceVersion,
+  revokePublisherKey,
+  rotatePublisherKey,
+  setBlockedMarketplaceVersion,
+  validateRegistryForPublication
+} from "../server/lib/runtime/plugin-registry-operations.mjs";
+import {
+  createRegistryRootKeyPair,
+  signMarketplaceRegistryFile
+} from "../server/lib/runtime/plugin-registry-signature.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -1514,15 +1541,47 @@ async function runMcp(args) {
 }
 
 async function runPlugins(args) {
-  const options = parseOptions(args, { boolean: ["help", "json"] });
-  const [subcommand = "list", target] = options._;
-  const root = workspaceRoot(options);
+  const options = parseOptions(args, {
+    boolean: [
+      "help", "json", "force", "featured", "verified",
+      "production", "verify-assets", "keep-current-key"
+    ]
+  });
+  const [subcommand = "list", target, extra, fourth] = options._;
+  const root = ["publisher", "registry", "pack", "verify"].includes(subcommand)
+    ? null
+    : workspaceRoot(options);
 
   if (options.help) {
     console.log(`Usage:
   codmes plugin list [--json] [--root PATH]
-  codmes plugin install <PATH> [--root PATH]
+  codmes plugin marketplace [--json] [--registry PATH_OR_URL] [--root PATH]
+  codmes plugin install <PATH_OR_PLUGIN_ID> [--registry PATH_OR_URL] [--root PATH]
+    [--accept-permissions PERMISSION[,PERMISSION...]]
+  codmes plugin update <PLUGIN_ID> [--registry PATH_OR_URL] [--root PATH]
+    [--accept-permissions PERMISSION[,PERMISSION...]]
+  codmes plugin rollback <PLUGIN_ID> [VERSION] [--root PATH]
   codmes plugin remove <PLUGIN_ID> [--root PATH]
+  codmes plugin pack <PATH> [--output FILE] [--sign-key PRIVATE_KEY --publisher-id ID]
+  codmes plugin verify <PACKAGE> --public-key PUBLISHER_JSON
+  codmes plugin publisher init <PUBLISHER_ID> [--output DIRECTORY] [--force]
+  codmes plugin publisher prepare <PATH> --sign-key PRIVATE_KEY --publisher-id ID
+    --package-url URL --registry FILE [--output-dir DIRECTORY]
+    [--release-notes-file FILE] [--force]
+  codmes plugin publisher apply <PUBLISHER_ID> --sign-key PRIVATE_KEY --name NAME
+    --repository-url URL --output FILE [--contact VALUE]
+  codmes plugin registry validate --registry FILE [--production] [--verify-assets]
+  codmes plugin registry root-init <ROOT_ID> --output DIRECTORY [--force]
+  codmes plugin registry sign --registry FILE --sign-key PRIVATE_KEY
+    --root-id ROOT_ID [--output FILE]
+  codmes plugin registry build --registry FILE --output-dir DIRECTORY
+    [--production] [--force]
+  codmes plugin registry approve <APPLICATION> --registry FILE
+  codmes plugin registry rotate <PUBLISHER_JSON> --registry FILE [--keep-current-key]
+  codmes plugin registry revoke <PUBLISHER_ID> --key-id KEY_ID --reason TEXT --registry FILE
+  codmes plugin registry block <PLUGIN_ID> <VERSION> --reason TEXT
+    [--severity low|medium|high|critical] --registry FILE
+  codmes plugin registry unblock <PLUGIN_ID> <VERSION> --registry FILE
 `);
     return;
   }
@@ -1543,9 +1602,68 @@ async function runPlugins(args) {
     return;
   }
 
+  if (subcommand === "marketplace") {
+    const result = await listMarketplacePlugins(root, {
+      registrySource: stringOption(options.registry)
+    });
+    if (options.json) {
+      printJson(result);
+      return;
+    }
+    if (!result.plugins.length) {
+      console.log("(No Marketplace plugins)");
+      return;
+    }
+    for (const plugin of result.plugins) {
+      const state = plugin.updateAvailable
+        ? `update ${plugin.installedVersion} → ${plugin.version}`
+        : plugin.installed ? `installed ${plugin.installedVersion}` : plugin.version;
+      console.log(`- ${plugin.name} (${plugin.id}) · ${state}`);
+    }
+    return;
+  }
+
   if (subcommand === "install") {
-    if (!target) throw new Error("Usage: codmes plugin install <PATH>");
-    printJson(await installPlugin(root, expandHome(target)));
+    if (!target) throw new Error("Usage: codmes plugin install <PATH_OR_PLUGIN_ID>");
+    const localPath = expandHome(target);
+    let local = false;
+    try {
+      await fs.stat(localPath);
+      local = true;
+    } catch (error) {
+      const looksLikePath = target.includes("/") || target.includes("\\") || target.startsWith(".");
+      if (error?.code !== "ENOENT" || looksLikePath) {
+        throw new Error(`Local plugin path was not found: ${localPath}`);
+      }
+    }
+    printJson(local
+      ? await installPlugin(root, localPath)
+      : await installMarketplacePlugin(root, target, {
+          registrySource: stringOption(options.registry),
+          acceptedPermissions: permissionOptions(options["accept-permissions"])
+        }));
+    return;
+  }
+
+  if (subcommand === "update") {
+    if (!target) throw new Error("Usage: codmes plugin update <PLUGIN_ID>");
+    printJson(await installMarketplacePlugin(root, target, {
+      registrySource: stringOption(options.registry),
+      acceptedPermissions: permissionOptions(options["accept-permissions"])
+    }));
+    return;
+  }
+
+  if (subcommand === "rollback") {
+    if (!target) throw new Error("Usage: codmes plugin rollback <PLUGIN_ID> [VERSION]");
+    const state = await getPluginInstallState(root, target);
+    const version = extra || state?.previousVersion || null;
+    if (state?.source?.type === "marketplace" && version) {
+      await assertMarketplaceVersionAllowed(target, version, {
+        registrySource: stringOption(options.registry)
+      });
+    }
+    printJson(await rollbackPlugin(root, target, version));
     return;
   }
 
@@ -1555,7 +1673,249 @@ async function runPlugins(args) {
     return;
   }
 
+  if (subcommand === "pack") {
+    if (!target) throw new Error("Usage: codmes plugin pack <PATH> [--output FILE]");
+    const source = expandHome(target);
+    const output = options.output
+      ? expandHome(stringOption(options.output))
+      : path.resolve(`${path.basename(path.resolve(source))}.codmes-plugin`);
+    const signingKeyPath = stringOption(options["sign-key"]);
+    const publisherId = stringOption(options["publisher-id"]);
+    if (Boolean(signingKeyPath) !== Boolean(publisherId)) {
+      throw new Error("--sign-key and --publisher-id must be provided together.");
+    }
+    const signingKey = signingKeyPath
+      ? await fs.readFile(expandHome(signingKeyPath), "utf8")
+      : null;
+    printJson(await packPluginPackage(source, output, {
+      signingKey,
+      publisherId
+    }));
+    return;
+  }
+
+  if (subcommand === "verify") {
+    if (!target) throw new Error("Usage: codmes plugin verify <PACKAGE> --public-key PUBLISHER_JSON");
+    const publicKeyPath = stringOption(options["public-key"]);
+    if (!publicKeyPath) throw new Error("--public-key is required.");
+    const archive = await fs.readFile(expandHome(target));
+    const identity = JSON.parse(await fs.readFile(expandHome(publicKeyPath), "utf8"));
+    printJson(verifyPluginPackageSignature(archive, identity));
+    return;
+  }
+
+  if (subcommand === "publisher") {
+    if (target === "init" && extra) {
+      const generated = createPublisherKeyPair(extra);
+      const outputDirectory = path.resolve(expandHome(
+        stringOption(options.output) || `${extra}-publisher`
+      ));
+      await fs.mkdir(outputDirectory, { recursive: true });
+      const privateKeyPath = path.join(outputDirectory, "private-key.pem");
+      const publicIdentityPath = path.join(outputDirectory, "publisher.json");
+      const flag = options.force ? "w" : "wx";
+      await fs.writeFile(privateKeyPath, generated.privateKey, { encoding: "utf8", mode: 0o600, flag });
+      try {
+        await fs.writeFile(
+          publicIdentityPath,
+          JSON.stringify(generated.identity, null, 2) + "\n",
+          { encoding: "utf8", mode: 0o644, flag }
+        );
+      } catch (error) {
+        if (!options.force) await fs.rm(privateKeyPath, { force: true }).catch(() => {});
+        throw error;
+      }
+      await fs.chmod(privateKeyPath, 0o600);
+      printJson({
+        publisherId: generated.identity.publisherId,
+        keyId: generated.identity.keyId,
+        privateKeyPath,
+        publicIdentityPath
+      });
+      return;
+    }
+    if (target === "prepare" && extra) {
+      const signingKeyPath = stringOption(options["sign-key"]);
+      const publisherId = stringOption(options["publisher-id"]);
+      const packageUrl = stringOption(options["package-url"]);
+      const registryPath = stringOption(options.registry);
+      if (!signingKeyPath || !publisherId || !packageUrl || !registryPath) {
+        throw new Error("Publisher prepare requires --sign-key, --publisher-id, --package-url, and --registry.");
+      }
+      const releaseNotesFile = stringOption(options["release-notes-file"]);
+      printJson(await preparePluginRelease({
+        sourcePath: expandHome(extra),
+        outputDirectory: expandHome(
+          stringOption(options["output-dir"]) || path.join("dist", "plugins")
+        ),
+        registryPath: expandHome(registryPath),
+        packageUrl,
+        signingKey: await fs.readFile(expandHome(signingKeyPath), "utf8"),
+        publisherId,
+        category: stringOption(options.category),
+        icon: stringOption(options.icon),
+        repositoryUrl: stringOption(options["repository-url"]),
+        privacyUrl: stringOption(options["privacy-url"]),
+        releaseNotes: releaseNotesFile
+          ? await fs.readFile(expandHome(releaseNotesFile), "utf8")
+          : null,
+        featured: options.featured === true,
+        verified: options.verified === true,
+        force: options.force === true
+      }));
+      return;
+    }
+    if (target === "apply" && extra) {
+      const signingKeyPath = stringOption(options["sign-key"]);
+      const name = stringOption(options.name);
+      const repositoryUrl = stringOption(options["repository-url"]);
+      const output = stringOption(options.output);
+      if (!signingKeyPath || !name || !repositoryUrl || !output) {
+        throw new Error("Publisher apply requires --sign-key, --name, --repository-url, and --output.");
+      }
+      const application = createPublisherApplication({
+        signingKey: await fs.readFile(expandHome(signingKeyPath), "utf8"),
+        publisherId: extra,
+        name,
+        repositoryUrl,
+        contact: stringOption(options.contact)
+      });
+      const outputPath = path.resolve(expandHome(output));
+      await fs.mkdir(path.dirname(outputPath), { recursive: true });
+      await fs.writeFile(outputPath, JSON.stringify(application, null, 2) + "\n", {
+        encoding: "utf8",
+        flag: options.force ? "w" : "wx"
+      });
+      printJson({
+        created: true,
+        applicationPath: outputPath,
+        publisherId: application.publisher.id,
+        keyId: application.key.keyId
+      });
+      return;
+    }
+    throw new Error("Usage: codmes plugin publisher <init|prepare> ...");
+  }
+
+  if (subcommand === "registry") {
+    if (target === "root-init" && extra) {
+      const generated = createRegistryRootKeyPair(extra);
+      const outputDirectory = path.resolve(expandHome(
+        stringOption(options.output) || `${extra}-registry-root`
+      ));
+      await fs.mkdir(outputDirectory, { recursive: true });
+      const privateKeyPath = path.join(outputDirectory, "private-key.pem");
+      const publicIdentityPath = path.join(outputDirectory, "registry-root.json");
+      const flag = options.force ? "w" : "wx";
+      await fs.writeFile(privateKeyPath, generated.privateKey, {
+        encoding: "utf8",
+        mode: 0o600,
+        flag
+      });
+      try {
+        await fs.writeFile(
+          publicIdentityPath,
+          JSON.stringify(generated.identity, null, 2) + "\n",
+          { encoding: "utf8", mode: 0o644, flag }
+        );
+      } catch (error) {
+        if (!options.force) await fs.rm(privateKeyPath, { force: true }).catch(() => {});
+        throw error;
+      }
+      await fs.chmod(privateKeyPath, 0o600);
+      printJson({
+        rootId: generated.identity.rootId,
+        keyId: generated.identity.keyId,
+        privateKeyPath,
+        publicIdentityPath
+      });
+      return;
+    }
+    const registryPath = stringOption(options.registry);
+    if (!registryPath) throw new Error("Registry command requires --registry FILE.");
+    const registry = expandHome(registryPath);
+    if (target === "sign") {
+      const signingKeyPath = stringOption(options["sign-key"]);
+      const rootId = stringOption(options["root-id"]);
+      if (!signingKeyPath || !rootId) {
+        throw new Error("Registry sign requires --sign-key and --root-id.");
+      }
+      const output = expandHome(
+        stringOption(options.output)
+          || path.join(path.dirname(registry), "index.sig.json")
+      );
+      printJson(await signMarketplaceRegistryFile(registry, output, {
+        signingKey: await fs.readFile(expandHome(signingKeyPath), "utf8"),
+        rootId
+      }));
+      return;
+    }
+    if (target === "validate") {
+      const result = await validateRegistryForPublication(registry, {
+        production: options.production === true,
+        verifyAssets: options["verify-assets"] === true
+      });
+      printJson(result);
+      if (!result.valid) process.exitCode = 1;
+      return;
+    }
+    if (target === "build") {
+      const outputDirectory = stringOption(options["output-dir"]);
+      if (!outputDirectory) throw new Error("Registry build requires --output-dir DIRECTORY.");
+      printJson(await buildStaticMarketplaceRegistry({
+        registryPath: registry,
+        outputDirectory: expandHome(outputDirectory),
+        production: options.production === true,
+        force: options.force === true
+      }));
+      return;
+    }
+    if (target === "approve" && extra) {
+      printJson(await approvePublisherApplication(registry, expandHome(extra)));
+      return;
+    }
+    if (target === "rotate" && extra) {
+      const identity = JSON.parse(await fs.readFile(expandHome(extra), "utf8"));
+      printJson(await rotatePublisherKey(registry, identity, {
+        retireCurrent: options["keep-current-key"] !== true
+      }));
+      return;
+    }
+    if (target === "revoke" && extra) {
+      const keyId = stringOption(options["key-id"]);
+      const reason = stringOption(options.reason);
+      if (!keyId || !reason) {
+        throw new Error("Registry revoke requires --key-id and --reason.");
+      }
+      printJson(await revokePublisherKey(registry, extra, keyId, reason));
+      return;
+    }
+    if (target === "block" && extra && fourth) {
+      const reason = stringOption(options.reason);
+      if (!reason) throw new Error("Registry block requires --reason.");
+      printJson(await setBlockedMarketplaceVersion(registry, extra, fourth, {
+        reason,
+        severity: stringOption(options.severity) || "high"
+      }));
+      return;
+    }
+    if (target === "unblock" && extra && fourth) {
+      printJson(await removeBlockedMarketplaceVersion(registry, extra, fourth));
+      return;
+    }
+    throw new Error("Usage: codmes plugin registry <root-init|sign|validate|build|approve|rotate|revoke|block|unblock> ...");
+  }
+
   throw new Error(`Unknown plugin subcommand: ${subcommand}`);
+}
+
+function permissionOptions(value) {
+  return [...new Set(
+    arrayOption(value)
+      .flatMap((entry) => entry.split(","))
+      .map((permission) => permission.trim())
+      .filter(Boolean)
+  )];
 }
 
 async function readStdinSecret() {

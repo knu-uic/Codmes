@@ -10,10 +10,13 @@ Codmes의 선택형 plugin은 서버 Workspace에 한 번 설치하며, 연결�
 {
   "schemaVersion": 1,
   "id": "kr.ac.kongju.knu",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "name": "KNU",
   "platforms": ["macos", "ios", "ipados"],
   "permissions": ["network:127.0.0.1"],
+  "dataVersion": 1,
+  "migrations": "migrations.json",
+  "tools": "tools.json",
   "surface": {
     "id": "knu",
     "type": "declarative",
@@ -58,10 +61,29 @@ Codmes의 선택형 plugin은 서버 Workspace에 한 번 설치하며, 연결�
 - `surface.auth`는 로그인 endpoint 계약만 선언한다. 비밀번호는 로그인 요청에만
   사용하고 저장하지 않으며, 반환된 사용자 JWT만 Codmes 서버 credential store에
   저장한다.
+- `tools`는 package 내부 `tools.json`을 가리킨다. Manifest v1에서는 plugin 자신의
+  MCP 또는 선언된 Workspace collection 도구만 등록할 수 있고, 다른 plugin,
+  MCP server나 Surface 권한을 요청할 수 없다.
+  각 도구는 독립된 JSON input schema를 가진다. 자세한 규격은
+  [Common Tool Registry](./tool-registry.md)를 따른다.
+- `storage`는 선택적인 package 내부 `storage.json`이다. Planner처럼
+  외부 backend가 필요 없는 plugin은 MCP 없이 Surface + storage + plugin tool로
+  구성할 수 있다.
+- `dataVersion`은 plugin 코드 버전과 별개인 Workspace collection schema 버전이다.
+  생략하면 `1`이다. 저장 구조가 바뀔 때만 1씩 올린다.
+- `migrations`는 선택적인 package 내부 `migrations.json` 또는 같은 구조의
+  object다. `dataVersion`을 올리는 업데이트는 중간 단계가 빠짐없이 선언되어야
+  하며, 자세한 규격은 [Plugin 데이터 migration](./data-migrations.md)을 따른다.
 
 ## 설치 수명주기
 
 ```sh
+codmes plugin marketplace --root /path/to/workspace
+codmes plugin install kr.ac.kongju.knu --root /path/to/workspace
+codmes plugin update kr.ac.kongju.knu --root /path/to/workspace
+codmes plugin rollback kr.ac.kongju.knu --root /path/to/workspace
+
+# 개발 중인 로컬 source 설치
 codmes plugin install /path/to/plugin-package --root /path/to/workspace
 codmes plugin list --root /path/to/workspace
 codmes plugin remove kr.ac.kongju.knu --root /path/to/workspace
@@ -76,8 +98,10 @@ printf '%s' "$MCP_AUTH_TOKEN" \
 ```
 
 설치와 제거는 Surface manifest와 MCP config를 함께 갱신하며 실패 시 이전 상태로
-복구한다. 향후 marketplace는 이 같은 작업을 내려받기, 서명/무결성 검증,
-권한 동의, 업데이트 UI로 감싸는 계층이어야 한다.
+복구한다. Marketplace 설치는 package SHA-256과 metadata를 확인하고 버전별
+디렉터리에 staging한 뒤 활성 버전 포인터를 바꾼다. 앱의 `Settings > Plugins`에서
+같은 설치·업데이트·롤백 작업을 실행할 수 있다. 자세한 내용은
+[Plugin Marketplace](./marketplace.md)를 따른다.
 
 ## Declarative Surface 보안
 
@@ -96,4 +120,6 @@ action만 표시한다. Workspace bearer와 MCP credential은 plugin data endpoi
 - Codmes Surface와 MCP는 로컬 FastAPI만으로 실행할 수 있으며 Docker는 선택 사항
 - KNU 계정 로그인, 포털, LMS 데이터는 KNU가 소유한다. Codmes는 native 설정
   화면과 sidebar 상태만 제공한다.
-- marketplace, package 다운로드/서명, Codmes 계정 동기화는 이번 PoC 범위 밖이다.
+- Marketplace는 package 다운로드, SHA-256·publisher 서명 검증, 새 권한 재동의,
+  취약 버전 차단, release note, 업데이트와 호환 가능한 직전 버전 롤백을 제공한다.
+  Codmes 계정 기반 클라우드 동기화는 아직 포함하지 않는다.

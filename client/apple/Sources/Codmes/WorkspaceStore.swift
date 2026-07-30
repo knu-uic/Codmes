@@ -59,6 +59,9 @@ final class WorkspaceStore: ObservableObject {
     @Published var runtimeModelSetupMessage = ""
     @Published var workspaceSurfaces: [WorkspaceSurface] = []
     @Published var surfaceSetupMessage = ""
+    @Published var marketplacePlugins: [MarketplacePlugin] = []
+    @Published var marketplaceMessage = ""
+    @Published var marketplaceOperations: Set<String> = []
     @Published private(set) var pluginAuthStatuses: [String: PluginAuthStatus] = [:]
     @Published private(set) var pluginAuthOperations: [String: String] = [:]
     @Published private(set) var pluginAuthErrors: [String: String] = [:]
@@ -533,6 +536,71 @@ final class WorkspaceStore: ObservableObject {
             surfaceSetupMessage = ""
         } catch {
             surfaceSetupMessage = error.localizedDescription
+        }
+    }
+
+    func refreshMarketplace() async {
+        guard let api else { return }
+        do {
+            marketplacePlugins = try await api.marketplacePlugins()
+            marketplaceMessage = ""
+        } catch {
+            marketplaceMessage = error.localizedDescription
+        }
+    }
+
+    func installMarketplacePlugin(_ plugin: MarketplacePlugin) async {
+        await performMarketplaceOperation(plugin.id, progress: "Installing \(plugin.name)…") { api in
+            try await api.installMarketplacePlugin(pluginId: plugin.id, version: plugin.version)
+            return "Installed \(plugin.name) \(plugin.version)."
+        }
+    }
+
+    func updateMarketplacePlugin(
+        _ plugin: MarketplacePlugin,
+        acceptedPermissions: [String] = []
+    ) async {
+        await performMarketplaceOperation(plugin.id, progress: "Updating \(plugin.name)…") { api in
+            try await api.updateMarketplacePlugin(
+                pluginId: plugin.id,
+                version: plugin.version,
+                acceptedPermissions: acceptedPermissions
+            )
+            return "Updated \(plugin.name) to \(plugin.version)."
+        }
+    }
+
+    func rollbackMarketplacePlugin(_ plugin: MarketplacePlugin) async {
+        await performMarketplaceOperation(plugin.id, progress: "Restoring \(plugin.name)…") { api in
+            try await api.rollbackPlugin(pluginId: plugin.id, version: plugin.previousVersion)
+            return "Restored \(plugin.name) \(plugin.previousVersion ?? "")."
+        }
+    }
+
+    func removeMarketplacePlugin(_ plugin: MarketplacePlugin) async {
+        await performMarketplaceOperation(plugin.id, progress: "Removing \(plugin.name)…") { api in
+            try await api.removePlugin(pluginId: plugin.id)
+            return "Removed \(plugin.name). Saved credentials and service data were not deleted."
+        }
+    }
+
+    private func performMarketplaceOperation(
+        _ pluginId: String,
+        progress: String,
+        operation: (WorkspaceAPI) async throws -> String
+    ) async {
+        guard let api, !marketplaceOperations.contains(pluginId) else { return }
+        marketplaceOperations.insert(pluginId)
+        marketplaceMessage = progress
+        defer { marketplaceOperations.remove(pluginId) }
+        do {
+            let successMessage = try await operation(api)
+            await refreshMarketplace()
+            await refreshSurfaces()
+            await refreshMCPServers()
+            marketplaceMessage = successMessage
+        } catch {
+            marketplaceMessage = error.localizedDescription
         }
     }
 

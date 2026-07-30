@@ -540,6 +540,56 @@ struct WorkspaceAPI {
         return response.surfaces
     }
 
+    func marketplacePlugins() async throws -> [MarketplacePlugin] {
+        let response: MarketplacePluginsResponse = try await get("/api/marketplace/plugins")
+        return response.plugins
+    }
+
+    func installMarketplacePlugin(
+        pluginId: String,
+        version: String? = nil,
+        acceptedPermissions: [String] = []
+    ) async throws {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        let _: EmptyResponse = try await post(
+            "/api/marketplace/plugins/\(encoded)/install",
+            body: MarketplaceMutationBody(
+                version: version,
+                acceptedPermissions: acceptedPermissions
+            )
+        )
+    }
+
+    func updateMarketplacePlugin(
+        pluginId: String,
+        version: String? = nil,
+        acceptedPermissions: [String] = []
+    ) async throws {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        let _: EmptyResponse = try await post(
+            "/api/marketplace/plugins/\(encoded)/update",
+            body: MarketplaceMutationBody(
+                version: version,
+                acceptedPermissions: acceptedPermissions
+            )
+        )
+    }
+
+    func rollbackPlugin(pluginId: String, version: String? = nil) async throws {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        var body: [String: String] = [:]
+        if let version, !version.isEmpty { body["version"] = version }
+        let _: EmptyResponse = try await post("/api/plugins/\(encoded)/rollback", body: body)
+    }
+
+    func removePlugin(pluginId: String) async throws {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        let _: EmptyResponse = try await request(
+            try components("/api/plugins/\(encoded)"),
+            method: "DELETE"
+        )
+    }
+
     func pluginSurfaceDocument(pluginId: String, routeId: String? = nil) async throws -> PluginSurfaceDocument {
         let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
         var components = try components("/api/plugins/\(encoded)/surface-document")
@@ -547,6 +597,63 @@ struct WorkspaceAPI {
             components.queryItems = [URLQueryItem(name: "route", value: routeId)]
         }
         return try await request(components)
+    }
+
+    func createPluginCollectionItem<Item: Encodable>(
+        pluginId: String,
+        collectionId: String,
+        item: Item
+    ) async throws {
+        let path = pluginCollectionPath(pluginId: pluginId, collectionId: collectionId)
+        let _: EmptyResponse = try await post(path, body: PluginCollectionWriteBody(item: item))
+    }
+
+    func updatePluginCollectionItem<Item: Encodable>(
+        pluginId: String,
+        collectionId: String,
+        itemId: String,
+        item: Item
+    ) async throws {
+        let components = try components(pluginCollectionPath(
+            pluginId: pluginId,
+            collectionId: collectionId,
+            itemId: itemId
+        ))
+        let _: EmptyResponse = try await request(
+            components,
+            method: "PATCH",
+            body: PluginCollectionWriteBody(item: item)
+        )
+    }
+
+    func deletePluginCollectionItem(
+        pluginId: String,
+        collectionId: String,
+        itemId: String
+    ) async throws {
+        let _: EmptyResponse = try await request(
+            try components(pluginCollectionPath(
+                pluginId: pluginId,
+                collectionId: collectionId,
+                itemId: itemId
+            )),
+            method: "DELETE"
+        )
+    }
+
+    private func pluginCollectionPath(
+        pluginId: String,
+        collectionId: String,
+        itemId: String? = nil
+    ) -> String {
+        let plugin = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        let collection = collectionId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? collectionId
+        var path = "/api/plugins/\(plugin)/collections/\(collection)"
+        if let itemId {
+            let item = itemId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? itemId
+            path += "/\(item)"
+        }
+        return path
     }
 
     func pluginAuthStatus(pluginId: String) async throws -> PluginAuthStatus {
@@ -705,6 +812,15 @@ struct WorkspaceAPI {
 }
 
 struct EmptyResponse: Codable {}
+
+private struct MarketplaceMutationBody: Encodable {
+    let version: String?
+    let acceptedPermissions: [String]
+}
+
+private struct PluginCollectionWriteBody<Item: Encodable>: Encodable {
+    let item: Item
+}
 
 struct CodmesPDFImportResponse: Codable {
     let ok: Bool

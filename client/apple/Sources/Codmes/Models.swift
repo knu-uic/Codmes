@@ -844,6 +844,44 @@ struct WorkspaceSurfacesResponse: Codable {
     let surfaces: [WorkspaceSurface]
 }
 
+struct MarketplacePluginsResponse: Codable {
+    let schemaVersion: Int
+    let source: String
+    let plugins: [MarketplacePlugin]
+}
+
+struct MarketplacePlugin: Codable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let version: String
+    let description: String
+    let publisher: String
+    let category: String
+    let icon: String
+    let verified: Bool
+    let featured: Bool
+    let platforms: [String]
+    let permissions: [String]
+    let repositoryUrl: String?
+    let privacyUrl: String?
+    let installed: Bool
+    let installedVersion: String?
+    let updateAvailable: Bool
+    let canRollback: Bool
+    let previousVersion: String?
+    let releaseNotes: String
+    let dataVersion: Int
+    let addedPermissions: [String]
+    let permissionChangeRequired: Bool
+    let blocked: Bool
+    let blockReason: String?
+    let installedVersionBlocked: Bool
+    let installedBlockReason: String?
+    let rollbackBlockedReason: String?
+
+    var systemImage: String { icon.isEmpty ? "shippingbox" : icon }
+}
+
 struct WorkspaceSurface: Codable, Identifiable, Hashable {
     let id: String
     let title: String
@@ -936,6 +974,63 @@ struct PluginSurfaceDocument: Codable {
     let emptyState: PluginSurfaceEmptyState?
     let items: [PluginSurfaceItem]
     let sections: [PluginSurfaceSection]?
+    let editor: PluginSurfaceEditor?
+}
+
+struct PluginSurfaceEditor: Codable, Hashable {
+    let collection: String
+    let fields: [PluginSurfaceEditorField]?
+}
+
+struct PluginSurfaceEditorField: Codable, Identifiable, Hashable {
+    let id: String
+    let label: String
+    let type: String
+    let required: Bool
+    let placeholder: String?
+    let role: String?
+}
+
+enum PluginSurfaceEditorValue: Codable, Hashable {
+    case string(String)
+    case boolean(Bool)
+    case number(Double)
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(Bool.self) {
+            self = .boolean(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else {
+            self = .string(try container.decode(String.self))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case let .string(value):
+            try container.encode(value)
+        case let .boolean(value):
+            try container.encode(value)
+        case let .number(value):
+            try container.encode(value)
+        }
+    }
+
+    var stringValue: String {
+        switch self {
+        case let .string(value): value
+        case let .boolean(value): value ? "true" : "false"
+        case let .number(value): String(value)
+        }
+    }
+
+    var booleanValue: Bool {
+        if case let .boolean(value) = self { return value }
+        return stringValue.lowercased() == "true"
+    }
 }
 
 struct PluginSurfaceSearch: Codable {
@@ -969,6 +1064,14 @@ struct PluginSurfaceItem: Codable, Identifiable {
     let tags: [String]
     let filterValues: [String: String]
     let action: PluginSurfaceAction?
+    let temporal: PluginSurfaceTemporal?
+    let editorValues: [String: PluginSurfaceEditorValue]?
+}
+
+struct PluginSurfaceTemporal: Codable, Hashable {
+    let startsAt: String
+    let endsAt: String?
+    let allDay: Bool
 }
 
 struct PluginSurfaceAction: Codable {
@@ -1444,6 +1547,16 @@ struct WorkspaceApproval: Codable, Identifiable, Hashable {
     let commands: [String]?
     let reason: String?
     let hasPendingState: Bool?
+    let pluginPreview: PluginApprovalPreview?
+}
+
+struct PluginApprovalPreview: Codable, Hashable {
+    let pluginId: String
+    let collection: String
+    let operation: String
+    let itemId: String?
+    let beforeText: String?
+    let afterText: String?
 }
 
 struct WorkspaceApprovalRespondResponse: Codable {

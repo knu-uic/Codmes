@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "com.codmes.planner",
+  "version": "0.2.0",
+  "name": "Planner",
+  "description": "할 일, 일정, 간단한 텍스트 메모를 한곳에서 관리하는 native Planner Surface와 AI 도구를 제공합니다.",
+  "publisher": "Codmes",
+  "platforms": ["macos", "ios", "ipados"],
+  "permissions": ["storage:workspace"],
+  "storage": "storage.json",
+  "tools": "tools.json",
+  "surface": {
+    "id": "planner",
+    "type": "declarative",
+    "title": "Planner",
+    "description": "할 일, 달력, 메모",
+    "icon": "checklist",
+    "upstreamUrl": "http://127.0.0.1",
+    "entryPath": "/",
+    "ui": "surface.json",
+    "order": 300
+  }
+}

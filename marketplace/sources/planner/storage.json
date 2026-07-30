@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "collections": [
+    {
+      "id": "tasks",
+      "itemSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "title": {"type": "string"},
+          "dueAt": {"type": "string"},
+          "completed": {"type": "boolean"},
+          "priority": {"type": "number"},
+          "project": {"type": "string"},
+          "notes": {"type": "string"}
+        },
+        "required": ["title", "dueAt", "completed"]
+      }
+    },
+    {
+      "id": "events",
+      "itemSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "title": {"type": "string"},
+          "startsAt": {"type": "string"},
+          "endsAt": {"type": "string"},
+          "allDay": {"type": "boolean"},
+          "location": {"type": "string"},
+          "notes": {"type": "string"}
+        },
+        "required": ["title", "startsAt", "endsAt"]
+      }
+    },
+    {
+      "id": "memos",
+      "itemSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "title": {"type": "string"},
+          "content": {"type": "string"},
+          "pinned": {"type": "boolean"}
+        },
+        "required": ["title", "content"]
+      }
+    }
+  ]
+}

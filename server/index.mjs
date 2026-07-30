@@ -294,6 +294,80 @@ async function handleRequest(req, res) {
       const { installPlugin } = await import("./lib/runtime/plugin-registry.mjs");
       return sendJson(res, await installPlugin(WORKSPACE_ROOT, body.path), 201);
     }
+    if (req.method === "GET" && url.pathname === "/api/marketplace/plugins") {
+      const { listMarketplacePlugins } = await import("./lib/runtime/plugin-marketplace.mjs");
+      return sendJson(res, await listMarketplacePlugins(WORKSPACE_ROOT));
+    }
+    const marketplaceInstallMatch = url.pathname.match(
+      /^\/api\/marketplace\/plugins\/([^/]+)\/(install|update)$/
+    );
+    if (req.method === "POST" && marketplaceInstallMatch) {
+      const body = await readJsonBody(req);
+      const { installMarketplacePlugin } = await import("./lib/runtime/plugin-marketplace.mjs");
+      return sendJson(res, await installMarketplacePlugin(
+        WORKSPACE_ROOT,
+        decodeURIComponent(marketplaceInstallMatch[1]),
+        {
+          version: body.version || null,
+          acceptedPermissions: Array.isArray(body.acceptedPermissions)
+            ? body.acceptedPermissions
+            : []
+        }
+      ), marketplaceInstallMatch[2] === "install" ? 201 : 200);
+    }
+    const pluginRollbackMatch = url.pathname.match(/^\/api\/plugins\/([^/]+)\/rollback$/);
+    if (req.method === "POST" && pluginRollbackMatch) {
+      const body = await readJsonBody(req);
+      const { getPluginInstallState, rollbackPlugin } = await import("./lib/runtime/plugin-registry.mjs");
+      const pluginId = decodeURIComponent(pluginRollbackMatch[1]);
+      const state = await getPluginInstallState(WORKSPACE_ROOT, pluginId);
+      const version = body.version || state?.previousVersion || null;
+      if (state?.source?.type === "marketplace" && version) {
+        const { assertMarketplaceVersionAllowed } = await import("./lib/runtime/plugin-marketplace.mjs");
+        await assertMarketplaceVersionAllowed(pluginId, version);
+      }
+      return sendJson(res, await rollbackPlugin(
+        WORKSPACE_ROOT,
+        pluginId,
+        version
+      ));
+    }
+    const pluginCollectionMatch = url.pathname.match(/^\/api\/plugins\/([^/]+)\/collections\/([^/]+)$/);
+    if (req.method === "GET" && pluginCollectionMatch) {
+      const { getInstalledPlugin } = await import("./lib/runtime/plugin-registry.mjs");
+      const { readPluginCollection } = await import("./lib/runtime/plugin-collection-store.mjs");
+      const manifest = await getInstalledPlugin(WORKSPACE_ROOT, decodeURIComponent(pluginCollectionMatch[1]));
+      if (!manifest) throw Object.assign(new Error("Plugin is not installed."), { status: 404 });
+      return sendJson(res, await readPluginCollection(
+        WORKSPACE_ROOT,
+        manifest,
+        decodeURIComponent(pluginCollectionMatch[2])
+      ));
+    }
+    if (req.method === "POST" && pluginCollectionMatch) {
+      return sendJson(res, await mutateInstalledPluginCollection(
+        decodeURIComponent(pluginCollectionMatch[1]),
+        decodeURIComponent(pluginCollectionMatch[2]),
+        "create",
+        await readJsonBody(req)
+      ));
+    }
+    const pluginCollectionItemMatch = url.pathname.match(
+      /^\/api\/plugins\/([^/]+)\/collections\/([^/]+)\/([^/]+)$/
+    );
+    if (pluginCollectionItemMatch
+        && (req.method === "PATCH" || req.method === "DELETE")) {
+      const body = req.method === "PATCH" ? await readJsonBody(req) : {};
+      return sendJson(res, await mutateInstalledPluginCollection(
+        decodeURIComponent(pluginCollectionItemMatch[1]),
+        decodeURIComponent(pluginCollectionItemMatch[2]),
+        req.method === "PATCH" ? "update" : "delete",
+        {
+          ...body,
+          id: decodeURIComponent(pluginCollectionItemMatch[3])
+        }
+      ));
+    }
     const pluginRemoveMatch = url.pathname.match(/^\/api\/plugins\/([^/]+)$/);
     if (req.method === "DELETE" && pluginRemoveMatch) {
       const { removePlugin } = await import("./lib/runtime/plugin-registry.mjs");
@@ -3078,6 +3152,13 @@ async function fetchPluginSurfaceDocument(pluginId, routeId) {
   }
   if (uiRoute) {
     const entries = await Promise.all(uiRoute.dataSources.map(async (source) => {
+      if (source.path.startsWith("collection:")) {
+        const { readPluginCollection } = await import("./lib/runtime/plugin-collection-store.mjs");
+        return [
+          source.id,
+          await readPluginCollection(WORKSPACE_ROOT, manifest, source.path.slice("collection:".length))
+        ];
+      }
       const sourceUrl = new URL(source.path, manifest.surface.upstreamUrl);
       return [source.id, await fetchPluginSurfaceJson(sourceUrl, credential)];
     }));
@@ -3088,6 +3169,22 @@ async function fetchPluginSurfaceDocument(pluginId, routeId) {
   const document = await fetchPluginSurfaceJson(url, credential);
   validatePluginSurfaceDocument(document);
   return document;
+}
+
+async function mutateInstalledPluginCollection(pluginId, collectionId, operation, args) {
+  const { getInstalledPlugin } = await import("./lib/runtime/plugin-registry.mjs");
+  const { mutatePluginCollection } = await import("./lib/runtime/plugin-collection-store.mjs");
+  const manifest = await getInstalledPlugin(WORKSPACE_ROOT, pluginId);
+  if (!manifest) {
+    throw Object.assign(new Error("Plugin is not installed."), { status: 404 });
+  }
+  return await mutatePluginCollection(
+    WORKSPACE_ROOT,
+    manifest,
+    collectionId,
+    operation,
+    args
+  );
 }
 
 async function fetchPluginSurfaceJson(url, credential) {
@@ -3237,7 +3334,8 @@ function validatePluginSurfaceDocument(document) {
     throw Object.assign(new Error("Plugin surface document must be an object."), { status: 502 });
   }
   const presentation = String(document.presentation || "");
-  if (Number(document.schemaVersion) !== 1 || !["collection", "dashboard"].includes(presentation)) {
+  if (![1, 2].includes(Number(document.schemaVersion))
+      || !["collection", "dashboard", "calendar"].includes(presentation)) {
     throw Object.assign(
       new Error("Unsupported plugin surface document schema."),
       { status: 502 }
@@ -3251,6 +3349,27 @@ function validatePluginSurfaceDocument(document) {
       new Error("Plugin surface items must be an array of at most 500 entries."),
       { status: 502 }
     );
+  }
+  if (presentation === "calendar") {
+    if (document.editor != null
+        && !/^[a-z][a-z0-9_-]{0,63}$/.test(String(document.editor.collection || ""))) {
+      throw Object.assign(new Error("Plugin calendar editor collection is invalid."), { status: 502 });
+    }
+    for (const item of document.items) {
+      if (!item?.temporal || !String(item.temporal.startsAt || "").trim()) {
+        throw Object.assign(
+          new Error("Plugin calendar items must include a temporal startsAt value."),
+          { status: 502 }
+        );
+      }
+    }
+  }
+  if (Number(document.schemaVersion) === 2 && document.editor != null) {
+    if (!Array.isArray(document.editor.fields)
+        || !document.editor.fields.length
+        || document.editor.fields.length > 32) {
+      throw Object.assign(new Error("Plugin Surface v2 editor fields are invalid."), { status: 502 });
+    }
   }
   if (presentation === "dashboard") {
     if (!Array.isArray(document.sections) || document.sections.length > 50) {
@@ -3315,7 +3434,9 @@ function sendError(res, error) {
     : error?.code === "EEXIST" ? 409
       : 500;
   sendJson(res, {
-    error: error?.message || "Internal server error"
+    error: error?.message || "Internal server error",
+    ...(error?.code ? { code: String(error.code) } : {}),
+    ...(error?.details ? { details: error.details } : {})
   }, status);
 }
 

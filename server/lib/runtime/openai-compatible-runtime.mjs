@@ -14,7 +14,9 @@ import {
   executeWorkspaceTool,
   WORKSPACE_TOOL_DEFINITIONS
 } from "./workspace-tools.mjs";
+import { getInstalledPlugin, listInstalledPlugins } from "./plugin-registry.mjs";
 import { loadSurfaces } from "./surface-registry.mjs";
+import { ToolRegistry } from "./tool-registry.mjs";
 
 const OPENAI_COMPATIBLE_DEFAULTS = {
   "openai-api": "https://api.openai.com/v1",
@@ -42,6 +44,7 @@ export class OpenAICompatibleRuntime extends EventEmitter {
     this.sessions = new Map();
     this.mcpClients = new Map();
     this.mcpToolNameMap = new Map();
+    this.toolRegistry = new ToolRegistry();
   }
 
   async connect() {
@@ -338,25 +341,44 @@ export class OpenAICompatibleRuntime extends EventEmitter {
     const globallyDisabledTools = new Set(config.disabledTools || []);
     const coreRecallTools = new Set(CORE_RECALL_TOOLS);
 
-    const activeTools = [...WORKSPACE_TOOL_DEFINITIONS];
+    const toolRegistry = new ToolRegistry();
+    for (const tool of WORKSPACE_TOOL_DEFINITIONS) {
+      toolRegistry.registerOpenAITool(tool, {
+        provider: {
+          type: "native",
+          id: "workspace",
+          tool: tool.function.name
+        }
+      });
+    }
     
     // Inject mandatory ones if not present (only when surface is specified)
     if (params.surface) {
-      if (!activeTools.some(t => t.function.name === "tool_discovery")) {
-        activeTools.push(TOOL_DISCOVERY_DEFINITION);
-      }
-      if (!activeTools.some(t => t.function.name === "conversation_search")) {
-        activeTools.push(CONVERSATION_SEARCH_DEFINITION);
-      }
-      if (!activeTools.some(t => t.function.name === "conversation_read")) {
-        activeTools.push(CONVERSATION_READ_DEFINITION);
-      }
-      if (!activeTools.some(t => t.function.name === "memory_search")) {
-        activeTools.push(MEMORY_SEARCH_DEFINITION);
+      for (const tool of [
+        TOOL_DISCOVERY_DEFINITION,
+        CONVERSATION_SEARCH_DEFINITION,
+        CONVERSATION_READ_DEFINITION,
+        MEMORY_SEARCH_DEFINITION
+      ]) {
+        if (!toolRegistry.get(tool.function.name)) {
+          toolRegistry.registerOpenAITool(tool, {
+            provider: {
+              type: "native",
+              id: "codmes",
+              tool: tool.function.name
+            }
+          });
+        }
       }
     }
 
     this.mcpToolNameMap.clear();
+    const installedPlugins = await listInstalledPlugins(this.workspaceRoot);
+    for (const plugin of installedPlugins) {
+      for (const descriptor of plugin.tools || []) {
+        if (descriptor.provider.type === "plugin") toolRegistry.register(descriptor);
+      }
+    }
     if (config.mcpServers) {
       const enabledMcpNames = new Set(
         config.mcpServers
@@ -378,14 +400,25 @@ export class OpenAICompatibleRuntime extends EventEmitter {
             const client = await this.getOrStartMcpClient(mcp);
             const mcpTools = await client.listTools();
             for (const tool of mcpTools) {
-              const publicName = this.publicMcpToolName(mcp.name, tool.name);
-              activeTools.push({
-                type: "function",
-                function: {
-                  name: publicName,
-                  description: tool.description || "",
-                  parameters: tool.inputSchema || { type: "object", properties: {} }
-                }
+              const plugin = installedPlugins.find((item) => item.id === mcp.pluginId);
+              const declared = plugin?.tools?.find(
+                (item) => item.provider.id === mcp.name && item.provider.tool === tool.name
+              );
+              const publicName = declared?.name || this.publicMcpToolName(mcp.name, tool.name);
+              toolRegistry.register({
+                name: publicName,
+                description: declared?.description || tool.description || `Call ${tool.name} on ${mcp.name}.`,
+                inputSchema: tool.inputSchema || declared?.inputSchema || { type: "object", properties: {} },
+                provider: {
+                  type: "mcp",
+                  id: mcp.name,
+                  tool: tool.name
+                },
+                surfaces: declared?.surfaces || mcp.surfaces || [],
+                group: declared?.group || `mcp:${mcp.name}`,
+                requiresApproval: declared?.requiresApproval === true || mcp.requiresApproval !== false,
+                readOnly: declared?.readOnly === true,
+                pluginId: plugin?.id || null
               });
               this.mcpToolNameMap.set(publicName, {
                 serverName: mcp.name,
@@ -404,6 +437,8 @@ export class OpenAICompatibleRuntime extends EventEmitter {
         }
       }
     }
+    this.toolRegistry = toolRegistry;
+    const activeTools = toolRegistry.openAITools();
 
     // Filter tools based on tool mode enabledTools list
     const filteredTools = activeTools.filter((t) => {
@@ -416,6 +451,9 @@ export class OpenAICompatibleRuntime extends EventEmitter {
         const mcp = config.mcpServers?.find((server) => server.name === mappedMcpTool.serverName);
         if (mcp?.transport === "streamable_http" && mcp.surfaces?.includes(params.surface || "chat")) return true;
       }
+      const descriptor = toolRegistry.get(name);
+      if (descriptor?.provider.type === "plugin"
+          && (!descriptor.surfaces.length || descriptor.surfaces.includes(params.surface || "chat"))) return true;
       if (coreRecallTools.has(name)) return true;
       if (modeDisabledTools.has(name)) return false;
       if (params.surface) {
@@ -654,10 +692,13 @@ export class OpenAICompatibleRuntime extends EventEmitter {
     }
 
     // Gating check by tool modes (only when surface is specified)
-    const mappedMcp = this.mcpToolNameMap.get(call.name);
+    const mappedMcp = this.resolveMcpToolName(call.name);
+    const registeredTool = this.toolRegistry.get(call.name);
+    const mappedPlugin = registeredTool?.provider.type === "plugin" ? registeredTool : null;
     const mappedMcpConfig = mappedMcp ? config.mcpServers?.find((server) => server.name === mappedMcp.serverName) : null;
     const allowedRemoteMcp = mappedMcpConfig?.transport === "streamable_http" && mappedMcpConfig.surfaces?.includes(params.surface || "chat");
-    if (params.surface && !allowedRemoteMcp && !mandatory.has(call.name) && !enabledTools.has(call.name) && !expandedTools.has(call.name)) {
+    const allowedPlugin = mappedPlugin && mappedPlugin.surfaces.includes(params.surface || "chat");
+    if (params.surface && !allowedRemoteMcp && !allowedPlugin && !mandatory.has(call.name) && !enabledTools.has(call.name) && !expandedTools.has(call.name)) {
       const errorMsg = `Tool '${call.name}' is not enabled in current mode.`;
       this.emit("event", {
         type: "tool.error",
@@ -673,7 +714,16 @@ export class OpenAICompatibleRuntime extends EventEmitter {
 
     // Requires approval check for workspace tools (only when surface is specified)
     const requiresApprovalList = new Set(effectiveMode.requiresApproval || []);
-    if (params.surface && requiresApprovalList.has(call.name) && params.approved !== true && !isMcpPublicToolName(call.name)) {
+    const accessMode = params.accessMode || this.sessions.get(params.sessionId)?.accessMode || "confirm";
+    const pluginApprovalRequired = mappedPlugin?.requiresApproval && accessMode !== "full";
+    const modeApprovalRequired = !mappedPlugin && requiresApprovalList.has(call.name);
+    if (params.surface && (modeApprovalRequired || pluginApprovalRequired) && params.approved !== true && !mappedMcp) {
+      let preview = null;
+      if (mappedPlugin) {
+        const { previewPluginCollectionTool } = await import("./plugin-collection-store.mjs");
+        const args = typeof call.arguments === "string" ? JSON.parse(call.arguments || "{}") : call.arguments;
+        preview = await previewPluginCollectionTool(this.workspaceRoot, mappedPlugin, args);
+      }
       const pendingState = {
         type: "workspace.tool.call",
         sessionId: params.sessionId,
@@ -687,6 +737,7 @@ export class OpenAICompatibleRuntime extends EventEmitter {
         toolCall: call,
         toolName: call.name,
         arguments: call.arguments,
+        preview,
         reason: "Approval required for this tool in current mode."
       };
       this.emit("event", {
@@ -712,7 +763,7 @@ export class OpenAICompatibleRuntime extends EventEmitter {
     }
 
     // Check if it is MCP tool execution
-    if (isMcpPublicToolName(call.name)) {
+    if (mappedMcp) {
       const resolvedMcpTool = this.resolveMcpToolName(call.name);
       if (!resolvedMcpTool) {
         const errorMsg = `MCP public tool '${call.name}' is not registered in the current runtime tool map.`;
@@ -894,6 +945,14 @@ export class OpenAICompatibleRuntime extends EventEmitter {
         });
         return { ok: false, error: errorMsg };
       }
+    }
+
+    if (mappedPlugin) {
+      const plugin = await getInstalledPlugin(this.workspaceRoot, mappedPlugin.pluginId);
+      if (!plugin) return { ok: false, error: "Plugin is not installed." };
+      const args = typeof call.arguments === "string" ? JSON.parse(call.arguments || "{}") : call.arguments;
+      const { executePluginCollectionTool } = await import("./plugin-collection-store.mjs");
+      return await executePluginCollectionTool(this.workspaceRoot, plugin, mappedPlugin, args);
     }
 
     this.emit("event", {

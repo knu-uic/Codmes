@@ -246,7 +246,9 @@ struct ApprovalsInboxView: View {
                     .padding()
                     .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
                     
-                    if approval.category == "code.patch.apply" {
+                    if approval.pluginPreview != nil {
+                        pluginPreviewContent(for: approval)
+                    } else if approval.category == "code.patch.apply" {
                         patchDetailContent(for: approval)
                     } else if approval.category == "code.checks.run" {
                         checksDetailContent(for: approval)
@@ -315,7 +317,9 @@ struct ApprovalsInboxView: View {
                 .padding()
                 .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
                 
-                if approval.category == "code.patch.apply" {
+                if approval.pluginPreview != nil {
+                    pluginPreviewContent(for: approval)
+                } else if approval.category == "code.patch.apply" {
                     patchDetailContent(for: approval)
                 } else if approval.category == "code.checks.run" {
                     checksDetailContent(for: approval)
@@ -411,6 +415,47 @@ struct ApprovalsInboxView: View {
                 Text(reason)
                     .font(.subheadline)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func pluginPreviewContent(for approval: WorkspaceApproval) -> some View {
+        if let preview = approval.pluginPreview {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Label(preview.collection, systemImage: "shippingbox")
+                        .font(.headline)
+                    Spacer()
+                    Text(preview.operation.uppercased())
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                if let itemId = preview.itemId {
+                    Text("Item: \(itemId)")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+                if let before = preview.beforeText {
+                    previewBlock(title: "Before", text: before, tint: .red)
+                }
+                if let after = preview.afterText {
+                    previewBlock(title: "After", text: after, tint: .green)
+                }
+            }
+        }
+    }
+
+    private func previewBlock(title: String, text: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(tint)
+            Text(text)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+                .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
         }
     }
 

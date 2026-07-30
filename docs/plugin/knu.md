@@ -5,6 +5,11 @@ KNU는 Codmes의 선택형 plugin PoC다. 한 번 설치하면 다음 두 기능
 - **KNU Surface**: 공지, LMS, 포털, 설정을 Codmes의 macOS/iOS native UI로 표시
 - **KNU MCP**: AI가 공주대 공지를 검색하고 상세 근거를 읽는 도구
 
+0.3.0부터 package의 `tools.json`이 `knu_search_notices`와
+`knu_get_notice_detail`의 이름·입력 schema·승인 정책을 선언한다. 실제 검색과
+상세 조회는 계속 KNU MCP 서버가 실행하며 Codmes Tool Registry가 선언과 MCP
+`tools/list` 결과를 연결한다.
+
 KNU 웹사이트를 WebView나 iframe으로 여는 구조가 아니다. KNU 서버는 공지·포털·LMS
 도메인 데이터만 JSON으로 제공하고, KNU plugin package의 `surface.json`이 화면
 구조와 데이터 바인딩을 소유한다. Codmes 서버가 둘을 검증·결합한 뒤 Apple
@@ -48,8 +53,17 @@ codmes serve
 
 ## 앱에 KNU가 처음 보이지 않을 때
 
-플러그인 소스를 처음 설치하거나 `plugin.json`, `surface.json`을 수정했을 때만
-다음 명령을 한 번 실행한다.
+일반 사용자는 Codmes 앱에서 `Settings > Plugins > KNU > Install`만 누르면 된다.
+같은 작업을 터미널에서 하려면 다음 명령을 실행한다.
+
+```sh
+cd "$HOME/Desktop/Codmes"
+node bin/codmes.mjs plugin install kr.ac.kongju.knu \
+  --root "$HOME/CodmesWorkspace"
+```
+
+KNU plugin 자체를 개발하며 `plugin.json`, `surface.json`의 아직 package되지 않은
+변경을 시험할 때만 로컬 source 경로를 설치한다.
 
 ```sh
 cd "$HOME/Desktop/Codmes"
@@ -226,7 +240,7 @@ node bin/codmes.mjs plugin install \
   --root "$CODMES_WORKSPACE"
 ```
 
-`KNU 0.2.0`이 표시되는지 확인한다.
+`KNU 0.3.0`이 표시되는지 확인한다.
 
 ```sh
 node bin/codmes.mjs plugin list --root "$CODMES_WORKSPACE"

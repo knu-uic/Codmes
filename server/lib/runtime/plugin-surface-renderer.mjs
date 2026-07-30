@@ -8,7 +8,7 @@ export function renderPluginSurfaceDocument(route, payloads) {
   }
   const binding = route.document;
   const document = {
-    schemaVersion: 1,
+    schemaVersion: Number(binding.schemaVersion) || 1,
     presentation: binding.presentation,
     title: String(binding.title || route.title || ""),
     subtitle: renderValue(binding.subtitle, payloads, payloads) || null,
@@ -16,37 +16,40 @@ export function renderPluginSurfaceDocument(route, payloads) {
     filters: Array.isArray(binding.filters) ? binding.filters : [],
     emptyState: binding.emptyState || null,
     items: [],
+    ...(binding.editor
+      ? { editor: JSON.parse(JSON.stringify(binding.editor)) }
+      : {}),
     ...(binding.presentation === "dashboard" ? { sections: [] } : {})
   };
 
-  if (binding.presentation === "collection") {
-    document.items = renderCollection(binding.collection, payloads);
+  if (binding.presentation === "collection" || binding.presentation === "calendar") {
+    document.items = renderCollection(binding.collection, payloads, binding.editor);
   } else {
     document.sections = renderSections(binding.sections, payloads);
   }
   return document;
 }
 
-function renderCollection(binding, payloads) {
+function renderCollection(binding, payloads, editor = null) {
   if (!binding || typeof binding !== "object") return [];
   const items = [];
   if (binding.source && binding.item) {
     const source = readPath(payloads, binding.source);
     if (Array.isArray(source)) {
       for (const value of source.slice(0, 500)) {
-        items.push(renderItem(binding.item, value, payloads));
+        items.push(renderItem(binding.item, value, payloads, editor));
       }
     }
   }
   if (Array.isArray(binding.staticItems)) {
     for (const item of binding.staticItems) {
-      items.push(renderItem(item, payloads, payloads));
+      items.push(renderItem(item, payloads, payloads, editor));
     }
   }
   return items.filter((item) => item.title);
 }
 
-function renderItem(binding, value, payloads) {
+function renderItem(binding, value, payloads, editor = null) {
   const actionUrl = renderValue(binding.action?.url, value, payloads);
   const idValue = renderValue(binding.id, value, payloads)
     || crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 24);
@@ -61,7 +64,7 @@ function renderItem(binding, value, payloads) {
   for (const [key, spec] of Object.entries(binding.filterValues || {})) {
     filterValues[key] = renderValue(spec, value, payloads);
   }
-  return {
+  const item = {
     id: String(idValue),
     title: renderValue(binding.title, value, payloads),
     subtitle: renderValue(binding.subtitle, value, payloads) || null,
@@ -70,6 +73,24 @@ function renderItem(binding, value, payloads) {
     filterValues,
     action: actionUrl ? { type: "openURL", url: actionUrl } : null
   };
+  if (binding.temporal && typeof binding.temporal === "object") {
+    item.temporal = {
+      startsAt: renderValue(binding.temporal.startsAt, value, payloads),
+      endsAt: renderValue(binding.temporal.endsAt, value, payloads) || null,
+      allDay: Boolean(resolveRaw(binding.temporal.allDay, value, payloads))
+    };
+  }
+  if (editor?.fields) {
+    item.editorValues = Object.fromEntries(
+      editor.fields.flatMap((field) => {
+        const resolved = readPath(value, field.id);
+        return ["string", "number", "boolean"].includes(typeof resolved)
+          ? [[field.id, resolved]]
+          : [];
+      })
+    );
+  }
+  return item;
 }
 
 function renderSections(bindings, payloads) {

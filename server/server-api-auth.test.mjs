@@ -38,6 +38,143 @@ test("workspace server protects APIs with CODMES_SERVER_TOKEN and exposes manage
     const workspace = await fetchJson(`${baseUrl}/api/workspace`, { token });
     assert.equal(workspace.runtime.owner, "codmes");
 
+    const marketplace = await fetchJson(`${baseUrl}/api/marketplace/plugins`, { token });
+    const knuMarketplacePlugin = marketplace.plugins.find((plugin) => plugin.id === "kr.ac.kongju.knu");
+    assert.equal(knuMarketplacePlugin.version, "0.3.0");
+    assert.equal(knuMarketplacePlugin.installed, false);
+
+    const installedMarketplacePlugin = await fetchJson(
+      `${baseUrl}/api/marketplace/plugins/kr.ac.kongju.knu/install`,
+      { token, method: "POST", body: { version: "0.3.0" } }
+    );
+    assert.equal(installedMarketplacePlugin.plugin.id, "kr.ac.kongju.knu");
+    const installedPlugins = await fetchJson(`${baseUrl}/api/plugins`, { token });
+    assert.equal(installedPlugins.plugins.some((plugin) => plugin.id === "kr.ac.kongju.knu"), true);
+    const removedMarketplacePlugin = await fetchJson(
+      `${baseUrl}/api/plugins/kr.ac.kongju.knu`,
+      { token, method: "DELETE" }
+    );
+    assert.equal(removedMarketplacePlugin.removed, true);
+
+    const installedCalendar = await fetchJson(
+      `${baseUrl}/api/marketplace/plugins/com.codmes.planner/install`,
+      { token, method: "POST", body: { version: "0.2.0" } }
+    );
+    assert.equal(installedCalendar.plugin.id, "com.codmes.planner");
+    const plannerSurface = await fetchJson(
+      `${baseUrl}/api/plugins/com.codmes.planner/surface-document?route=tasks`,
+      { token }
+    );
+    assert.equal(plannerSurface.schemaVersion, 2);
+    assert.equal(plannerSurface.presentation, "collection");
+    assert.equal(plannerSurface.editor.collection, "tasks");
+    const createdTask = await fetchJson(
+      `${baseUrl}/api/plugins/com.codmes.planner/collections/tasks`,
+      {
+        token,
+        method: "POST",
+        body: {
+          item: {
+            title: "Ship Planner",
+            dueAt: "2026-07-30T09:00:00+09:00",
+            completed: false,
+            priority: 1,
+            project: "Codmes",
+            notes: "Marketplace MVP"
+          }
+        }
+      }
+    );
+    assert.equal(createdTask.created, true);
+    const populatedPlannerSurface = await fetchJson(
+      `${baseUrl}/api/plugins/com.codmes.planner/surface-document?route=tasks`,
+      { token }
+    );
+    assert.equal(populatedPlannerSurface.items[0].title, "Ship Planner");
+    assert.equal(populatedPlannerSurface.items[0].editorValues.completed, false);
+    const calendarCollection = await fetchJson(
+      `${baseUrl}/api/plugins/com.codmes.planner/collections/events`,
+      { token }
+    );
+    assert.deepEqual(calendarCollection.items, []);
+    const calendarSurface = await fetchJson(
+      `${baseUrl}/api/plugins/com.codmes.planner/surface-document?route=events`,
+      { token }
+    );
+    assert.equal(calendarSurface.schemaVersion, 2);
+    assert.equal(calendarSurface.presentation, "calendar");
+    assert.equal(calendarSurface.editor.fields[0].role, "title");
+    assert.equal(calendarSurface.title, "Calendar");
+    assert.deepEqual(calendarSurface.items, []);
+    const createdCalendarEvent = await fetchJson(
+      `${baseUrl}/api/plugins/com.codmes.planner/collections/events`,
+      {
+        token,
+        method: "POST",
+        body: {
+          item: {
+            title: "Design review",
+            startsAt: "2026-07-29T09:00:00+09:00",
+            endsAt: "2026-07-29T10:00:00+09:00",
+            allDay: false,
+            location: "Studio",
+            notes: ""
+          }
+        }
+      }
+    );
+    assert.equal(createdCalendarEvent.created, true);
+    const calendarEventId = createdCalendarEvent.item.id;
+    const updatedCalendarEvent = await fetchJson(
+      `${baseUrl}/api/plugins/com.codmes.planner/collections/events/${calendarEventId}`,
+      {
+        token,
+        method: "PATCH",
+        body: { item: { title: "Updated design review" } }
+      }
+    );
+    assert.equal(updatedCalendarEvent.item.title, "Updated design review");
+    const populatedCalendarSurface = await fetchJson(
+      `${baseUrl}/api/plugins/com.codmes.planner/surface-document?route=events`,
+      { token }
+    );
+    assert.equal(populatedCalendarSurface.items[0].temporal.startsAt, "2026-07-29T09:00:00+09:00");
+    const deletedCalendarEvent = await fetchJson(
+      `${baseUrl}/api/plugins/com.codmes.planner/collections/events/${calendarEventId}`,
+      { token, method: "DELETE" }
+    );
+    assert.equal(deletedCalendarEvent.deleted, true);
+    const memoSurface = await fetchJson(
+      `${baseUrl}/api/plugins/com.codmes.planner/surface-document?route=memos`,
+      { token }
+    );
+    assert.equal(memoSurface.schemaVersion, 2);
+    assert.equal(memoSurface.presentation, "collection");
+    assert.equal(memoSurface.editor.collection, "memos");
+    const createdMemo = await fetchJson(
+      `${baseUrl}/api/plugins/com.codmes.planner/collections/memos`,
+      {
+        token,
+        method: "POST",
+        body: {
+          item: {
+            title: "빠른 메모",
+            content: "Planner 안의 간단한 텍스트 기록",
+            pinned: true
+          }
+        }
+      }
+    );
+    assert.equal(createdMemo.created, true);
+    const populatedMemoSurface = await fetchJson(
+      `${baseUrl}/api/plugins/com.codmes.planner/surface-document?route=memos`,
+      { token }
+    );
+    assert.equal(populatedMemoSurface.items[0].title, "빠른 메모");
+    assert.equal(populatedMemoSurface.items[0].body, "Planner 안의 간단한 텍스트 기록");
+    assert.equal(populatedMemoSurface.items[0].filterValues.pinned, "true");
+    assert.equal(populatedMemoSurface.items[0].editorValues.pinned, true);
+
     const documentJobs = await fetchJson(`${baseUrl}/api/document-jobs`, { token });
     assert.deepEqual(documentJobs.jobs, []);
 

@@ -46,4 +46,42 @@ final class PluginSurfaceDocumentTests: XCTestCase {
         XCTAssertEqual(document.sections?[0].fields?.first?.value, "20260001")
         XCTAssertEqual(document.sections?[1].rows?.first, ["1교시", "자료구조"])
     }
+
+    func testSurfaceV2DecodesDeclarativeEditorFields() throws {
+        let data = Data(
+            #"""
+            {
+              "schemaVersion": 2,
+              "presentation": "calendar",
+              "title": "Calendar",
+              "subtitle": null,
+              "search": null,
+              "filters": [],
+              "emptyState": null,
+              "items": [],
+              "sections": null,
+              "editor": {
+                "collection": "events",
+                "fields": [
+                  {
+                    "id": "title",
+                    "label": "제목",
+                    "type": "text",
+                    "required": true,
+                    "placeholder": "일정 제목",
+                    "role": "title"
+                  }
+                ]
+              }
+            }
+            """#.utf8
+        )
+
+        let document = try JSONDecoder().decode(PluginSurfaceDocument.self, from: data)
+
+        XCTAssertEqual(document.schemaVersion, 2)
+        XCTAssertEqual(document.editor?.collection, "events")
+        XCTAssertEqual(document.editor?.fields?.first?.type, "text")
+        XCTAssertEqual(document.editor?.fields?.first?.role, "title")
+    }
 }

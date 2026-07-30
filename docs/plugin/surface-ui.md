@@ -5,6 +5,10 @@ plugin package가 화면 구조와 제한된 action, data binding을 선언하�
 backend는 domain data만 JSON으로 제공한다. Codmes 서버가 두 입력을 결합하며
 클라이언트는 macOS/iOS의 네이티브 UI로 렌더링한다.
 
+이 문서의 기본 binding과 presentation은 v1/v2가 공유한다. collection editor와
+field type을 선언하는 v2 추가 계약은 [Declarative Surface v2](./surface-v2.md)를
+참고한다.
+
 ```text
 plugin package surface.json ─┐
                              ├→ Codmes binding compiler/validation
@@ -118,7 +122,7 @@ mapping을 지원한다.
 
 이 문서는 plugin backend가 직접 반환하는 계약이 아니라 Codmes가
 `surface.json`과 domain data를 결합한 뒤 Apple 앱에 보내는 내부 렌더링
-계약이다. 첫 presentation은 검색과 filter가 가능한 `collection`이다.
+계약이다. `collection`, `dashboard`, `calendar` presentation을 지원한다.
 
 ```json
 {
@@ -168,6 +172,46 @@ mapping을 지원한다.
 - plugin package가 선언한 system image 이름은 client가 지원하지 않으면 기본 icon으로
   대체할 수 있다.
 - loading, empty, error, pull-to-refresh 표현은 Codmes가 소유한다.
+
+### Calendar presentation
+
+일정 plugin은 일반 목록을 흉내 내지 않고 `calendar`를 선언할 수 있다. collection
+item binding에 표준 시간 의미만 추가하고, 실제 월간 grid와 날짜 선택 UI는 Codmes
+client가 플랫폼에 맞게 렌더링한다.
+
+```json
+{
+  "schemaVersion": 1,
+  "presentation": "calendar",
+  "title": "Calendar",
+  "editor": {
+    "collection": "events"
+  },
+  "collection": {
+    "source": "events.items",
+    "item": {
+      "id": "id",
+      "title": "title",
+      "body": "notes",
+      "temporal": {
+        "startsAt": "startsAt",
+        "endsAt": "endsAt",
+        "allDay": "allDay"
+      }
+    }
+  }
+}
+```
+
+- `startsAt`은 필수이며 ISO 8601 날짜 또는 날짜·시간 문자열을 사용한다.
+- `endsAt`은 선택이고 `allDay`는 종일 일정 표시를 제어한다.
+- `editor.collection`을 선언하면 Codmes가 해당 collection을 대상으로 native
+  생성·편집·삭제 UI를 활성화한다. 생략하면 calendar는 읽기 전용이다.
+- plugin은 일정 데이터와 binding을 소유하고 Codmes는 월 이동, 날짜 선택, 접근성,
+  플랫폼별 레이아웃을 소유한다.
+- 공식 Calendar renderer는 생성·편집 sheet도 제공한다. 이 화면에서 사용자가 누른
+  저장은 직접 조작이므로 collection API로 즉시 반영한다. 같은 collection을 AI가
+  tool provider로 변경할 때는 Safe 모드 승인을 별도로 적용한다.
 
 ### Dashboard presentation
 

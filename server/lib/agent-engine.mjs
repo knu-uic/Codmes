@@ -1188,6 +1188,7 @@ function summarizeTask(task) {
 }
 
 function summarizeApproval(approval) {
+  const preview = approval.pendingState?.preview || approval.payload?.pendingState?.preview || null;
   return {
     id: approval.id,
     type: approval.type,
@@ -1202,6 +1203,14 @@ function summarizeApproval(approval) {
     summary: approval.summary,
     reason: approval.reason,
     hasPendingState: Boolean(approval.pendingState || approval.payload?.pendingState),
+    pluginPreview: preview ? {
+      pluginId: String(preview.pluginId || ""),
+      collection: String(preview.collection || ""),
+      operation: String(preview.operation || ""),
+      itemId: preview.itemId == null ? null : String(preview.itemId),
+      beforeText: preview.before == null ? null : JSON.stringify(preview.before, null, 2),
+      afterText: preview.after == null ? null : JSON.stringify(preview.after, null, 2)
+    } : null,
     payload: approval.payload,
     diffRef: approval.diffRef,
     commands: approval.commands,

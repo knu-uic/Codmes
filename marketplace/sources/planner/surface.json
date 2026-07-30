@@ -1,0 +1,221 @@
+{
+  "schemaVersion": 2,
+  "routes": [
+    {
+      "id": "tasks",
+      "title": "플래너",
+      "icon": "checkmark.circle",
+      "requiresAuth": false,
+      "dataSources": [{"id": "tasks", "path": "collection:tasks"}],
+      "document": {
+        "schemaVersion": 2,
+        "presentation": "collection",
+        "title": "Planner",
+        "subtitle": {"literal": "할 일을 정리하고 완료 상태를 관리하세요."},
+        "search": {
+          "placeholder": "할 일 검색",
+          "fields": ["title", "body", "subtitle", "tags"]
+        },
+        "filters": [
+          {
+            "id": "status",
+            "label": "상태",
+            "style": "chips",
+            "options": [
+              {"value": "__all__", "label": "전체"},
+              {"value": "pending", "label": "진행 중"},
+              {"value": "completed", "label": "완료"}
+            ]
+          }
+        ],
+        "emptyState": {
+          "title": "아직 할 일이 없습니다.",
+          "systemImage": "checklist"
+        },
+        "editor": {
+          "collection": "tasks",
+          "fields": [
+            {
+              "id": "title",
+              "label": "제목",
+              "type": "text",
+              "required": true,
+              "placeholder": "할 일 제목",
+              "role": "title"
+            },
+            {
+              "id": "dueAt",
+              "label": "마감",
+              "type": "dateTime",
+              "required": true,
+              "role": "dueAt"
+            },
+            {
+              "id": "completed",
+              "label": "완료",
+              "type": "boolean",
+              "required": true,
+              "role": "completed"
+            },
+            {
+              "id": "priority",
+              "label": "우선순위",
+              "type": "number",
+              "required": false,
+              "placeholder": "1",
+              "role": "priority"
+            },
+            {
+              "id": "project",
+              "label": "프로젝트",
+              "type": "text",
+              "required": false,
+              "placeholder": "프로젝트",
+              "role": "project"
+            },
+            {
+              "id": "notes",
+              "label": "메모",
+              "type": "multiline",
+              "required": false,
+              "placeholder": "메모",
+              "role": "notes"
+            }
+          ]
+        },
+        "collection": {
+          "source": "tasks.items",
+          "item": {
+            "id": "id",
+            "title": "title",
+            "subtitle": {"join": ["dueAt", "priority"], "separator": " · "},
+            "body": "notes",
+            "tags": ["project"],
+            "filterValues": {
+              "status": {
+                "path": "completed",
+                "trueValue": "completed",
+                "falseValue": "pending"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "events",
+      "title": "달력",
+      "icon": "calendar",
+      "requiresAuth": false,
+      "dataSources": [{"id": "events", "path": "collection:events"}],
+      "document": {
+        "schemaVersion": 2,
+        "presentation": "calendar",
+        "title": "Calendar",
+        "subtitle": {"literal": "Workspace에 저장된 일정을 확인하세요."},
+        "emptyState": {
+          "title": "아직 일정이 없습니다.",
+          "systemImage": "calendar.badge.plus"
+        },
+        "editor": {
+          "collection": "events",
+          "fields": [
+            {"id": "title", "label": "제목", "type": "text", "required": true, "placeholder": "일정 제목", "role": "title"},
+            {"id": "startsAt", "label": "시작", "type": "dateTime", "required": true, "role": "startsAt"},
+            {"id": "endsAt", "label": "종료", "type": "dateTime", "required": true, "role": "endsAt"},
+            {"id": "allDay", "label": "종일", "type": "boolean", "required": false, "role": "allDay"},
+            {"id": "location", "label": "장소", "type": "text", "required": false, "placeholder": "장소", "role": "location"},
+            {"id": "notes", "label": "메모", "type": "multiline", "required": false, "placeholder": "메모", "role": "notes"}
+          ]
+        },
+        "collection": {
+          "source": "events.items",
+          "item": {
+            "id": "id",
+            "title": "title",
+            "subtitle": {"join": ["startsAt", "endsAt"], "separator": " → "},
+            "body": "notes",
+            "tags": ["location"],
+            "temporal": {"startsAt": "startsAt", "endsAt": "endsAt", "allDay": "allDay"}
+          }
+        }
+      }
+    },
+    {
+      "id": "memos",
+      "title": "메모",
+      "icon": "note.text",
+      "requiresAuth": false,
+      "dataSources": [{"id": "memos", "path": "collection:memos"}],
+      "document": {
+        "schemaVersion": 2,
+        "presentation": "collection",
+        "title": "Memo",
+        "subtitle": {"literal": "생각과 임시 기록을 간단한 텍스트로 남기세요."},
+        "search": {
+          "placeholder": "메모 검색",
+          "fields": ["title", "body"]
+        },
+        "filters": [
+          {
+            "id": "pinned",
+            "label": "고정",
+            "style": "chips",
+            "options": [
+              {"value": "__all__", "label": "전체"},
+              {"value": "true", "label": "고정됨"},
+              {"value": "false", "label": "일반"}
+            ]
+          }
+        ],
+        "emptyState": {
+          "title": "아직 메모가 없습니다.",
+          "systemImage": "note.text.badge.plus"
+        },
+        "editor": {
+          "collection": "memos",
+          "fields": [
+            {
+              "id": "title",
+              "label": "제목",
+              "type": "text",
+              "required": true,
+              "placeholder": "메모 제목",
+              "role": "title"
+            },
+            {
+              "id": "content",
+              "label": "내용",
+              "type": "multiline",
+              "required": true,
+              "placeholder": "내용을 입력하세요.",
+              "role": "content"
+            },
+            {
+              "id": "pinned",
+              "label": "상단에 고정",
+              "type": "boolean",
+              "required": false,
+              "role": "pinned"
+            }
+          ]
+        },
+        "collection": {
+          "source": "memos.items",
+          "item": {
+            "id": "id",
+            "title": "title",
+            "body": "content",
+            "filterValues": {
+              "pinned": {
+                "path": "pinned",
+                "trueValue": "true",
+                "falseValue": "false"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

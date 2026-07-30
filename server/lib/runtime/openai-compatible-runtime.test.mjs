@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { OpenAICompatibleRuntime } from "./openai-compatible-runtime.mjs";
 import { setCredentialValue, setDefaultModel, writeRuntimeConfig } from "./config-store.mjs";
+import { installPlugin } from "./plugin-registry.mjs";
 import { writeSecurityConfig } from "./security-policy.mjs";
 import { saveToolModeOverride } from "./tool-mode-registry.mjs";
 
@@ -733,6 +734,154 @@ test("OpenAI-compatible runtime exposes remote MCP tools only on the configured 
   await runtime.submitPrompt({ sessionId: "notes-remote-mcp", message: "공지 찾아줘", surface: "notes" });
   assert.equal(sentTools.some((tool) => tool.function.name === "mcp__knu_rag__search_knu_notices"), false);
   assert.equal(starts, 1);
+  runtime.close();
+});
+
+test("OpenAI-compatible runtime exposes a plugin-declared public name through the common Tool Registry", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-openai-runtime-plugin-tool-"));
+  const source = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-openai-runtime-plugin-source-"));
+  await setDefaultModel(root, "openai-api", "gpt-5.5");
+  await setCredentialValue(root, "openai-api", "CODMES_OPENAI_API_KEY", "test-key");
+  await fs.writeFile(path.join(source, "plugin.json"), JSON.stringify({
+    schemaVersion: 1,
+    id: "kr.ac.kongju.knu",
+    version: "0.3.0",
+    name: "KNU",
+    platforms: ["macos", "ios"],
+    surface: {
+      id: "knu",
+      type: "declarative",
+      title: "KNU",
+      upstreamUrl: "http://127.0.0.1:8000",
+      entryPath: "/api/notices",
+      navigation: [{ id: "notices", title: "Notices", path: "/api/notices" }]
+    },
+    mcp: {
+      name: "knu",
+      transport: "streamable_http",
+      url: "http://127.0.0.1:8000/api/mcp",
+      surfaces: ["knu"],
+      allowUnauthenticated: true,
+      requiresApproval: true
+    },
+    tools: {
+      schemaVersion: 1,
+      tools: [{
+        name: "knu_search_notices",
+        description: "Search current KNU notices.",
+        inputSchema: {
+          type: "object",
+          properties: { query: { type: "string" } },
+          required: ["query"]
+        },
+        provider: { type: "mcp", server: "knu", tool: "search_knu_notices" },
+        requiresApproval: true,
+        readOnly: true
+      }]
+    }
+  }), "utf8");
+  await installPlugin(root, source);
+
+  let sentTools = [];
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: root,
+    mcpClientFactory: () => ({
+      status: "stopped",
+      async start() { this.status = "running"; },
+      async listTools() {
+        return [{
+          name: "search_knu_notices",
+          description: "Dynamic description",
+          inputSchema: {
+            type: "object",
+            properties: { query: { type: "string" } },
+            required: ["query"]
+          }
+        }];
+      },
+      async callTool(name, args) {
+        return {
+          content: [{
+            type: "text",
+            text: `${name}:${args.query}`
+          }]
+        };
+      },
+      stop() {}
+    }),
+    fetchImpl: async (_url, options) => ({
+      ok: true,
+      headers: { get: () => "text/event-stream" },
+      body: (
+        sentTools = JSON.parse(options.body).tools,
+        streamChunks(['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', "data: [DONE]\n\n"])
+      )
+    })
+  });
+
+  await runtime.submitPrompt({
+    sessionId: "knu-plugin-tool",
+    message: "공지 찾아줘",
+    surface: "knu"
+  });
+  assert.equal(sentTools.some((tool) => tool.function.name === "knu_search_notices"), true);
+  assert.equal(sentTools.some((tool) => tool.function.name === "mcp__knu__search_knu_notices"), false);
+  assert.equal(runtime.toolRegistry.get("knu_search_notices").provider.type, "mcp");
+  assert.equal(runtime.toolRegistry.get("knu_search_notices").pluginId, "kr.ac.kongju.knu");
+  const result = await runtime.executeToolCall({
+    id: "knu-search-call",
+    name: "knu_search_notices",
+    arguments: { query: "수강 철회" }
+  }, {
+    sessionId: "knu-plugin-tool",
+    surface: "knu",
+    approved: true
+  });
+  assert.deepEqual(result.output, [{
+    type: "text",
+    text: "search_knu_notices:수강 철회"
+  }]);
+  runtime.close();
+});
+
+test("Planner calendar writes require approval in Safe mode and execute immediately in Full mode", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-calendar-mode-"));
+  await setDefaultModel(root, "openai-api", "gpt-5.5");
+  await setCredentialValue(root, "openai-api", "CODMES_OPENAI_API_KEY", "test-key");
+  await installPlugin(root, path.resolve("marketplace/sources/planner"));
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: root,
+    fetchImpl: async () => ({
+      ok: true,
+      headers: { get: () => "text/event-stream" },
+      body: streamChunks(['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', "data: [DONE]\n\n"])
+    })
+  });
+  await runtime.createSession({ sessionId: "calendar-safe", accessMode: "confirm" });
+  await runtime.submitPrompt({ sessionId: "calendar-safe", message: "일정 생성", surface: "planner" });
+  const call = {
+    id: "calendar-create",
+    name: "calendar_create",
+    arguments: {
+      item: {
+        title: "회의",
+        startsAt: "2026-08-01T10:00:00+09:00",
+        endsAt: "2026-08-01T11:00:00+09:00"
+      }
+    }
+  };
+  await assert.rejects(
+    () => runtime.executeToolCall(call, { sessionId: "calendar-safe", surface: "planner" }),
+    (error) => error.approvalRequired === true
+      && error.pendingState.preview.operation === "create"
+  );
+  await runtime.createSession({ sessionId: "calendar-full", accessMode: "full" });
+  await runtime.submitPrompt({ sessionId: "calendar-full", message: "일정 생성", surface: "planner" });
+  const created = await runtime.executeToolCall(call, {
+    sessionId: "calendar-full",
+    surface: "planner"
+  });
+  assert.equal(created.created, true);
   runtime.close();
 });
 

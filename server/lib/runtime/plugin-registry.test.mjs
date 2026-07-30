@@ -145,3 +145,87 @@ test("plugin installation resolves a package-owned Surface UI file", async () =>
     installed.plugin.surface.ui
   );
 });
+
+test("Surface v2 validates declared collection data sources and editor fields", () => {
+  const value = {
+    ...manifest,
+    storage: {
+      schemaVersion: 1,
+      collections: [{
+        id: "events",
+        itemSchema: { type: "object", properties: { title: { type: "string" } } }
+      }]
+    },
+    surface: {
+      ...manifest.surface,
+      navigation: undefined,
+      ui: {
+        schemaVersion: 2,
+        routes: [{
+          id: "events",
+          title: "Events",
+          dataSources: [{ id: "events", path: "collection:events" }],
+          document: {
+            schemaVersion: 2,
+            presentation: "calendar",
+            title: "Events",
+            editor: {
+              collection: "events",
+              fields: [{
+                id: "title",
+                label: "Title",
+                type: "text",
+                required: true,
+                role: "title"
+              }]
+            },
+            collection: {
+              source: "events.items",
+              item: { id: "id", title: "title" }
+            }
+          }
+        }]
+      }
+    }
+  };
+
+  const normalized = validatePluginManifest(value);
+  assert.equal(normalized.surface.ui.schemaVersion, 2);
+  assert.equal(normalized.surface.ui.routes[0].document.editor.collection, "events");
+  assert.equal(normalized.surface.ui.routes[0].document.editor.fields[0].role, "title");
+
+  const invalid = structuredClone(value);
+  invalid.surface.ui.routes[0].document.editor.collection = "tasks";
+  assert.throws(() => validatePluginManifest(invalid), /not declared/);
+});
+
+test("plugin installation resolves and confines package-owned MCP tool declarations", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-plugin-tools-root-"));
+  const source = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-plugin-tools-source-"));
+  await fs.writeFile(path.join(source, "tools.json"), JSON.stringify({
+    schemaVersion: 1,
+    tools: [{
+      name: "knu_search_notices",
+      description: "Search KNU notices.",
+      inputSchema: {
+        type: "object",
+        properties: { query: { type: "string" } },
+        required: ["query"]
+      },
+      provider: { type: "mcp", server: "knu", tool: "search_knu_notices" },
+      readOnly: true,
+      requiresApproval: true
+    }]
+  }), "utf8");
+  await fs.writeFile(path.join(source, "plugin.json"), JSON.stringify({
+    ...manifest,
+    tools: "tools.json"
+  }), "utf8");
+
+  const installed = await installPlugin(root, source);
+  assert.equal(installed.plugin.tools[0].name, "knu_search_notices");
+  assert.equal(installed.plugin.tools[0].provider.type, "mcp");
+  assert.equal(installed.plugin.tools[0].provider.tool, "search_knu_notices");
+  assert.deepEqual(installed.plugin.tools[0].surfaces, ["knu"]);
+  assert.equal((await getInstalledPlugin(root, manifest.id)).tools[0].readOnly, true);
+});
