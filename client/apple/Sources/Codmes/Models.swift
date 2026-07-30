@@ -946,6 +946,7 @@ struct PluginAuthStatus: Codable, Equatable {
     let year: Int?
     let profileSyncing: Bool?
     let syncStage: String?
+    let portalSyncError: String?
     let lmsSyncError: String?
 
     init(
@@ -959,6 +960,7 @@ struct PluginAuthStatus: Codable, Equatable {
         year: Int? = nil,
         profileSyncing: Bool? = nil,
         syncStage: String? = nil,
+        portalSyncError: String? = nil,
         lmsSyncError: String? = nil
     ) {
         self.supported = supported
@@ -971,6 +973,7 @@ struct PluginAuthStatus: Codable, Equatable {
         self.year = year
         self.profileSyncing = profileSyncing
         self.syncStage = syncStage
+        self.portalSyncError = portalSyncError
         self.lmsSyncError = lmsSyncError
     }
 }

@@ -3273,6 +3273,7 @@ async function pluginAuthStatus(pluginId) {
         profile.portal_syncing ?? (profile.student_id && !profile.name)
       ),
       syncStage: String(profile.sync_stage || "") || null,
+      portalSyncError: String(profile.portal_sync_error || "") || null,
       lmsSyncError: String(profile.lms_sync_error || "") || null
     };
   } catch {

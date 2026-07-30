@@ -1164,7 +1164,12 @@ struct PluginNavigationSidebar: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .help(errorMessage ?? authStatus?.lmsSyncError ?? accountStatusText)
+        .help(
+            errorMessage
+                ?? authStatus?.portalSyncError
+                ?? authStatus?.lmsSyncError
+                ?? accountStatusText
+        )
     }
 
     private var accountStatusText: String {
@@ -1292,6 +1297,16 @@ private struct PluginAuthenticationSettingsView: View {
                     }
                     .padding(10)
                     .background(.quaternary.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
+
+                    if let portalSyncError = authStatus?.portalSyncError,
+                       !portalSyncError.isEmpty {
+                        Label(
+                            "포털 동기화에 실패했습니다: \(portalSyncError)",
+                            systemImage: "exclamationmark.triangle"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                    }
 
                     if let lmsSyncError = authStatus?.lmsSyncError,
                        !lmsSyncError.isEmpty {
