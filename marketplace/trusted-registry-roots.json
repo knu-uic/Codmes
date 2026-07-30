@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "registries": [
+    {
+      "url": "https://jeongu0569-ui.github.io/Codmes-Marketplace/index.json",
+      "signatureUrl": "https://jeongu0569-ui.github.io/Codmes-Marketplace/index.sig.json",
+      "root": {
+        "schemaVersion": 1,
+        "rootId": "com.codmes.marketplace",
+        "algorithm": "ed25519",
+        "keyId": "ed25519:625dc7369c48ac5379b03b8f2e403c4d",
+        "publicKey": "MCowBQYDK2VwAyEAt1jGfTNwsnD9SdrMOdji6G2+Qixvwkd0gihfmq3MZ/Y="
+      }
+    }
+  ]
+}

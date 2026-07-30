@@ -4,6 +4,17 @@ Codmes Marketplace는 Workspace 서버에 plugin을 한 번 설치하고, 그 �
 macOS·iPhone·iPad가 같은 Surface와 도구를 사용하는 구조다. Apple 앱마다 package를
 따로 내려받거나 임의 JavaScript/native binary를 실행하지 않는다.
 
+기본 공식 Registry는 다음 공개 주소를 사용한다.
+
+```text
+https://jeongu0569-ui.github.io/Codmes-Marketplace/index.json
+```
+
+앱에는 URL과 Marketplace root 공개키가 함께 고정되어 있다. 서버는
+`index.sig.json`의 detached Ed25519 서명을 먼저 확인하고, 그 다음 각 package의
+Publisher 서명과 SHA-256을 별도로 확인한다. 개발 Registry를 사용할 때만
+`CODMES_MARKETPLACE_REGISTRY` 환경 변수나 CLI의 `--registry`로 주소를 덮어쓴다.
+
 ## 사용자가 보는 흐름
 
 1. Codmes 앱의 `Settings > Plugins`에서 plugin 목록을 연다.

@@ -20,7 +20,8 @@ import {
 } from "./plugin-registry-signature.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const DEFAULT_REGISTRY_PATH = path.join(REPO_ROOT, "marketplace", "index.json");
+const DEFAULT_REGISTRY_URL =
+  "https://jeongu0569-ui.github.io/Codmes-Marketplace/index.json";
 const TRUSTED_REGISTRIES_PATH = path.join(
   REPO_ROOT,
   "marketplace",
@@ -212,7 +213,9 @@ export async function installMarketplacePlugin(workspaceRoot, pluginId, options 
 }
 
 export async function loadMarketplaceRegistry(options = {}) {
-  const configured = options.registrySource || process.env.CODMES_MARKETPLACE_REGISTRY || DEFAULT_REGISTRY_PATH;
+  const configured = options.registrySource
+    || process.env.CODMES_MARKETPLACE_REGISTRY
+    || DEFAULT_REGISTRY_URL;
   if (/^https?:\/\//i.test(configured)) {
     const url = normalizeRemoteUrl(configured, "Marketplace registry");
     const response = await fetch(url, {
