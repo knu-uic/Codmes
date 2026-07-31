@@ -5,10 +5,9 @@ KNU는 Codmes의 선택형 plugin PoC다. 한 번 설치하면 다음 두 기능
 - **KNU Surface**: 공지, LMS, 포털, 설정을 Codmes의 macOS/iOS native UI로 표시
 - **KNU MCP**: AI가 공주대 공지를 검색하고 상세 근거를 읽는 도구
 
-0.3.0부터 package의 `tools.json`이 `knu_search_notices`와
-`knu_get_notice_detail`의 이름·입력 schema·승인 정책을 선언한다. 실제 검색과
-상세 조회는 계속 KNU MCP 서버가 실행하며 Codmes Tool Registry가 선언과 MCP
-`tools/list` 결과를 연결한다.
+0.3.2부터 package의 `tools.json`이 Scan, Deep, 원문 조회 도구의 이름·입력
+schema·승인 정책을 선언한다. 실제 검색과 상세 조회는 계속 KNU MCP 서버가 실행하며
+Codmes Tool Registry가 선언과 MCP `tools/list` 결과를 연결한다.
 
 KNU 웹사이트를 WebView나 iframe으로 여는 구조가 아니다. KNU 서버는 공지·포털·LMS
 도메인 데이터만 JSON으로 제공하고, KNU plugin package의 `surface.json`이 화면
@@ -223,7 +222,7 @@ node bin/codmes.mjs plugin install \
   --root "$CODMES_WORKSPACE"
 ```
 
-`KNU 0.3.1`이 표시되는지 확인한다. 설치 후 KNU 설정에서 포털 계정으로 로그인하면
+`KNU 0.3.2`가 표시되는지 확인한다. 설치 후 KNU 설정에서 포털 계정으로 로그인하면
 발급된 사용자 session token을 Surface와 MCP가 함께 사용한다. 일반 사용자는
 `MCP_AUTH_TOKEN`을 직접 등록하지 않는다.
 
@@ -506,10 +505,10 @@ KNU Surface가 선택된 대화에서 다음 흐름이 일어난다.
 ```text
 사용자 질문
   → Codmes AI runtime이 KNU MCP tool schema를 model에 제공
-  → model이 mcp__knu__search_knu_notices 호출 결정
+  → model이 질문 의미에 따라 knu_list_notices 또는 knu_search_notice_details 결정
   → Codmes approval inbox에서 사용자 승인
   → Codmes 서버가 포털 로그인 session token을 Bearer로 붙여 KNU /api/mcp 호출
-  → KNU MCP가 공지 DB 검색·rerank 수행
+  → KNU MCP가 구조화 필터 또는 공지 DB 검색·rerank 수행
   ← 제목, 날짜, 본문 근거, 원문 URL
   → model이 반환된 근거만 사용해 답변하고 URL을 인용
 ```
@@ -539,64 +538,66 @@ KNU FastAPI와 KNU MCP는 현재 같은 프로세스와 포트 `8000`을 사용�
 
 현재 제공 도구:
 
-- `search_knu_notices`: 질문, 학과, 카테고리로 공지 근거 검색
-- `get_knu_notice_detail`: 검색 결과로 받은 URL의 전체 공지 본문 조회
+- `knu_list_notices`: 상태·기간·대상·카테고리로 공지 목록과 개수를 조회
+- `knu_search_notice_details`: 구체적인 날짜·자격·절차·첨부 근거를 검색
+- `knu_get_notice_detail`: 검색 결과로 받은 URL의 전체 공지 본문 조회
 
 AI가 질문할 때 무조건 MCP를 호출하는 것은 아니다. Codmes는 KNU Surface에서만
 도구 schema를 model에 제공하고, 실제 호출 여부와 인자는 model이 질문 내용에 따라
 결정한다. 호출에는 기본적으로 사용자 승인이 필요하다. KNU MCP는 상위 AI가 정한
 검색어와 category를 바로 검색하며 내부에서 별도의 LLM을 다시 호출하지 않는다.
 
-### 질문 분류와 MCP 인자 예시
+### 질문 판단과 MCP 인자 예시
 
-`이번 학기 국가장학금 신청 공지 찾아줘`처럼 카테고리가 분명하면 Codmes AI가
-카테고리를 tool 인자로 지정한다.
+`지금 신청 가능한 장학금 몇 개 있어?`처럼 넓은 목록·집계 질문은 Codmes AI가
+Scan 도구를 선택한다.
 
 ```json
 {
-  "name": "search_knu_notices",
+  "name": "knu_list_notices",
   "arguments": {
-    "query": "이번 학기 국가장학금 신청",
     "category": "장학",
-    "limit": 5
+    "status": "open",
+    "time_scope": "current"
   }
 }
 ```
 
-`이번 주에 내가 확인할 공지 알려줘`처럼 카테고리가 불분명하면 category를
-생략한다. KNU MCP는 특정 카테고리로 제한하지 않고 전체 공지에서 관련 근거를
-검색한다.
+`2026학년도 2학기 수강신청 일정과 절차 알려줘`처럼 특정 사실을 자세히 찾아야
+하는 질문은 Deep 도구를 선택한다.
 
 ```json
 {
-  "name": "search_knu_notices",
+  "name": "knu_search_notice_details",
   "arguments": {
-    "query": "이번 주에 확인할 공지",
-    "limit": 10
+    "query": "2026학년도 2학기 수강신청 일정과 절차",
+    "category": "수강",
+    "year": 2026
   }
 }
 ```
 
-`최근 수강 관련 공지 목록 보여줘`는 category를 `수강`으로 지정한다. KNU 서버는
-`목록`, `최근`, `전체`, `여러` 같은 표현이 포함된 질문을 여러 문서를 반환하는
-목록형 검색으로 처리하고, 그 외에는 단건의 구체적 근거를 찾는 검색으로 처리한다.
+필요하면 모델은 먼저 Scan으로 후보 `notice_ids`를 좁힌 뒤 같은 ID를 Deep 도구에
+전달하는 Hybrid 흐름을 사용할 수 있다. 도구 선택은 키워드 규칙이 아니라 대화
+모델의 tool calling 판단이다.
 
 ```text
 Codmes AI
 ├─ MCP 호출 필요 여부 판단
-├─ 검색어, category, limit 결정
+├─ Scan / Deep / Hybrid 선택
+├─ 상태·기간·대상 또는 상세 검색어 결정
 └─ 사용자 승인 후 도구 호출
 
 KNU MCP
-├─ category 범위로 pgvector 후보 검색
-├─ reranker로 관련도 재정렬
-├─ reranker 장애 시 vector 유사도 순서로 fallback
+├─ Scan: SQL 메타데이터 필터·정렬·총 개수 계산
+├─ Deep: 필터 적용 후 pgvector 후보 검색과 reranking
+├─ 과거 24개월 밖 공지: 본문 없이 메타데이터만 Scan 제공
 └─ 제목, 날짜, 본문 근거와 원문 URL 반환
 ```
 
-따라서 카테고리 분류가 사라진 것이 아니라 Codmes AI의 tool-calling 단계로
-이동한 것이다. KNU 웹 챗봇의 기존 RAG 경로에서는 별도의 KNU LLM router를 계속
-사용한다.
+KNU MCP는 질문을 다시 LLM으로 분류하지 않는다. 카테고리·상태·연도 같은 인자는
+Codmes AI가 정하고, KNU 서버는 그 구조화 인자를 그대로 검증·실행한다. 독립형 KNU
+웹 챗봇의 대화 경로는 MCP와 별개다.
 
 답변 품질은 KNU PostgreSQL에 수집·인덱싱된 공지와 검색/rerank 결과에 의존한다.
 데이터가 없거나 근거가 부족하면 MCP는 `no_results`를 반환하며 AI는 추측하지 않고

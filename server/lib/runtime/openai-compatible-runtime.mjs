@@ -928,7 +928,15 @@ export class OpenAICompatibleRuntime extends EventEmitter {
         }
 
         const mcpResult = await client.callTool(originalToolName, argsObj);
-        const output = mcpResult.content || mcpResult;
+        const structuredContent = mcpResult.structuredContent
+          ?? mcpResult.structured_content
+          ?? null;
+        const output = structuredContent === null
+          ? (mcpResult.content || mcpResult)
+          : {
+              content: mcpResult.content || [],
+              structuredContent
+            };
 
         this.emit("event", {
           type: "tool.complete",

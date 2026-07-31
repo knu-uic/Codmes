@@ -69,7 +69,7 @@ DocSearch, conversation recall, Code 도구가 여기에 해당한다.
 {
   "type": "mcp",
   "id": "knu",
-  "tool": "search_knu_notices"
+  "tool": "knu_search_notice_details"
 }
 ```
 
@@ -97,20 +97,19 @@ plugin용 실행 adapter다. `storage.json`에 collection schema를 선언하고
   "schemaVersion": 1,
   "tools": [
     {
-      "name": "knu_search_notices",
-      "description": "공주대학교 공지를 검색합니다.",
+      "name": "knu_search_notice_details",
+      "description": "공주대학교 공지의 구체적인 근거를 검색합니다.",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "query": {"type": "string"},
-          "limit": {"type": "integer", "minimum": 1, "maximum": 10}
+          "query": {"type": "string"}
         },
         "required": ["query"]
       },
       "provider": {
         "type": "mcp",
         "server": "knu",
-        "tool": "search_knu_notices"
+        "tool": "knu_search_notice_details"
       },
       "requiresApproval": true,
       "readOnly": true
@@ -143,8 +142,8 @@ MCP 연결 후 서버가 반환한 실제 `tools/list`와 선언을 provider 내
 
 ```text
 사용자: “이번 학기 수강 철회 기간 알려줘”
-  → 모델이 knu_search_notices({query: "수강 철회 기간"}) 선택
-  → Registry가 provider=mcp, server=knu, tool=search_knu_notices 확인
+  → 모델이 knu_search_notice_details({query: "수강 철회 기간", category: "수강"}) 선택
+  → Registry가 provider=mcp, server=knu, tool=knu_search_notice_details 확인
   → Surface/disabled/approval 정책 확인
   → 승인 후 Codmes MCP client가 KNU 서버 호출
   → 근거·URL 반환

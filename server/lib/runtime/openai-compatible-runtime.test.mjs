@@ -811,7 +811,11 @@ test("OpenAI-compatible runtime exposes a plugin-declared public name through th
           content: [{
             type: "text",
             text: `${name}:${args.query}`
-          }]
+          }],
+          structuredContent: {
+            mode: "deep",
+            documents: [{ title: "수강 철회" }]
+          }
         };
       },
       stop() {}
@@ -844,10 +848,16 @@ test("OpenAI-compatible runtime exposes a plugin-declared public name through th
     surface: "knu",
     approved: true
   });
-  assert.deepEqual(result.output, [{
-    type: "text",
-    text: "search_knu_notices:수강 철회"
-  }]);
+  assert.deepEqual(result.output, {
+    content: [{
+      type: "text",
+      text: "search_knu_notices:수강 철회"
+    }],
+    structuredContent: {
+      mode: "deep",
+      documents: [{ title: "수강 철회" }]
+    }
+  });
 
   await runtime.createSession({
     sessionId: "knu-plugin-full",
@@ -861,10 +871,16 @@ test("OpenAI-compatible runtime exposes a plugin-declared public name through th
     sessionId: "knu-plugin-full",
     surface: "knu"
   });
-  assert.deepEqual(fullModeResult.output, [{
-    type: "text",
-    text: "search_knu_notices:한미 대학생 연수"
-  }]);
+  assert.deepEqual(fullModeResult.output, {
+    content: [{
+      type: "text",
+      text: "search_knu_notices:한미 대학생 연수"
+    }],
+    structuredContent: {
+      mode: "deep",
+      documents: [{ title: "수강 철회" }]
+    }
+  });
   runtime.close();
 });
 
