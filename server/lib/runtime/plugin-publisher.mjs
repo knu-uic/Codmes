@@ -15,6 +15,7 @@ export async function preparePluginRelease({
   outputDirectory = null,
   registryPath,
   packageUrl = null,
+  packageDirectory = null,
   signingKey,
   publisherId,
   category = null,
@@ -40,12 +41,19 @@ export async function preparePluginRelease({
   // 공개 Marketplace 저장소처럼 Registry가 package를 직접 미러링하는 경우
   // package URL을 생략한다. 버전과 파일명을 manifest에서 읽어 packages/ 아래에
   // 서명 archive를 만들고 Registry에는 상대 packagePath를 기록한다.
-  const registryPackagePath = url ? null : `packages/${filename}`;
+  const registryDirectory = url
+    ? null
+    : normalizePackageDirectoryName(packageDirectory || manifest.id);
+  const registryPackagePath = url
+    ? null
+    : `packages/${registryDirectory}/${manifest.version}.codmes-plugin`;
   const output = url
     ? path.resolve(String(outputDirectory || path.join("dist", "plugins")))
-    : path.join(path.dirname(registry), "packages");
+    : path.dirname(path.resolve(path.dirname(registry), registryPackagePath));
   await fs.mkdir(output, { recursive: true });
-  const destination = path.join(output, filename);
+  const destination = url
+    ? path.join(output, filename)
+    : path.resolve(path.dirname(registry), registryPackagePath);
   const identity = publisherIdentity(publisherId, crypto.createPublicKey(signingKey));
 
   let packed;
@@ -211,6 +219,14 @@ function normalizeReleasePackageUrl(value) {
     throw new Error("Release package URL must not contain credentials, query, or fragment.");
   }
   return url;
+}
+
+function normalizePackageDirectoryName(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!/^[a-z0-9]+(?:[._-][a-z0-9]+)*$/.test(normalized)) {
+    throw new Error("Marketplace package directory must be a lowercase id or slug.");
+  }
+  return normalized;
 }
 
 async function writeJsonAtomic(file, value) {

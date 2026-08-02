@@ -107,7 +107,7 @@ node bin/codmes.mjs plugin verify /tmp/example-1.0.0.codmes-plugin \
     "id": "com.example.plugin",
     "name": "Example",
     "version": "1.0.0",
-    "packagePath": "packages/com.example.plugin-1.0.0.codmes-plugin",
+    "packagePath": "packages/com.example.plugin/1.0.0.codmes-plugin",
     "sha256": "...",
     "signature": {
       "algorithm": "ed25519",
@@ -146,7 +146,7 @@ Community plugin 저장소는 Codmes 저장소를 checkout하거나 공식 GitHu
 1. 2절의 `plugin pack` 명령으로 서명 package를 만든다.
 2. Codmes Marketplace 저장소를 fork한다.
 3. package를
-   `registry/packages/<plugin-id>-<version>.codmes-plugin`에 추가한다.
+   `registry/packages/<plugin-id>/<version>.codmes-plugin`에 추가한다.
 4. `registry/index.json`에 `packagePath`, SHA-256, signature, 권한과 release note를
    추가한다.
 5. Pull Request를 만들면 Marketplace Actions가 공식 validator로 package를
@@ -156,7 +156,7 @@ Marketplace의 `packagePath`는 다음처럼 Registry 기준 상대 경로여야
 
 ```json
 {
-  "packagePath": "packages/com.example.plugin-1.0.0.codmes-plugin"
+  "packagePath": "packages/com.example.plugin/1.0.0.codmes-plugin"
 }
 ```
 
@@ -170,8 +170,9 @@ data version이 포함된다. 최초 Publisher는 공개키 소유 증명과 저
 이미 Publisher가 승인된 Marketplace에서는 package 파일명, `version`,
 `packagePath`, SHA-256, Publisher 서명과 `updatedAt`을 직접 편집하지 않는다.
 `--package-url`을 생략한 `publisher prepare`가 plugin manifest의 id와 version을
-읽어 `registry/packages/`에 서명 package를 만들고 `registry/index.json`의 기존
-metadata를 보존하면서 배포 필드를 자동 갱신한다.
+읽어 `registry/packages/<plugin-id>/<version>.codmes-plugin`에 서명 package를
+만들고 `registry/index.json`의 기존 metadata를 보존하면서 배포 필드를 자동
+갱신한다.
 
 ```sh
 node bin/codmes.mjs plugin publisher prepare /path/to/plugin \
@@ -185,7 +186,7 @@ node bin/codmes.mjs plugin publisher prepare /path/to/plugin \
 
 1. manifest에서 plugin id와 semver 읽기
 2. 모든 package 파일을 Ed25519로 서명
-3. `registry/packages/<plugin-id>-<version>.codmes-plugin` 생성
+3. `registry/packages/<plugin-id>/<version>.codmes-plugin` 생성
 4. SHA-256과 Publisher key id 계산
 5. Registry의 version, packagePath, checksum, signature, release note, updatedAt 갱신
 
@@ -194,6 +195,12 @@ archive를 다시 만들지 않는다. CLI가 기존 파일의 Publisher 서명,
 version을 검증하고 그 파일의 실제 SHA-256을 Registry에 기록하므로 Release와
 Marketplace가 완전히 같은 byte를 배포한다. 잘못된 파일이나 다른 Publisher가
 서명한 파일은 Registry를 수정하기 전에 거부한다.
+
+저장소 이름처럼 더 읽기 쉬운 폴더를 사용하려면 `--package-directory`를 지정한다.
+예를 들어 KNU는 `--package-directory knu-plugin`을 사용해
+`registry/packages/knu-plugin/0.3.3.codmes-plugin`에 저장한다. 슬러그를 생략하면
+plugin id가 폴더 이름이 되므로 외부 Publisher도 별도 하드코딩 없이 같은 구조를
+사용할 수 있다.
 
 그 뒤 `plugin registry validate --production --verify-assets`를 실행하고 생성된 package와
 `registry/index.json`만 Pull Request에 포함한다. 외부 GitHub Release URL을 직접

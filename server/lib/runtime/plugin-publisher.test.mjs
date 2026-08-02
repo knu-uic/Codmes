@@ -72,10 +72,10 @@ test("Publisher release preparation creates a Registry-local package and entry w
   });
 
   assert.equal(result.packageUrl, null);
-  assert.equal(result.registryPackagePath, "packages/com.example.demo-1.0.0.codmes-plugin");
+  assert.equal(result.registryPackagePath, "packages/com.example.demo/1.0.0.codmes-plugin");
   assert.equal(
     result.packagePath,
-    path.join(root, "registry", "packages", "com.example.demo-1.0.0.codmes-plugin")
+    path.join(root, "registry", "packages", "com.example.demo", "1.0.0.codmes-plugin")
   );
   const archive = await fs.readFile(result.packagePath);
   assert.equal(verifyPluginPackageSignature(archive, publisher.identity).valid, true);
@@ -92,8 +92,8 @@ test("Publisher release preparation reuses an existing signed Release asset byte
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-publisher-existing-"));
   const source = await createPluginSource(root);
   const registry = path.join(root, "registry", "index.json");
-  const packageDirectory = path.join(root, "registry", "packages");
-  const packagePath = path.join(packageDirectory, "com.example.demo-1.0.0.codmes-plugin");
+  const packageDirectory = path.join(root, "registry", "packages", "demo-plugin");
+  const packagePath = path.join(packageDirectory, "1.0.0.codmes-plugin");
   const publisher = createPublisherKeyPair("com.example.publisher");
   await fs.mkdir(packageDirectory, { recursive: true });
   const originallyPacked = await import("./plugin-package.mjs").then(({ packPluginPackage }) =>
@@ -109,6 +109,7 @@ test("Publisher release preparation reuses an existing signed Release asset byte
     registryPath: registry,
     signingKey: publisher.privateKey,
     publisherId: publisher.identity.publisherId,
+    packageDirectory: "demo-plugin",
     releaseNotes: "Uses the exact GitHub Release asset."
   });
 
@@ -116,7 +117,23 @@ test("Publisher release preparation reuses an existing signed Release asset byte
   assert.equal(result.sha256, originallyPacked.sha256);
   const index = JSON.parse(await fs.readFile(registry, "utf8"));
   assert.equal(index.plugins[0].sha256, originallyPacked.sha256);
-  assert.equal(index.plugins[0].packagePath, "packages/com.example.demo-1.0.0.codmes-plugin");
+  assert.equal(index.plugins[0].packagePath, "packages/demo-plugin/1.0.0.codmes-plugin");
+});
+
+test("Publisher release preparation rejects unsafe package directory names", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-publisher-directory-"));
+  const source = await createPluginSource(root);
+  const publisher = createPublisherKeyPair("com.example.publisher");
+  await assert.rejects(
+    () => preparePluginRelease({
+      sourcePath: source,
+      registryPath: path.join(root, "registry", "index.json"),
+      signingKey: publisher.privateKey,
+      publisherId: publisher.identity.publisherId,
+      packageDirectory: "../escape"
+    }),
+    /lowercase id or slug/
+  );
 });
 
 async function createPluginSource(root) {

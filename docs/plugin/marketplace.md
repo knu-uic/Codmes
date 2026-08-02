@@ -144,12 +144,12 @@ Registry entry에는 다음 정보가 필요하다.
 {
   "id": "kr.ac.kongju.knu",
   "name": "KNU",
-  "version": "0.3.0",
-  "packagePath": "packages/kr.ac.kongju.knu-0.3.0.codmes-plugin",
+  "version": "0.3.3",
+  "packagePath": "packages/knu-plugin/0.3.3.codmes-plugin",
   "sha256": "<64 hex characters>",
   "signature": {
     "algorithm": "ed25519",
-    "publisherId": "com.example.publisher",
+    "publisherId": "kr.ac.kongju.knu",
     "keyId": "ed25519:<32 hex characters>"
   },
   "dataVersion": 1,

@@ -1566,7 +1566,8 @@ async function runPlugins(args) {
   codmes plugin verify <PACKAGE> --public-key PUBLISHER_JSON
   codmes plugin publisher init <PUBLISHER_ID> [--output DIRECTORY] [--force]
   codmes plugin publisher prepare <PATH> --sign-key PRIVATE_KEY --publisher-id ID
-    --registry FILE [--package-url URL] [--output-dir DIRECTORY]
+    --registry FILE [--package-url URL] [--package-directory SLUG]
+    [--output-dir DIRECTORY]
     [--release-notes-file FILE] [--force]
   codmes plugin publisher apply <PUBLISHER_ID> --sign-key PRIVATE_KEY --name NAME
     --repository-url URL --output FILE [--contact VALUE]
@@ -1750,6 +1751,7 @@ async function runPlugins(args) {
           : null,
         registryPath: expandHome(registryPath),
         packageUrl,
+        packageDirectory: stringOption(options["package-directory"]),
         signingKey: await fs.readFile(expandHome(signingKeyPath), "utf8"),
         publisherId,
         category: stringOption(options.category),
