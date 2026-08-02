@@ -165,6 +165,40 @@ data version이 포함된다. 최초 Publisher는 공개키 소유 증명과 저
 처리를 사람이 추가로 검수한다. 검증을 통과해 merge되면 Marketplace가 package와
 서명 Registry를 같은 공개 host에 배포한다.
 
+### 반복 릴리스는 한 명령으로 준비하기
+
+이미 Publisher가 승인된 Marketplace에서는 package 파일명, `version`,
+`packagePath`, SHA-256, Publisher 서명과 `updatedAt`을 직접 편집하지 않는다.
+`--package-url`을 생략한 `publisher prepare`가 plugin manifest의 id와 version을
+읽어 `registry/packages/`에 서명 package를 만들고 `registry/index.json`의 기존
+metadata를 보존하면서 배포 필드를 자동 갱신한다.
+
+```sh
+node bin/codmes.mjs plugin publisher prepare /path/to/plugin \
+  --sign-key "$HOME/.codmes-publisher/example/private-key.pem" \
+  --publisher-id com.example.publisher \
+  --registry /path/to/Codmes-Marketplace/registry/index.json \
+  --release-notes-file /path/to/release-notes.md
+```
+
+명령 하나가 다음을 수행한다.
+
+1. manifest에서 plugin id와 semver 읽기
+2. 모든 package 파일을 Ed25519로 서명
+3. `registry/packages/<plugin-id>-<version>.codmes-plugin` 생성
+4. SHA-256과 Publisher key id 계산
+5. Registry의 version, packagePath, checksum, signature, release note, updatedAt 갱신
+
+GitHub Release에 첨부한 동일 package를 먼저 `registry/packages/`에 복사한 경우에는
+archive를 다시 만들지 않는다. CLI가 기존 파일의 Publisher 서명, plugin id와
+version을 검증하고 그 파일의 실제 SHA-256을 Registry에 기록하므로 Release와
+Marketplace가 완전히 같은 byte를 배포한다. 잘못된 파일이나 다른 Publisher가
+서명한 파일은 Registry를 수정하기 전에 거부한다.
+
+그 뒤 `plugin registry validate --production --verify-assets`를 실행하고 생성된 package와
+`registry/index.json`만 Pull Request에 포함한다. 외부 GitHub Release URL을 직접
+배포원으로 쓰는 Registry에서는 기존처럼 `--package-url`을 명시할 수 있다.
+
 플러그인 저장소 자체의 CI 검증은 선택 사항이다. 필요하면 설치된 Codmes CLI로
 로컬 설치와 `plugin verify`를 실행하되, Codmes GitHub 저장소를 직접 checkout하는
 workflow를 배포 요구사항으로 두지 않는다.

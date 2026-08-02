@@ -56,6 +56,69 @@ test("Publisher release preparation requires the URL to match the versioned asse
   );
 });
 
+test("Publisher release preparation creates a Registry-local package and entry without manual JSON edits", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-publisher-marketplace-"));
+  const source = await createPluginSource(root);
+  const registry = path.join(root, "registry", "index.json");
+  const publisher = createPublisherKeyPair("com.example.publisher");
+
+  const result = await preparePluginRelease({
+    sourcePath: source,
+    registryPath: registry,
+    signingKey: publisher.privateKey,
+    publisherId: publisher.identity.publisherId,
+    category: "Productivity",
+    releaseNotes: "Adds a native card layout."
+  });
+
+  assert.equal(result.packageUrl, null);
+  assert.equal(result.registryPackagePath, "packages/com.example.demo-1.0.0.codmes-plugin");
+  assert.equal(
+    result.packagePath,
+    path.join(root, "registry", "packages", "com.example.demo-1.0.0.codmes-plugin")
+  );
+  const archive = await fs.readFile(result.packagePath);
+  assert.equal(verifyPluginPackageSignature(archive, publisher.identity).valid, true);
+  const index = JSON.parse(await fs.readFile(registry, "utf8"));
+  assert.equal(index.plugins[0].version, "1.0.0");
+  assert.equal(index.plugins[0].packagePath, result.registryPackagePath);
+  assert.equal(index.plugins[0].packageUrl, null);
+  assert.equal(index.plugins[0].sha256, result.sha256);
+  assert.equal(index.plugins[0].releaseNotes, "Adds a native card layout.");
+  assert.ok(Date.parse(index.updatedAt));
+});
+
+test("Publisher release preparation reuses an existing signed Release asset byte-for-byte", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-publisher-existing-"));
+  const source = await createPluginSource(root);
+  const registry = path.join(root, "registry", "index.json");
+  const packageDirectory = path.join(root, "registry", "packages");
+  const packagePath = path.join(packageDirectory, "com.example.demo-1.0.0.codmes-plugin");
+  const publisher = createPublisherKeyPair("com.example.publisher");
+  await fs.mkdir(packageDirectory, { recursive: true });
+  const originallyPacked = await import("./plugin-package.mjs").then(({ packPluginPackage }) =>
+    packPluginPackage(source, packagePath, {
+      signingKey: publisher.privateKey,
+      publisherId: publisher.identity.publisherId
+    })
+  );
+  const originalBytes = await fs.readFile(packagePath);
+
+  const result = await preparePluginRelease({
+    sourcePath: source,
+    registryPath: registry,
+    signingKey: publisher.privateKey,
+    publisherId: publisher.identity.publisherId,
+    releaseNotes: "Uses the exact GitHub Release asset."
+  });
+
+  assert.deepEqual(await fs.readFile(packagePath), originalBytes);
+  assert.equal(result.sha256, originallyPacked.sha256);
+  const index = JSON.parse(await fs.readFile(registry, "utf8"));
+  assert.equal(index.plugins[0].sha256, originallyPacked.sha256);
+  assert.equal(index.plugins[0].packagePath, "packages/com.example.demo-1.0.0.codmes-plugin");
+});
+
 async function createPluginSource(root) {
   const source = path.join(root, "source");
   await fs.mkdir(source);

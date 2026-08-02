@@ -5,15 +5,16 @@ import path from "node:path";
 import { normalizeMarketplaceRegistry } from "./plugin-marketplace.mjs";
 import {
   packPluginPackage,
-  publisherIdentity
+  publisherIdentity,
+  verifyPluginPackageSignature
 } from "./plugin-package.mjs";
 import { readPluginManifestSource } from "./plugin-registry.mjs";
 
 export async function preparePluginRelease({
   sourcePath,
-  outputDirectory,
+  outputDirectory = null,
   registryPath,
-  packageUrl,
+  packageUrl = null,
   signingKey,
   publisherId,
   category = null,
@@ -25,42 +26,65 @@ export async function preparePluginRelease({
   verified = false,
   force = false
 }) {
-  if (!sourcePath || !outputDirectory || !registryPath || !packageUrl
-      || !signingKey || !publisherId) {
-    throw new Error("Release preparation requires source, output, registry, package URL, signing key, and publisher id.");
+  if (!sourcePath || !registryPath || !signingKey || !publisherId) {
+    throw new Error("Release preparation requires source, registry, signing key, and publisher id.");
   }
-  const url = normalizeReleasePackageUrl(packageUrl);
   const source = path.resolve(String(sourcePath));
-  const output = path.resolve(String(outputDirectory));
   const registry = path.resolve(String(registryPath));
   const manifest = await readPluginManifestSource(source);
   const filename = `${manifest.id}-${manifest.version}.codmes-plugin`;
-  if (!url.pathname.endsWith(`/${filename}`)) {
+  const url = packageUrl ? normalizeReleasePackageUrl(packageUrl) : null;
+  if (url && !url.pathname.endsWith(`/${filename}`)) {
     throw new Error(`Release package URL must end with '/${filename}'.`);
   }
+  // 공개 Marketplace 저장소처럼 Registry가 package를 직접 미러링하는 경우
+  // package URL을 생략한다. 버전과 파일명을 manifest에서 읽어 packages/ 아래에
+  // 서명 archive를 만들고 Registry에는 상대 packagePath를 기록한다.
+  const registryPackagePath = url ? null : `packages/${filename}`;
+  const output = url
+    ? path.resolve(String(outputDirectory || path.join("dist", "plugins")))
+    : path.join(path.dirname(registry), "packages");
   await fs.mkdir(output, { recursive: true });
   const destination = path.join(output, filename);
-  if (!force && await pathExists(destination)) {
-    throw new Error(`Release package already exists: ${destination}`);
-  }
-
-  const temporaryPackage = path.join(
-    output,
-    `.${filename}.${crypto.randomBytes(6).toString("hex")}.tmp`
-  );
-  let packed;
-  try {
-    packed = await packPluginPackage(source, temporaryPackage, {
-      signingKey,
-      publisherId
-    });
-    if (force) await fs.rm(destination, { force: true });
-    await fs.rename(temporaryPackage, destination);
-  } finally {
-    await fs.rm(temporaryPackage, { force: true }).catch(() => {});
-  }
-
   const identity = publisherIdentity(publisherId, crypto.createPublicKey(signingKey));
+
+  let packed;
+  if (!force && await pathExists(destination)) {
+    // GitHub Release에 이미 올린 archive를 Marketplace 브랜치에 복사한 뒤 이
+    // 명령을 실행할 수 있다. 같은 version을 다시 pack하면 archive timestamp
+    // 때문에 SHA가 달라질 수 있으므로 기존 byte를 그대로 검증·재사용한다.
+    const archive = await fs.readFile(destination);
+    const verified = verifyPluginPackageSignature(archive, identity);
+    if (!verified.valid
+        || verified.pluginId !== manifest.id
+        || verified.version !== manifest.version) {
+      throw new Error(`Existing release package is invalid or does not match ${manifest.id}@${manifest.version}.`);
+    }
+    packed = {
+      sha256: verified.sha256,
+      signature: {
+        algorithm: verified.algorithm,
+        publisherId: verified.publisherId,
+        keyId: verified.keyId
+      }
+    };
+  } else {
+    const temporaryPackage = path.join(
+      output,
+      `.${filename}.${crypto.randomBytes(6).toString("hex")}.tmp`
+    );
+    try {
+      packed = await packPluginPackage(source, temporaryPackage, {
+        signingKey,
+        publisherId
+      });
+      if (force) await fs.rm(destination, { force: true });
+      await fs.rename(temporaryPackage, destination);
+    } finally {
+      await fs.rm(temporaryPackage, { force: true }).catch(() => {});
+    }
+  }
+
   const existing = await readRegistryOrDefault(registry);
   const existingPlugin = existing.plugins.find((plugin) => plugin.id === manifest.id) || null;
   const existingPublisher = existing.publishers.find(
@@ -101,7 +125,9 @@ export async function preparePluginRelease({
     icon: icon || manifest.surface.icon || existingPlugin?.icon || "shippingbox",
     verified: verified || existingPlugin?.verified === true,
     featured: featured || existingPlugin?.featured === true,
-    packageUrl: url.toString(),
+    ...(url
+      ? { packageUrl: url.toString() }
+      : { packagePath: registryPackagePath }),
     sha256: packed.sha256,
     signature: packed.signature,
     platforms: manifest.platforms,
@@ -129,7 +155,8 @@ export async function preparePluginRelease({
     version: manifest.version,
     tag: `${manifest.id}-v${manifest.version}`,
     packagePath: destination,
-    packageUrl: url.toString(),
+    packageUrl: url?.toString() || null,
+    registryPackagePath,
     sha256: packed.sha256,
     signature: packed.signature,
     publisher: identity,
