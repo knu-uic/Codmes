@@ -245,16 +245,12 @@ public partial class MainWindow : Window
 
     private static bool SupportsWindowsDesktop(JsonElement plugin)
     {
-        var platforms = Strings(plugin, "platforms").Select(value => value == "ipados" ? "ios" : value).ToArray();
-        var factors = Strings(plugin, "formFactors").ToArray();
-        if (factors.Length == 0)
-        {
-            var legacy = Strings(plugin, "platforms").ToHashSet();
-            factors = new[] { legacy.Contains("macos") ? "desktop" : "", legacy.Contains("ios") ? "phone" : "", legacy.Contains("ipados") ? "tablet" : "" }
-                .Where(value => value.Length > 0).ToArray();
-        }
-        return (platforms.Length == 0 || platforms.Contains("windows"))
-            && (factors.Length == 0 || factors.Contains("desktop"));
+        return ClientCompatibility.Supports(
+            Strings(plugin, "platforms"),
+            Strings(plugin, "formFactors"),
+            "windows",
+            "desktop"
+        );
     }
 
     private static IEnumerable<string> Strings(JsonElement value, string name) =>

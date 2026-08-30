@@ -19,3 +19,5 @@ client/android/app/build/
 client/android/local.properties
 client/windows/bin/
 client/windows/obj/
+client/windows/tests/bin/
+client/windows/tests/obj/

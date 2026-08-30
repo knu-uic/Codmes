@@ -29,3 +29,7 @@ collection/dashboard rendering, live Chat, and editable Notes/Code browsing.
 Advanced PDF annotation and Code patch-review UI remain platform-specific
 renderer extensions; the server protocol and declarative Surface contract do
 not depend on them.
+
+Client CI runs the Apple package tests, Android compatibility tests/lint/APK
+build, and Windows compatibility tests/self-contained win-x64 publish. This
+keeps compatibility declarations tied to executable client artifacts.

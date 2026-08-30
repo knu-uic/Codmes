@@ -17,8 +17,6 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import kotlin.concurrent.thread
 
 class MainActivity : Activity() {
@@ -200,16 +198,13 @@ class MainActivity : Activity() {
     } }
 
     private fun supportsCurrentDevice(plugin: JSONObject): Boolean {
-        val platforms = strings(plugin.optJSONArray("platforms"))
-            .map { if (it == "ipados") "ios" else it }
-        val declaredFactors = strings(plugin.optJSONArray("formFactors"))
-        val factors = if (declaredFactors.isNotEmpty()) declaredFactors else legacyFactors(plugin.optJSONArray("platforms"))
-        return (platforms.isEmpty() || "android" in platforms) && (factors.isEmpty() || formFactor in factors)
+        return ClientCompatibility.supports(
+            declaredPlatforms = strings(plugin.optJSONArray("platforms")),
+            declaredFormFactors = strings(plugin.optJSONArray("formFactors")),
+            currentPlatform = "android",
+            currentFormFactor = formFactor
+        )
     }
-
-    private fun legacyFactors(platforms: JSONArray?): List<String> = strings(platforms).mapNotNull {
-        when (it) { "macos" -> "desktop"; "ios" -> "phone"; "ipados" -> "tablet"; else -> null }
-    }.distinct()
 
     private fun strings(values: JSONArray?): List<String> = (0 until (values?.length() ?: 0)).map {
         values!!.getString(it).lowercase()

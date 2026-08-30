@@ -1,0 +1,47 @@
+name: client-builds
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  apple:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test Apple client
+        working-directory: client/apple
+        run: swift test
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - name: Test, lint, and build Android client
+        working-directory: client/android
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codmes-android-debug
+          path: client/android/app/build/outputs/apk/debug/app-debug.apk
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Test Windows compatibility contract
+        run: dotnet test client/windows/tests/Codmes.Windows.Tests.csproj --configuration Release
+      - name: Publish Windows client
+        run: dotnet publish client/windows/Codmes.Windows.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true --output artifacts/windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codmes-windows-win-x64
+          path: artifacts/windows
