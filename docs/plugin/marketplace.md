@@ -3,6 +3,10 @@
 Codmes Marketplace는 Workspace 서버에 plugin을 한 번 설치하고, 그 서버에 연결된
 macOS·iPhone·iPad가 같은 plugin view와 도구를 사용하는 구조다. Apple 앱마다 package를
 따로 내려받거나 임의 JavaScript/native binary를 실행하지 않는다.
+Package manifest의 `platforms`가 현재 기기를 포함하지 않으면 Marketplace에는
+호환되지 않음으로 표시되고 설치 버튼이 비활성화되며, 이미 Workspace에 설치된
+plugin이라도 해당 기기에는 Surface를 노출하지 않는다. 예전 Registry 항목처럼
+`platforms`가 없는 경우에만 하위 호환을 위해 모든 Apple 기기를 지원하는 것으로 본다.
 
 Chat·Notes·Code·Planner는 Codmes가 함께 배포하는 built-in plugin이다. KNU처럼
 사용자가 선택하는 community plugin만 Marketplace에서 설치한다. 두 종류는 동일한

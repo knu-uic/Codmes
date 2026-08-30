@@ -107,6 +107,21 @@ test("plugin manifest rejects insecure remote services and cross-surface MCP acc
   );
 });
 
+test("plugin manifest accepts only supported Apple platforms", () => {
+  assert.deepEqual(
+    validatePluginManifest({ ...manifest, platforms: ["MACOS", "ios", "ios"] }).platforms,
+    ["macos", "ios"]
+  );
+  assert.throws(
+    () => validatePluginManifest({ ...manifest, platforms: [] }),
+    /at least one platform/
+  );
+  assert.throws(
+    () => validatePluginManifest({ ...manifest, platforms: ["android"] }),
+    /unsupported platforms: android/
+  );
+});
+
 test("plugin installation resolves a package-owned Surface UI file", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-plugin-ui-root-"));
   const source = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-plugin-ui-source-"));

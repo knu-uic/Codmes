@@ -9,7 +9,8 @@ import { once } from "node:events";
 import {
   installMarketplacePlugin,
   listMarketplacePlugins,
-  loadMarketplaceRegistry
+  loadMarketplaceRegistry,
+  normalizeMarketplaceRegistry
 } from "./plugin-marketplace.mjs";
 import { createPublisherKeyPair, packPluginPackage } from "./plugin-package.mjs";
 import {
@@ -22,6 +23,25 @@ import {
   installPlugin,
   rollbackPlugin
 } from "./plugin-registry.mjs";
+
+test("Marketplace registry accepts only supported Apple platforms", () => {
+  const entry = {
+    id: "com.example.demo",
+    name: "Demo",
+    version: "1.0.0",
+    packagePath: "demo.codmes-plugin",
+    platforms: ["MACOS", "ios", "ios"]
+  };
+  const registry = normalizeMarketplaceRegistry({ schemaVersion: 1, plugins: [entry] });
+  assert.deepEqual(registry.plugins[0].platforms, ["macos", "ios"]);
+  assert.throws(
+    () => normalizeMarketplaceRegistry({
+      schemaVersion: 1,
+      plugins: [{ ...entry, platforms: ["android"] }]
+    }),
+    /unsupported platforms: android/
+  );
+});
 
 test("Marketplace installs an update atomically and restores the previous plugin version", async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-marketplace-workspace-"));

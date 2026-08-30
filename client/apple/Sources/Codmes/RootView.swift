@@ -3930,6 +3930,11 @@ private struct MarketplaceSettingsView: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    if !plugin.supportsCurrentPlatform {
+                        Label("Not supported on this device", systemImage: "laptopcomputer.slash")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Spacer(minLength: 8)
@@ -3975,7 +3980,7 @@ private struct MarketplaceSettingsView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(isWorking)
+                .disabled(isWorking || !plugin.supportsCurrentPlatform)
             }
             if plugin.updateAvailable {
                 Button("Update") {
@@ -3987,7 +3992,7 @@ private struct MarketplaceSettingsView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .disabled(isWorking || plugin.blocked)
+                .disabled(isWorking || plugin.blocked || !plugin.supportsCurrentPlatform)
             }
             Button(role: .destructive) {
                 pendingRemoval = plugin
@@ -3996,7 +4001,7 @@ private struct MarketplaceSettingsView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .disabled(isWorking)
+            .disabled(isWorking || !plugin.supportsCurrentPlatform)
             .help("Remove \(plugin.name)")
         } else {
             Button("Install") {
@@ -4004,7 +4009,7 @@ private struct MarketplaceSettingsView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
-            .disabled(isWorking || plugin.blocked)
+            .disabled(isWorking || plugin.blocked || !plugin.supportsCurrentPlatform)
         }
     }
 
@@ -4219,6 +4224,11 @@ private struct PluginSettingsView: View {
                     Text(plugin.builtIn ? "Built-in Plugin" : "Community Plugin")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                    if !plugin.supportsCurrentPlatform {
+                        Text("Not supported on this device")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer()
             }
@@ -4231,7 +4241,7 @@ private struct PluginSettingsView: View {
             ))
             .labelsHidden()
             .controlSize(.small)
-            .disabled(plugin.id == "com.codmes.chat")
+            .disabled(plugin.id == "com.codmes.chat" || !plugin.supportsCurrentPlatform)
 
             Button {
                 selectedPluginId = plugin.id

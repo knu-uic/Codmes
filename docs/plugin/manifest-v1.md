@@ -47,6 +47,9 @@ Codmes의 선택형 plugin은 서버 Workspace에 한 번 설치하며, 연결�
 ```
 
 - `id`는 reverse-domain 형식, `version`은 semver다.
+- `platforms`에는 실제 지원 대상을 `macos`, `ios`, `ipados` 중 하나 이상 선언한다.
+  하나의 `.codmes-plugin` package를 사용하며, 현재 기기와 맞지 않는 plugin은 앱에서
+  화면을 노출하거나 설치·활성화할 수 없다.
 - Marketplace Surface는 현재 `declarative`만 허용한다.
 - Surface와 MCP URL은 HTTPS가 원칙이며 loopback 개발 서비스만 HTTP를 허용한다.
 - MCP는 반드시 자기 Surface id를 포함한다. 다른 Surface 권한은 Manifest v1에서

@@ -196,6 +196,10 @@ export async function installMarketplacePlugin(workspaceRoot, pluginId, options 
         || String(extracted.manifest.version || "") !== plugin.version) {
       throw new Error("Marketplace package does not match its registry entry.");
     }
+    if (plugin.platforms.length
+        && !sameStringSet(extracted.manifest.platforms, plugin.platforms)) {
+      throw new Error("Marketplace package platforms do not match its registry entry.");
+    }
     if (!sameStringSet(extracted.manifest.permissions, plugin.permissions)
         || Number(extracted.manifest.dataVersion || 1) !== plugin.dataVersion) {
       throw new Error("Marketplace package permissions or data version do not match its registry entry.");
@@ -412,11 +416,23 @@ function normalizeMarketplaceEntry(value) {
     signature,
     dataVersion,
     releaseNotes,
-    platforms: Array.isArray(value.platforms) ? value.platforms.map(String) : [],
+    platforms: normalizeMarketplacePlatforms(value.platforms, id),
     permissions: Array.isArray(value.permissions) ? value.permissions.map(String) : [],
     repositoryUrl: String(value.repositoryUrl || "").trim() || null,
     privacyUrl: String(value.privacyUrl || "").trim() || null
   };
+}
+
+function normalizeMarketplacePlatforms(value, pluginId) {
+  const allowed = new Set(["macos", "ios", "ipados"]);
+  const platforms = Array.isArray(value)
+    ? [...new Set(value.map(String).map((item) => item.trim().toLowerCase()).filter(Boolean))]
+    : [];
+  const unsupported = platforms.filter((platform) => !allowed.has(platform));
+  if (unsupported.length) {
+    throw new Error(`Marketplace plugin '${pluginId}' declares unsupported platforms: ${unsupported.join(", ")}.`);
+  }
+  return platforms;
 }
 
 function normalizeBlockedVersions(value) {

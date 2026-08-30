@@ -22,6 +22,7 @@ const PLUGIN_ID_PATTERN = /^[a-z0-9]+(?:[._-][a-z0-9]+)+$/;
 const SURFACE_ID_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
 const EDITOR_FIELD_ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
 const MCP_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
+const SUPPORTED_PLUGIN_PLATFORMS = new Set(["macos", "ios", "ipados"]);
 
 export function pluginsDirectory(workspaceRoot) {
   return path.join(workspaceRoot, ".codmes", "plugins");
@@ -120,6 +121,10 @@ export function validatePluginManifest(value) {
     ? [...new Set(value.platforms.map(String).map((item) => item.trim().toLowerCase()).filter(Boolean))]
     : [];
   if (!platforms.length) throw new Error("Plugin must declare at least one platform.");
+  const unsupportedPlatforms = platforms.filter((platform) => !SUPPORTED_PLUGIN_PLATFORMS.has(platform));
+  if (unsupportedPlatforms.length) {
+    throw new Error(`Plugin declares unsupported platforms: ${unsupportedPlatforms.join(", ")}.`);
+  }
 
   return {
     schemaVersion: PLUGIN_SCHEMA_VERSION,

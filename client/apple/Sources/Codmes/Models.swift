@@ -1,4 +1,24 @@
 import Foundation
+#if os(iOS)
+import UIKit
+#endif
+
+enum CodmesPlatform {
+    static var current: String {
+        #if os(macOS)
+        return "macos"
+        #elseif os(iOS)
+        return UIDevice.current.userInterfaceIdiom == .pad ? "ipados" : "ios"
+        #else
+        return "unknown"
+        #endif
+    }
+
+    static func isSupported(by platforms: [String], current: String = current) -> Bool {
+        if platforms.isEmpty { return true }
+        return platforms.contains { $0.caseInsensitiveCompare(current) == .orderedSame }
+    }
+}
 
 struct WorkspaceInfo: Codable {
     struct Root: Codable, Identifiable {
@@ -861,6 +881,7 @@ struct RuntimePlugin: Codable, Identifiable, Hashable {
     let toolNames: [String]
 
     var systemImage: String { icon.isEmpty ? "shippingbox" : icon }
+    var supportsCurrentPlatform: Bool { CodmesPlatform.isSupported(by: platforms) }
 }
 
 struct MarketplacePluginsResponse: Codable {
@@ -899,6 +920,7 @@ struct MarketplacePlugin: Codable, Identifiable, Hashable {
     let rollbackBlockedReason: String?
 
     var systemImage: String { icon.isEmpty ? "shippingbox" : icon }
+    var supportsCurrentPlatform: Bool { CodmesPlatform.isSupported(by: platforms) }
 }
 
 struct PluginView: Codable, Identifiable, Hashable {
