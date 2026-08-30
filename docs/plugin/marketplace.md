@@ -1,12 +1,13 @@
 # Codmes Plugin Marketplace
 
 Codmes Marketplace는 Workspace 서버에 plugin을 한 번 설치하고, 그 서버에 연결된
-macOS·iPhone·iPad가 같은 plugin view와 도구를 사용하는 구조다. Apple 앱마다 package를
+macOS·iPhone·iPad·Android·Windows가 같은 plugin view와 도구를 사용하는 구조다. 클라이언트마다 package를
 따로 내려받거나 임의 JavaScript/native binary를 실행하지 않는다.
-Package manifest의 `platforms`가 현재 기기를 포함하지 않으면 Marketplace에는
-호환되지 않음으로 표시되고 설치 버튼이 비활성화되며, 이미 Workspace에 설치된
-plugin이라도 해당 기기에는 Surface를 노출하지 않는다. 예전 Registry 항목처럼
-`platforms`가 없는 경우에만 하위 호환을 위해 모든 Apple 기기를 지원하는 것으로 본다.
+Package manifest의 `platforms`와 `formFactors`가 현재 기기와 맞지 않으면
+Marketplace에 호환되지 않음으로 표시하지만 Workspace 설치 버튼은 유지한다.
+이미 설치된 plugin의 서버 tool/MCP도 계속 동작하고, 해당 client의 Surface만
+노출하지 않는다. 예전 `ipados`와 `formFactors` 없는 항목은 manifest migration
+규칙에 따라 정규화한다.
 
 Chat·Notes·Code·Planner는 Codmes가 함께 배포하는 built-in plugin이다. KNU처럼
 사용자가 선택하는 community plugin만 Marketplace에서 설치한다. 두 종류는 동일한
@@ -29,7 +30,7 @@ Publisher 서명과 SHA-256을 별도로 확인한다. 개발 Registry를 사용
 3. 서버가 SHA-256, publisher 서명, package metadata, manifest, 권한, plugin view를
    검증한다.
 4. 성공하면 view·tool·MCP 설정을 한 단위로 활성화한다.
-5. 연결된 Mac/iPhone/iPad는 새 plugin을 새로고침해 표시한다.
+5. 연결된 client는 호환되는 Surface만 새로고침해 표시한다.
 
 업데이트가 있으면 `Update`, 직전 버전이 남아 있으면 `Restore`, 설치된 plugin에는
 제거 버튼이 표시된다. 제거는 plugin 실행 등록을 없애지만 사용자 credential과
@@ -53,7 +54,7 @@ Codmes Workspace server
        └── MCP 등록
                 │
                 ▼
-        macOS / iOS / iPadOS native UI
+        macOS / iOS / Android / Windows client UI
 ```
 
 - 개발 registry: 저장소의 `marketplace/index.json`
@@ -158,7 +159,8 @@ Registry entry에는 다음 정보가 필요하다.
   },
   "dataVersion": 1,
   "releaseNotes": "공지 검색 속도와 오류 안내를 개선했습니다.",
-  "platforms": ["macos", "ios", "ipados"],
+  "platforms": ["macos", "ios", "android", "windows"],
+  "formFactors": ["phone", "tablet", "desktop"],
   "permissions": ["network:https://knu.example"],
   "verified": true
 }

@@ -4,6 +4,10 @@
 
 하나의 Xcode 프로젝트가 macOS와 iOS/iPadOS target을 제공한다.
 
+호환성 판정에서 iPadOS를 별도 OS로 내보내지 않는다. iPhone은 `ios + phone`,
+iPad는 `ios + tablet`, Mac은 `macos + desktop`으로 판정한다. 서버가 기존
+`ipados` 선언을 보내는 경우에도 `ios + tablet`로 읽는다.
+
 ```text
 client/apple/Codmes.xcodeproj
 client/apple/Sources/Codmes/

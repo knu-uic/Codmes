@@ -20,6 +20,8 @@ Plugin Runtime에서 관리한다. `Surface`는 더 이상 별도 설치 단위�
   "builtIn": true,
   "removable": false,
   "enabled": true,
+  "platforms": ["macos", "ios", "android", "windows"],
+  "formFactors": ["phone", "tablet", "desktop"],
   "views": [{ "id": "planner", "renderer": "declarative" }],
   "toolNames": ["planner_list", "planner_create"]
 }
@@ -30,7 +32,7 @@ Plugin Runtime에서 관리한다. `Surface`는 더 이상 별도 설치 단위�
 ```text
 bundled plugin 또는 설치된 community package
   -> Plugin Runtime
-     -> views       -> Apple 앱의 native SwiftUI 화면
+     -> views       -> client별 native/declarative renderer
      -> tools       -> 공통 Tool Registry -> AI 도구 호출
      -> storage     -> Workspace plugin-data
      -> MCP         -> 외부 service가 필요한 community plugin
@@ -42,7 +44,9 @@ bundled plugin 또는 설치된 community package
 - KNU는 declarative view, 원격 데이터 API, MCP tool을 함께 제공한다.
 - built-in과 community tool 모두 provider type `plugin`으로 공통 Tool Registry에
   등록된다.
-- 앱은 plugin package의 HTML, JavaScript, native binary를 실행하지 않는다.
+- client는 plugin package의 HTML, JavaScript, native binary를 실행하지 않는다.
+- `platforms`/`formFactors`는 view 표시 가능 여부만 결정한다. 서버-side LLM,
+  tool, storage, MCP 등록과 Workspace 설치 상태에는 영향을 주지 않는다.
 
 ## API
 
@@ -55,7 +59,7 @@ bundled plugin 또는 설치된 community package
 - `DELETE /api/plugins/:id`: community plugin 제거
 
 `/api/surfaces`와 별도 Surface Registry는 존재하지 않는다. 이전 API를 새 API로
-중계하는 호환 adapter도 두지 않는다. 서버와 Apple client는 `/api/plugins`만
+중계하는 호환 adapter도 두지 않는다. 서버와 각 client는 `/api/plugins`만
 사용한다.
 
 ## 저장 위치
@@ -68,4 +72,4 @@ bundled plugin 또는 설치된 community package
 
 Planner는 built-in이므로 `.codmes/plugins` 설치 metadata가 없지만, 데이터는
 `.codmes/plugin-data/com.codmes.planner`에 저장한다. 따라서 같은 Workspace
-서버에 연결한 Mac·iPhone·iPad가 같은 Planner 데이터를 본다.
+서버에 연결한 모든 지원 client가 같은 Planner 데이터를 본다.

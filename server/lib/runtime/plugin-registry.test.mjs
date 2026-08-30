@@ -107,18 +107,32 @@ test("plugin manifest rejects insecure remote services and cross-surface MCP acc
   );
 });
 
-test("plugin manifest accepts only supported Apple platforms", () => {
-  assert.deepEqual(
-    validatePluginManifest({ ...manifest, platforms: ["MACOS", "ios", "ios"] }).platforms,
-    ["macos", "ios"]
-  );
+test("plugin manifest normalizes OS and form-factor compatibility", () => {
+  const modern = validatePluginManifest({
+    ...manifest,
+    platforms: ["MACOS", "ios", "android", "windows", "ios"],
+    formFactors: ["PHONE", "tablet", "desktop", "phone"]
+  });
+  assert.deepEqual(modern.platforms, ["macos", "ios", "android", "windows"]);
+  assert.deepEqual(modern.formFactors, ["phone", "tablet", "desktop"]);
+  const legacy = validatePluginManifest({
+    ...manifest,
+    platforms: ["macos", "ios", "ipados"],
+    formFactors: undefined
+  });
+  assert.deepEqual(legacy.platforms, ["macos", "ios"]);
+  assert.deepEqual(legacy.formFactors, ["desktop", "phone", "tablet"]);
   assert.throws(
     () => validatePluginManifest({ ...manifest, platforms: [] }),
     /at least one platform/
   );
   assert.throws(
-    () => validatePluginManifest({ ...manifest, platforms: ["android"] }),
-    /unsupported platforms: android/
+    () => validatePluginManifest({ ...manifest, platforms: ["linux"], formFactors: ["desktop"] }),
+    /unsupported platforms: linux/
+  );
+  assert.throws(
+    () => validatePluginManifest({ ...manifest, platforms: ["android"], formFactors: ["watch"] }),
+    /unsupported formFactors: watch/
   );
 });
 

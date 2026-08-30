@@ -13,3 +13,9 @@ __pycache__/
 client/apple/.build/
 client/apple/Codmes.xcodeproj/project.xcworkspace/xcuserdata/
 client/apple/Codmes.xcodeproj/xcuserdata/
+client/android/.gradle/
+client/android/build/
+client/android/app/build/
+client/android/local.properties
+client/windows/bin/
+client/windows/obj/

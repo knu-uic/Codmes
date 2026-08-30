@@ -5,7 +5,8 @@
   "name": "Chat",
   "description": "대화, 세션, 프로젝트, 기억과 도구 탐색을 제공합니다.",
   "icon": "message",
-  "platforms": ["macos", "ios", "ipados"],
+  "platforms": ["macos", "ios", "android", "windows"],
+  "formFactors": ["phone", "tablet", "desktop"],
   "views": [
     {
       "id": "chat",

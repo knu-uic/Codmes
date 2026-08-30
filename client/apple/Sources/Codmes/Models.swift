@@ -8,15 +8,50 @@ enum CodmesPlatform {
         #if os(macOS)
         return "macos"
         #elseif os(iOS)
-        return UIDevice.current.userInterfaceIdiom == .pad ? "ipados" : "ios"
+        return "ios"
         #else
         return "unknown"
         #endif
     }
 
-    static func isSupported(by platforms: [String], current: String = current) -> Bool {
-        if platforms.isEmpty { return true }
-        return platforms.contains { $0.caseInsensitiveCompare(current) == .orderedSame }
+    static var currentFormFactor: String {
+        #if os(macOS)
+        return "desktop"
+        #elseif os(iOS)
+        return UIDevice.current.userInterfaceIdiom == .pad ? "tablet" : "phone"
+        #else
+        return "unknown"
+        #endif
+    }
+
+    static func isSupported(
+        by platforms: [String],
+        formFactors: [String],
+        current: String = current,
+        currentFormFactor formFactor: String = currentFormFactor
+    ) -> Bool {
+        if platforms.isEmpty && formFactors.isEmpty { return true }
+        let normalizedPlatforms = platforms.map {
+            $0.caseInsensitiveCompare("ipados") == .orderedSame ? "ios" : $0.lowercased()
+        }
+        var normalizedFormFactors = formFactors.map { $0.lowercased() }
+        if normalizedFormFactors.isEmpty {
+            if platforms.contains(where: { $0.caseInsensitiveCompare("macos") == .orderedSame }) {
+                normalizedFormFactors.append("desktop")
+            }
+            if platforms.contains(where: { $0.caseInsensitiveCompare("ios") == .orderedSame }) {
+                normalizedFormFactors.append("phone")
+            }
+            if platforms.contains(where: { $0.caseInsensitiveCompare("ipados") == .orderedSame }) {
+                normalizedFormFactors.append("tablet")
+            }
+        }
+        if platforms.contains(where: { $0.caseInsensitiveCompare("ipados") == .orderedSame })
+            && !normalizedFormFactors.contains("tablet") {
+            normalizedFormFactors.append("tablet")
+        }
+        return normalizedPlatforms.contains(current.lowercased())
+            && normalizedFormFactors.contains(formFactor.lowercased())
     }
 }
 
@@ -872,6 +907,7 @@ struct RuntimePlugin: Codable, Identifiable, Hashable {
     let publisher: String
     let icon: String
     let platforms: [String]
+    let formFactors: [String]?
     let permissions: [String]
     let distribution: String
     let builtIn: Bool
@@ -881,7 +917,9 @@ struct RuntimePlugin: Codable, Identifiable, Hashable {
     let toolNames: [String]
 
     var systemImage: String { icon.isEmpty ? "shippingbox" : icon }
-    var supportsCurrentPlatform: Bool { CodmesPlatform.isSupported(by: platforms) }
+    var supportsCurrentPlatform: Bool {
+        CodmesPlatform.isSupported(by: platforms, formFactors: formFactors ?? [])
+    }
 }
 
 struct MarketplacePluginsResponse: Codable {
@@ -901,6 +939,7 @@ struct MarketplacePlugin: Codable, Identifiable, Hashable {
     let verified: Bool
     let featured: Bool
     let platforms: [String]
+    let formFactors: [String]?
     let permissions: [String]
     let repositoryUrl: String?
     let privacyUrl: String?
@@ -920,7 +959,9 @@ struct MarketplacePlugin: Codable, Identifiable, Hashable {
     let rollbackBlockedReason: String?
 
     var systemImage: String { icon.isEmpty ? "shippingbox" : icon }
-    var supportsCurrentPlatform: Bool { CodmesPlatform.isSupported(by: platforms) }
+    var supportsCurrentPlatform: Bool {
+        CodmesPlatform.isSupported(by: platforms, formFactors: formFactors ?? [])
+    }
 }
 
 struct PluginView: Codable, Identifiable, Hashable {

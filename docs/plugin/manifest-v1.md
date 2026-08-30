@@ -1,6 +1,6 @@
 # Plugin Manifest v1
 
-Codmes의 선택형 plugin은 서버 Workspace에 한 번 설치하며, 연결된 macOS/iOS
+Codmes의 선택형 plugin은 서버 Workspace에 한 번 설치하며, 연결된 macOS/iOS/Android/Windows
 클라이언트가 같은 설치 상태를 공유한다. 현재 PoC의 설치 단위는 웹 Surface와 MCP
 도구 한 묶음이다. Codmes 계정이나 marketplace 계정은 필요하지 않다.
 
@@ -12,7 +12,8 @@ Codmes의 선택형 plugin은 서버 Workspace에 한 번 설치하며, 연결�
   "id": "kr.ac.kongju.knu",
   "version": "0.3.1",
   "name": "KNU",
-  "platforms": ["macos", "ios", "ipados"],
+  "platforms": ["macos", "ios", "android", "windows"],
+  "formFactors": ["phone", "tablet", "desktop"],
   "permissions": ["network:127.0.0.1"],
   "dataVersion": 1,
   "migrations": "migrations.json",
@@ -47,9 +48,15 @@ Codmes의 선택형 plugin은 서버 Workspace에 한 번 설치하며, 연결�
 ```
 
 - `id`는 reverse-domain 형식, `version`은 semver다.
-- `platforms`에는 실제 지원 대상을 `macos`, `ios`, `ipados` 중 하나 이상 선언한다.
-  하나의 `.codmes-plugin` package를 사용하며, 현재 기기와 맞지 않는 plugin은 앱에서
-  화면을 노출하거나 설치·활성화할 수 없다.
+- `platforms`는 Surface/UI가 지원하는 OS인 `macos`, `ios`, `android`, `windows`를,
+  `formFactors`는 `phone`, `tablet`, `desktop`을 선언한다. iPhone은 `ios + phone`,
+  iPad는 `ios + tablet`, Android phone은 `android + phone`, Android tablet은
+  `android + tablet`, Mac은 `macos + desktop`, Windows는 `windows + desktop`이다.
+  이 값은 서버-side LLM/tool/MCP 호환성이 아니라 client Surface/UI 호환성이다.
+- 기존 `ipados`는 읽을 때 `ios + tablet`로 정규화한다. `formFactors`가 없는 기존
+  manifest는 `macos -> desktop`, `ios -> phone`, `ipados -> tablet`로 migration한다.
+- 하나의 `.codmes-plugin` package를 Workspace에 설치한다. 현재 기기에서 UI가
+  호환되지 않아도 설치·업데이트·제거는 가능하며, 해당 기기에서 Surface만 숨긴다.
 - Marketplace Surface는 현재 `declarative`만 허용한다.
 - Surface와 MCP URL은 HTTPS가 원칙이며 loopback 개발 서비스만 HTTP를 허용한다.
 - MCP는 반드시 자기 Surface id를 포함한다. 다른 Surface 권한은 Manifest v1에서
@@ -107,8 +114,8 @@ loopback 점검 경로에만 사용한다.
 
 ## Declarative Surface 보안
 
-Apple 앱은 HTML/JavaScript를 실행하지 않는다. Codmes 서버는 설치된 UI binding에
-plugin backend의 domain JSON을 대입해 Surface document를 만든다. Apple 앱은
+Codmes client는 plugin package의 HTML/JavaScript를 실행하지 않는다. Codmes 서버는 설치된 UI binding에
+plugin backend의 domain JSON을 대입해 Surface document를 만든다. 각 client는
 인증된 Codmes API를 통해 이 문서를 받고 SwiftUI renderer로 허용된 component와
 action만 표시한다. Workspace bearer와 MCP credential은 plugin data endpoint로
 전달하지 않는다.

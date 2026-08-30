@@ -3980,7 +3980,7 @@ private struct MarketplaceSettingsView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(isWorking || !plugin.supportsCurrentPlatform)
+                .disabled(isWorking)
             }
             if plugin.updateAvailable {
                 Button("Update") {
@@ -3992,7 +3992,7 @@ private struct MarketplaceSettingsView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .disabled(isWorking || plugin.blocked || !plugin.supportsCurrentPlatform)
+                .disabled(isWorking || plugin.blocked)
             }
             Button(role: .destructive) {
                 pendingRemoval = plugin
@@ -4001,7 +4001,7 @@ private struct MarketplaceSettingsView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .disabled(isWorking || !plugin.supportsCurrentPlatform)
+            .disabled(isWorking)
             .help("Remove \(plugin.name)")
         } else {
             Button("Install") {
@@ -4009,7 +4009,7 @@ private struct MarketplaceSettingsView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
-            .disabled(isWorking || plugin.blocked || !plugin.supportsCurrentPlatform)
+            .disabled(isWorking || plugin.blocked)
         }
     }
 
@@ -4057,6 +4057,7 @@ private struct MarketplacePluginDetailView: View {
 
                     detailSection("Compatibility") {
                         Label(plugin.platforms.joined(separator: ", "), systemImage: "laptopcomputer.and.iphone")
+                        Label((plugin.formFactors ?? []).joined(separator: ", "), systemImage: "rectangle.3.group")
                         Label(plugin.installed ? "Installed" : "Not installed", systemImage: plugin.installed ? "checkmark.circle.fill" : "circle")
                             .foregroundStyle(plugin.installed ? .green : .secondary)
                         if let installedVersion = plugin.installedVersion {
@@ -4241,7 +4242,7 @@ private struct PluginSettingsView: View {
             ))
             .labelsHidden()
             .controlSize(.small)
-            .disabled(plugin.id == "com.codmes.chat" || !plugin.supportsCurrentPlatform)
+            .disabled(plugin.id == "com.codmes.chat")
 
             Button {
                 selectedPluginId = plugin.id

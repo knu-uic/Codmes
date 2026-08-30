@@ -139,6 +139,7 @@ export async function preparePluginRelease({
     sha256: packed.sha256,
     signature: packed.signature,
     platforms: manifest.platforms,
+    formFactors: manifest.formFactors,
     permissions: manifest.permissions,
     repositoryUrl: repositoryUrl || existingPlugin?.repositoryUrl || null,
     privacyUrl: privacyUrl || existingPlugin?.privacyUrl || null,

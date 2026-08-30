@@ -19,6 +19,7 @@ import {
   verifyMarketplaceRegistrySignature
 } from "./plugin-registry-signature.mjs";
 import { isBuiltInPluginId } from "./plugin-distribution.mjs";
+import { normalizeClientCompatibility } from "./plugin-compatibility.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const TRUSTED_REGISTRIES_PATH = path.join(
@@ -196,9 +197,18 @@ export async function installMarketplacePlugin(workspaceRoot, pluginId, options 
         || String(extracted.manifest.version || "") !== plugin.version) {
       throw new Error("Marketplace package does not match its registry entry.");
     }
+    const extractedCompatibility = normalizeClientCompatibility({
+      platforms: extracted.manifest.platforms,
+      formFactors: extracted.manifest.formFactors,
+      subject: `Marketplace package '${plugin.id}'`
+    });
     if (plugin.platforms.length
-        && !sameStringSet(extracted.manifest.platforms, plugin.platforms)) {
+        && !sameStringSet(extractedCompatibility.platforms, plugin.platforms)) {
       throw new Error("Marketplace package platforms do not match its registry entry.");
+    }
+    if (plugin.formFactors.length
+        && !sameStringSet(extractedCompatibility.formFactors, plugin.formFactors)) {
+      throw new Error("Marketplace package formFactors do not match its registry entry.");
     }
     if (!sameStringSet(extracted.manifest.permissions, plugin.permissions)
         || Number(extracted.manifest.dataVersion || 1) !== plugin.dataVersion) {
@@ -416,23 +426,21 @@ function normalizeMarketplaceEntry(value) {
     signature,
     dataVersion,
     releaseNotes,
-    platforms: normalizeMarketplacePlatforms(value.platforms, id),
+    ...normalizeMarketplaceCompatibility(value, id),
     permissions: Array.isArray(value.permissions) ? value.permissions.map(String) : [],
     repositoryUrl: String(value.repositoryUrl || "").trim() || null,
     privacyUrl: String(value.privacyUrl || "").trim() || null
   };
 }
 
-function normalizeMarketplacePlatforms(value, pluginId) {
-  const allowed = new Set(["macos", "ios", "ipados"]);
-  const platforms = Array.isArray(value)
-    ? [...new Set(value.map(String).map((item) => item.trim().toLowerCase()).filter(Boolean))]
-    : [];
-  const unsupported = platforms.filter((platform) => !allowed.has(platform));
-  if (unsupported.length) {
-    throw new Error(`Marketplace plugin '${pluginId}' declares unsupported platforms: ${unsupported.join(", ")}.`);
-  }
-  return platforms;
+function normalizeMarketplaceCompatibility(value, pluginId) {
+  const { platforms, formFactors } = normalizeClientCompatibility({
+    platforms: value.platforms,
+    formFactors: value.formFactors,
+    subject: `Marketplace plugin '${pluginId}'`,
+    requirePlatforms: false
+  });
+  return { platforms, formFactors };
 }
 
 function normalizeBlockedVersions(value) {

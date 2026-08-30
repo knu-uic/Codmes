@@ -36,6 +36,7 @@ test("Publisher release preparation signs an asset and atomically updates a requ
   assert.equal(index.plugins[0].packageUrl, result.packageUrl);
   assert.equal(index.plugins[0].sha256, result.sha256);
   assert.equal(index.plugins[0].dataVersion, 1);
+  assert.deepEqual(index.plugins[0].formFactors, ["desktop", "phone"]);
   assert.equal(index.plugins[0].releaseNotes, "Adds safer storage migration.");
 });
 
