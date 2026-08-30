@@ -7,5 +7,6 @@ editable Notes/Code file browsers, and pending-approval review with patch
 diffs, approve/reject actions, and optional post-patch checks.
 
 Run `dotnet run --project client/windows/Codmes.Windows.csproj` on Windows.
-No Apple SwiftUI code is embedded or reused. PDF annotation remains an
-independent Windows renderer extension over the same APIs.
+No Apple SwiftUI code is embedded or reused. The PDF renderer uses
+server-rendered pages with a native WPF overlay for pen strokes, rectangles,
+text objects, page navigation, and synchronized annotation saving.

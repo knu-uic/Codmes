@@ -39,8 +39,8 @@ Codmes는 단순한 AI 채팅 앱이 아니라, 사용자의 지식과 파일, �
 ### 요구사항
 - Apple 앱은 macOS와 iPhone·iPad를 지원합니다. Android와 Windows native client는
   공통 protocol, declarative Surface, Live Chat, 편집 가능한 Notes/Code 탐색을
-  지원합니다. Code patch 승인·거절과 선택적 검사 실행도 지원하며, PDF 주석은
-  플랫폼별 확장입니다.
+  지원합니다. Code patch 승인·거절과 선택적 검사 실행, PDF 페이지 표시·필기·
+  사각형·텍스트 주석 동기화도 지원합니다.
 - Apple, Android, Windows 클라이언트는 GitHub Actions에서 각각 테스트·빌드되며
   Android APK와 Windows win-x64 실행 패키지는 CI artifact로 생성됩니다.
 - Node.js 22 이상

@@ -1,6 +1,8 @@
 package com.codmes.android
 
 import android.app.Activity
+import android.app.AlertDialog
+import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.view.ViewGroup
 import android.widget.Button
@@ -154,10 +156,62 @@ class MainActivity : Activity() {
                 if (item.optBoolean("isDirectory")) continue
                 panel.addView(Button(this).apply {
                     text = item.optString("path")
-                    setOnClickListener { openFile(item.optString("path"), root) }
+                    setOnClickListener {
+                        val path = item.optString("path")
+                        if (path.lowercase().endsWith(".pdf")) openPdf(path, root) else openFile(path, root)
+                    }
                 })
             }
             panel.addView(Button(this).apply { text = "Back"; setOnClickListener { loadPlugins() } })
+        }
+    } }
+
+    private fun openPdf(path: String, root: String): Unit { request("/api/pdf/metadata?path=${encode(path)}") { metadata ->
+        request("/api/file/annotations?path=${encode(path)}") { annotations ->
+            var pageIndex = 0
+            val pageCount = metadata.optInt("pageCount", 1).coerceAtLeast(1)
+            show { panel ->
+                val heading = title("")
+                val viewer = PdfAnnotationView(this)
+                val tools = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                fun loadPage() {
+                    heading.text = "${path.substringAfterLast('/')} · ${pageIndex + 1}/$pageCount"
+                    requestBytes("/api/pdf-thumbnail?path=${encode(path)}&page=${pageIndex + 1}&scale=2") { data ->
+                        val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
+                        if (bitmap == null) showMessage("Could not decode PDF page.") else viewer.setPage(bitmap, annotations, pageIndex)
+                    }
+                }
+                viewer.onTextRequested = { x, y ->
+                    val input = EditText(this).apply { hint = "Annotation text" }
+                    AlertDialog.Builder(this).setTitle("Add text").setView(input)
+                        .setPositiveButton("Add") { _, _ -> viewer.addText(x, y, input.text.toString()) }
+                        .setNegativeButton("Cancel", null).show()
+                }
+                panel.addView(heading)
+                panel.addView(viewer, LinearLayout.LayoutParams(-1, 0, 1f))
+                fun toolButton(label: String, tool: PdfAnnotationView.Tool) = Button(this).apply {
+                    text = label
+                    setOnClickListener { viewer.tool = tool }
+                }
+                tools.addView(toolButton("Pen", PdfAnnotationView.Tool.PEN))
+                tools.addView(toolButton("Rectangle", PdfAnnotationView.Tool.RECTANGLE))
+                tools.addView(toolButton("Text", PdfAnnotationView.Tool.TEXT))
+                panel.addView(tools)
+                val navigation = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                navigation.addView(Button(this).apply { text = "Previous"; setOnClickListener { if (pageIndex > 0) { pageIndex--; loadPage() } } })
+                navigation.addView(Button(this).apply { text = "Next"; setOnClickListener { if (pageIndex + 1 < pageCount) { pageIndex++; loadPage() } } })
+                navigation.addView(Button(this).apply {
+                    text = "Save annotations"
+                    setOnClickListener {
+                        requestJson("PUT", "/api/file/annotations?path=${encode(path)}", viewer.annotationDocument()) {
+                            showMessage("Annotations saved.")
+                        }
+                    }
+                })
+                panel.addView(navigation)
+                panel.addView(Button(this).apply { text = "Back"; setOnClickListener { openFiles(root) } })
+                loadPage()
+            }
         }
     } }
 
@@ -282,6 +336,19 @@ class MainActivity : Activity() {
     }
 
     private fun request(path: String, done: (JSONObject) -> Unit) = requestJson("GET", path, null, done)
+
+    private fun requestBytes(path: String, done: (ByteArray) -> Unit) = thread {
+        try {
+            val builder = Request.Builder().url(server.text.toString().trimEnd('/') + path)
+            token.text.toString().trim().takeIf { it.isNotEmpty() }?.let { builder.header("Authorization", "Bearer $it") }
+            val response = http.newCall(builder.build()).execute()
+            val data = response.body?.bytes() ?: ByteArray(0)
+            if (!response.isSuccessful) error("Workspace returned ${response.code}")
+            runOnUiThread { done(data) }
+        } catch (error: Exception) {
+            runOnUiThread { showMessage(error.message ?: "Download failed") }
+        }
+    }
 
     private fun requestJson(method: String, path: String, body: JSONObject?, done: (JSONObject) -> Unit) = thread {
         try {

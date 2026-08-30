@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
 
@@ -183,12 +184,87 @@ public partial class MainWindow : Window
                 if (item.GetProperty("isDirectory").GetBoolean()) continue;
                 var path = item.GetProperty("path").GetString()!;
                 var button = new Button { Content = path, Margin = new Thickness(0, 0, 0, 6), Padding = new Thickness(10) };
-                button.Click += async (_, _) => await OpenFile(path, rootName);
+                button.Click += async (_, _) =>
+                {
+                    if (path.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)) await OpenPdf(path, rootName);
+                    else await OpenFile(path, rootName);
+                };
                 SurfaceContent.Children.Add(button);
             }
             AddBackButton(LoadPlugins);
         }
         catch (Exception error) { ShowMessage(error.Message); }
+    }
+
+    private async Task OpenPdf(string path, string rootName)
+    {
+        try
+        {
+            using var metadata = await GetJson($"/api/pdf/metadata?path={Uri.EscapeDataString(path)}");
+            using var annotationJson = await GetJson($"/api/file/annotations?path={Uri.EscapeDataString(path)}");
+            var annotations = JsonNode.Parse(annotationJson.RootElement.GetRawText())!.AsObject();
+            var pageCount = Math.Max(1, metadata.RootElement.GetProperty("pageCount").GetInt32());
+            var pageIndex = 0;
+            SurfaceContent.Children.Clear();
+            var heading = new TextBlock { FontSize = 22, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 8) };
+            var viewer = new PdfAnnotationCanvas { Height = 620, MinWidth = 500 };
+            async Task LoadPage()
+            {
+                heading.Text = $"{System.IO.Path.GetFileName(path)} · {pageIndex + 1}/{pageCount}";
+                var bytes = await GetBytes($"/api/pdf-thumbnail?path={Uri.EscapeDataString(path)}&page={pageIndex + 1}&scale=2");
+                viewer.SetPage(bytes, annotations, pageIndex);
+            }
+            viewer.TextRequested = (x, y) =>
+            {
+                var value = PromptForText();
+                if (!string.IsNullOrWhiteSpace(value)) viewer.AddText(x, y, value);
+            };
+            SurfaceContent.Children.Add(heading);
+            SurfaceContent.Children.Add(viewer);
+            var tools = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 8) };
+            foreach (var entry in new[] {
+                ("Pen", PdfAnnotationCanvas.AnnotationTool.Pen),
+                ("Rectangle", PdfAnnotationCanvas.AnnotationTool.Rectangle),
+                ("Text", PdfAnnotationCanvas.AnnotationTool.Text)
+            })
+            {
+                var button = new Button { Content = entry.Item1, Padding = new Thickness(12, 6, 12, 6), Margin = new Thickness(0, 0, 6, 0) };
+                button.Click += (_, _) => viewer.Tool = entry.Item2;
+                tools.Children.Add(button);
+            }
+            SurfaceContent.Children.Add(tools);
+            var navigation = new StackPanel { Orientation = Orientation.Horizontal };
+            var previous = new Button { Content = "Previous", Padding = new Thickness(12, 6, 12, 6), Margin = new Thickness(0, 0, 6, 0) };
+            previous.Click += async (_, _) => { if (pageIndex > 0) { pageIndex--; await LoadPage(); } };
+            var next = new Button { Content = "Next", Padding = new Thickness(12, 6, 12, 6), Margin = new Thickness(0, 0, 6, 0) };
+            next.Click += async (_, _) => { if (pageIndex + 1 < pageCount) { pageIndex++; await LoadPage(); } };
+            var save = new Button { Content = "Save annotations", Padding = new Thickness(12, 6, 12, 6) };
+            save.Click += async (_, _) =>
+            {
+                await SendJson(HttpMethod.Put, $"/api/file/annotations?path={Uri.EscapeDataString(path)}", viewer.Document);
+                MessageBox.Show(this, "Annotations saved.", "Codmes");
+            };
+            navigation.Children.Add(previous);
+            navigation.Children.Add(next);
+            navigation.Children.Add(save);
+            SurfaceContent.Children.Add(navigation);
+            AddBackButton(() => OpenFiles(rootName));
+            await LoadPage();
+        }
+        catch (Exception error) { ShowMessage(error.Message); }
+    }
+
+    private string? PromptForText()
+    {
+        var dialog = new Window { Title = "Add text", Width = 420, Height = 160, Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner };
+        var panel = new StackPanel { Margin = new Thickness(14) };
+        var input = new TextBox { MinHeight = 34 };
+        var add = new Button { Content = "Add", IsDefault = true, Padding = new Thickness(12, 6, 12, 6), HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 10, 0, 0) };
+        add.Click += (_, _) => dialog.DialogResult = true;
+        panel.Children.Add(input);
+        panel.Children.Add(add);
+        dialog.Content = panel;
+        return dialog.ShowDialog() == true ? input.Text : null;
     }
 
     private async Task OpenFile(string path, string rootName)
@@ -331,6 +407,16 @@ public partial class MainWindow : Window
         using var response = await http.SendAsync(request);
         response.EnsureSuccessStatusCode();
         return JsonDocument.Parse(await response.Content.ReadAsStreamAsync());
+    }
+
+    private async Task<byte[]> GetBytes(string path)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, Server.Text.TrimEnd('/') + path);
+        var token = Token.Text.Trim();
+        if (token.Length > 0) request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        using var response = await http.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsByteArrayAsync();
     }
 
     private static bool SupportsWindowsDesktop(JsonElement plugin)

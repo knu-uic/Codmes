@@ -27,9 +27,10 @@ directories are executable native clients that implement platform detection,
 authentication, runtime discovery, compatibility filtering, declarative
 collection/dashboard rendering, live Chat, and editable Notes/Code browsing.
 Their approval inbox renders patch diffs and supports approve/reject actions
-with optional checks. Advanced PDF annotation remains a platform-specific
-renderer extension; the server protocol and declarative Surface contract do not
-depend on it.
+with optional checks. Android and Windows PDF renderers consume server-rendered
+page images and synchronize normalized pen, rectangle, and text annotations
+through the shared annotation API. The server protocol and declarative Surface
+contract do not depend on a platform PDF SDK.
 
 Client CI runs the Apple package tests, Android compatibility tests/lint/APK
 build, and Windows compatibility tests/self-contained win-x64 publish. This
