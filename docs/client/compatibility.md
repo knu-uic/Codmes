@@ -26,9 +26,10 @@ The Apple app contains the production SwiftUI renderers. The Android and Windows
 directories are executable native clients that implement platform detection,
 authentication, runtime discovery, compatibility filtering, declarative
 collection/dashboard rendering, live Chat, and editable Notes/Code browsing.
-Advanced PDF annotation and Code patch-review UI remain platform-specific
-renderer extensions; the server protocol and declarative Surface contract do
-not depend on them.
+Their approval inbox renders patch diffs and supports approve/reject actions
+with optional checks. Advanced PDF annotation remains a platform-specific
+renderer extension; the server protocol and declarative Surface contract do not
+depend on it.
 
 Client CI runs the Apple package tests, Android compatibility tests/lint/APK
 build, and Windows compatibility tests/self-contained win-x64 publish. This

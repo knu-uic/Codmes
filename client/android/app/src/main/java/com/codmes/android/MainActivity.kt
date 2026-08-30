@@ -4,6 +4,7 @@ import android.app.Activity
 import android.os.Bundle
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -48,6 +49,10 @@ class MainActivity : Activity() {
         val plugins = response.getJSONArray("plugins")
         show { panel ->
             panel.addView(title("Codmes · android + $formFactor"))
+            panel.addView(Button(this).apply {
+                text = "Pending approvals"
+                setOnClickListener { openApprovals() }
+            })
             for (index in 0 until plugins.length()) {
                 val plugin = plugins.getJSONObject(index)
                 if (!supportsCurrentDevice(plugin)) continue
@@ -73,6 +78,72 @@ class MainActivity : Activity() {
             }
         }
     } }
+
+    private fun openApprovals(): Unit { request("/api/agent/approvals?status=pending&limit=50") { response ->
+        val approvals = response.optJSONArray("approvals") ?: JSONArray()
+        show { panel ->
+            panel.addView(title("Pending approvals"))
+            if (approvals.length() == 0) panel.addView(text("No pending approvals."))
+            for (index in 0 until approvals.length()) {
+                val approval = approvals.getJSONObject(index)
+                panel.addView(Button(this).apply {
+                    text = approval.optString("summary", approval.optString("category", "Approval"))
+                    setOnClickListener { openApproval(approval.getString("id")) }
+                })
+            }
+            panel.addView(Button(this).apply { text = "Back"; setOnClickListener { loadPlugins() } })
+        }
+    } }
+
+    private fun openApproval(id: String): Unit { request("/api/agent/approvals/${encode(id)}") { approval ->
+        val diffRef = approval.optString("diffRef")
+        if (diffRef.isBlank()) renderApproval(approval, null)
+        else request("/api/file?path=${encode(diffRef)}") { file ->
+            renderApproval(approval, file.optString("content"))
+        }
+    } }
+
+    private fun renderApproval(approval: JSONObject, diffText: String?) {
+        show { panel ->
+            panel.addView(title(approval.optString("summary", "Approval")))
+            panel.addView(text(approval.optString("category", "approval")))
+            approval.optString("reason").takeIf { it.isNotBlank() }?.let { panel.addView(text(it)) }
+            diffText?.takeIf { it.isNotBlank() }?.let {
+                panel.addView(title("Proposed diff"))
+                panel.addView(text(it).apply {
+                    typeface = android.graphics.Typeface.MONOSPACE
+                    setTextIsSelectable(true)
+                })
+            }
+            val runChecks = CheckBox(this).apply {
+                text = "Run checks after applying patch"
+                visibility = if (approval.optString("category") == "code.patch.apply") android.view.View.VISIBLE else android.view.View.GONE
+            }
+            panel.addView(runChecks)
+            panel.addView(Button(this).apply {
+                text = "Approve & execute"
+                setOnClickListener {
+                    val checks = runChecks.isChecked
+                    requestJson(
+                        "POST",
+                        "/api/agent/approvals/${encode(approval.getString("id"))}/respond",
+                        JSONObject().put("approved", true).put("runChecksAfterApply", checks).put("checksApproved", checks)
+                    ) { openApprovals() }
+                }
+            })
+            panel.addView(Button(this).apply {
+                text = "Reject"
+                setOnClickListener {
+                    requestJson(
+                        "POST",
+                        "/api/agent/approvals/${encode(approval.getString("id"))}/respond",
+                        JSONObject().put("approved", false).put("reason", "Rejected in Android client.")
+                    ) { openApprovals() }
+                }
+            })
+            panel.addView(Button(this).apply { text = "Back"; setOnClickListener { openApprovals() } })
+        }
+    }
 
     private fun openFiles(root: String): Unit { request("/api/tree?root=$root&recursive=true") { response ->
         val children = response.optJSONArray("children") ?: JSONArray()

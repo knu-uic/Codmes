@@ -27,6 +27,9 @@ public partial class MainWindow : Window
         {
             using var document = await GetJson("/api/plugins");
             SurfaceContent.Children.Clear();
+            var approvals = new Button { Content = "Pending approvals", Margin = new Thickness(0, 0, 0, 12), Padding = new Thickness(12) };
+            approvals.Click += async (_, _) => await OpenApprovals();
+            SurfaceContent.Children.Add(approvals);
             foreach (var plugin in document.RootElement.GetProperty("plugins").EnumerateArray())
             {
                 if (!SupportsWindowsDesktop(plugin)) continue;
@@ -52,6 +55,93 @@ public partial class MainWindow : Window
             }
         }
         catch (Exception error) { ShowMessage(error.Message); }
+    }
+
+    private async Task OpenApprovals()
+    {
+        try
+        {
+            using var document = await GetJson("/api/agent/approvals?status=pending&limit=50");
+            SurfaceContent.Children.Clear();
+            AddHeading("Pending approvals", 24);
+            var approvals = document.RootElement.GetProperty("approvals");
+            if (approvals.GetArrayLength() == 0) AddBodyText("No pending approvals.");
+            foreach (var approval in approvals.EnumerateArray())
+            {
+                var id = approval.GetProperty("id").GetString()!;
+                var label = approval.TryGetProperty("summary", out var summary) && summary.ValueKind == JsonValueKind.String
+                    ? summary.GetString()
+                    : approval.GetProperty("category").GetString();
+                var button = new Button { Content = label ?? "Approval", Margin = new Thickness(0, 0, 0, 6), Padding = new Thickness(10) };
+                button.Click += async (_, _) => await OpenApproval(id);
+                SurfaceContent.Children.Add(button);
+            }
+            AddBackButton(LoadPlugins);
+        }
+        catch (Exception error) { ShowMessage(error.Message); }
+    }
+
+    private async Task OpenApproval(string id)
+    {
+        try
+        {
+            using var document = await GetJson($"/api/agent/approvals/{Uri.EscapeDataString(id)}");
+            var approval = document.RootElement.Clone();
+            string? diffText = null;
+            if (approval.TryGetProperty("diffRef", out var diffRef) && diffRef.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(diffRef.GetString()))
+            {
+                using var diff = await GetJson($"/api/file?path={Uri.EscapeDataString(diffRef.GetString()!)}");
+                diffText = diff.RootElement.TryGetProperty("content", out var content) ? content.GetString() : null;
+            }
+            RenderApproval(approval, diffText);
+        }
+        catch (Exception error) { ShowMessage(error.Message); }
+    }
+
+    private void RenderApproval(JsonElement approval, string? diffText)
+    {
+        SurfaceContent.Children.Clear();
+        var summary = approval.TryGetProperty("summary", out var summaryValue) ? summaryValue.GetString() : "Approval";
+        var category = approval.TryGetProperty("category", out var categoryValue) ? categoryValue.GetString() ?? "approval" : "approval";
+        AddHeading(summary ?? "Approval", 22);
+        AddBodyText(category);
+        if (approval.TryGetProperty("reason", out var reason) && reason.ValueKind == JsonValueKind.String) AddBodyText(reason.GetString());
+        if (!string.IsNullOrWhiteSpace(diffText))
+        {
+            AddHeading("Proposed diff", 17);
+            SurfaceContent.Children.Add(new TextBox {
+                Text = diffText,
+                IsReadOnly = true,
+                AcceptsReturn = true,
+                FontFamily = new System.Windows.Media.FontFamily("Consolas"),
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                MinHeight = 280
+            });
+        }
+        var runChecks = new CheckBox {
+            Content = "Run checks after applying patch",
+            Visibility = category == "code.patch.apply" ? Visibility.Visible : Visibility.Collapsed,
+            Margin = new Thickness(0, 12, 0, 8)
+        };
+        SurfaceContent.Children.Add(runChecks);
+        var id = approval.GetProperty("id").GetString()!;
+        var approve = new Button { Content = "Approve & execute", Padding = new Thickness(14, 7, 14, 7), Margin = new Thickness(0, 0, 0, 6) };
+        approve.Click += async (_, _) =>
+        {
+            var checks = runChecks.IsChecked == true;
+            await SendJson(HttpMethod.Post, $"/api/agent/approvals/{Uri.EscapeDataString(id)}/respond", new { approved = true, runChecksAfterApply = checks, checksApproved = checks });
+            await OpenApprovals();
+        };
+        SurfaceContent.Children.Add(approve);
+        var reject = new Button { Content = "Reject", Padding = new Thickness(14, 7, 14, 7), Margin = new Thickness(0, 0, 0, 6) };
+        reject.Click += async (_, _) =>
+        {
+            await SendJson(HttpMethod.Post, $"/api/agent/approvals/{Uri.EscapeDataString(id)}/respond", new { approved = false, reason = "Rejected in Windows client." });
+            await OpenApprovals();
+        };
+        SurfaceContent.Children.Add(reject);
+        AddBackButton(OpenApprovals);
     }
 
     private async Task LoadSurface(string pluginId)
