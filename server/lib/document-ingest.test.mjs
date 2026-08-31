@@ -12,6 +12,7 @@ import {
   contentScopedAnnotationsPathForDocument,
   documentFolderAnnotationsPathForDocument,
   extractAndCacheDocument,
+  parseDocumentWorkerOutput,
   extractDocumentAnnotationBlocks,
   documentIngestCacheDirectory,
   documentIngestCachePath,
@@ -29,6 +30,14 @@ import {
 } from "./document-ingest.mjs";
 
 const execFileAsync = promisify(execFile);
+
+test("document worker output tolerates native dependency startup warnings", () => {
+  assert.deepEqual(
+    parseDocumentWorkerOutput('warning: optional layout model unavailable\n{"schemaVersion":1,"text":"ok"}'),
+    { schemaVersion: 1, text: "ok" }
+  );
+  assert.throws(() => parseDocumentWorkerOutput("warning only"), /Unexpected token/);
+});
 
 test("document ingest extracts and caches PDF text through the worker", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "document-ingest-"));

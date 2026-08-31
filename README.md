@@ -4,7 +4,7 @@
 
 Codmes는 Chat, Notes, Code 등 여러 작업을 하나의 환경에서 연결하는 통합 AI 워크스페이스입니다.
 
-파일, 검색 인덱스, AI 런타임, 대화 기록과 작업 상태를 중앙 서버가 관리하며, 사용자는 Mac, iPhone, iPad 등 다양한 클라이언트에서 서버에 접속해 언제 어디서든 동일한 작업 환경을 이어서 사용할 수 있습니다.
+파일, 검색 인덱스, AI 런타임, 대화 기록과 작업 상태를 중앙 서버가 관리하며, 사용자는 Mac, iPhone, iPad, Android, Windows 클라이언트에서 서버에 접속해 같은 작업 환경을 이어서 사용할 수 있습니다.
 
 단순히 AI와 대화하는 것을 넘어, 사용자의 문서와 노트, 코드 프로젝트, 이전 작업 맥락을 지속적으로 이해하는 개인 AI 에이전트 환경을 지향합니다.
 
@@ -37,7 +37,12 @@ Codmes는 단순한 AI 채팅 앱이 아니라, 사용자의 지식과 파일, �
 ## 빠른 시작
 
 ### 요구사항
-- 현재 공식 앱은 macOS와 iPhone·iPad를 지원합니다.
+- Apple 앱은 macOS와 iPhone·iPad를 지원합니다. Android와 Windows native client는
+  공통 protocol, declarative Surface, Live Chat, 편집 가능한 Notes/Code 탐색을
+  지원합니다. Code patch 승인·거절과 선택적 검사 실행, PDF 페이지 표시·필기·
+  사각형·텍스트 주석 동기화도 지원합니다.
+- Apple, Android, Windows 클라이언트는 GitHub Actions에서 각각 테스트·빌드되며
+  Android APK와 Windows win-x64 실행 패키지는 CI artifact로 생성됩니다.
 - Node.js 22 이상
 - npm
 - document runtime bootstrap용 Python 3.11~3.13

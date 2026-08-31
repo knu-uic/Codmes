@@ -498,9 +498,30 @@ async function runDocumentWorker({ absolutePath, relativePath }) {
     throw Object.assign(new Error(`Document worker failed: ${err || `exit ${code}`}`), { status: 500 });
   }
   try {
-    return JSON.parse(out || "{}");
+    return parseDocumentWorkerOutput(out);
   } catch (error) {
     throw Object.assign(new Error(`Document worker returned invalid JSON: ${error.message}${err ? `; stderr=${err}` : ""}`), { status: 500 });
+  }
+}
+
+export function parseDocumentWorkerOutput(output) {
+  const text = String(output || "").trim();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch (wholeOutputError) {
+    // Some optional native extractors print one-line startup warnings to stdout.
+    // The worker contract remains the final JSON line; never treat warning text as
+    // document data and still reject output that has no valid JSON result.
+    const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      try {
+        return JSON.parse(lines[index]);
+      } catch {
+        // Continue looking for the worker's final structured result.
+      }
+    }
+    throw wholeOutputError;
   }
 }
 
@@ -688,14 +709,14 @@ function pagesNeedingOcr(relativePath, document, config) {
   if (kind === "image") return [];
   if (kind !== "pdf") return null;
   const minTextChars = Number.parseInt(String(config.minTextChars || "80"), 10);
-  const text = String(document.text || "").trim();
+  const text = stripPdfLayoutMarkers(document.text).trim();
   if (!text) return [];
   if (config.enabled && text.length < Math.max(0, minTextChars)) return [];
   const pageText = new Map();
   for (const block of document.blocks || []) {
     const page = Number(block.page);
     if (!Number.isFinite(page) || page < 1) continue;
-    pageText.set(page, [pageText.get(page), block.text].filter(Boolean).join("\n"));
+    pageText.set(page, [pageText.get(page), stripPdfLayoutMarkers(block.text)].filter(Boolean).join("\n"));
   }
   if (!pageText.size) return pdfTextNeedsOcr(text) ? [] : null;
   const pages = Array.from(pageText)
@@ -709,7 +730,7 @@ function pagesNeedingOcr(relativePath, document, config) {
 }
 
 export function pdfTextNeedsOcr(value) {
-  const text = String(value || "").normalize("NFC");
+  const text = stripPdfLayoutMarkers(value).normalize("NFC");
   const characters = Array.from(text).filter((character) => !/\s/u.test(character));
   if (characters.length < 20) return false;
   let cjkIdeographs = 0;
@@ -732,6 +753,13 @@ export function pdfTextNeedsOcr(value) {
   return privateOrInvalid / length >= 0.005
     || cjkIdeographs / length >= 0.08
     || suspiciousFSeparators / length >= 0.025;
+}
+
+function stripPdfLayoutMarkers(value) {
+  return String(value || "").replace(
+    /^\s*---\s*(?:end|start) of page\.page_number=\d+\s*---\s*$/gim,
+    ""
+  );
 }
 
 async function buildVlmInputs(workspaceRoot, absolutePath, relativePath, config, pages = []) {
@@ -793,7 +821,7 @@ print(json.dumps(items))
   if (code !== 0) {
     throw new Error(`PDF page rendering failed: ${Buffer.concat(stderr).toString("utf8").trim() || `exit ${code}`}`);
   }
-  const items = JSON.parse(Buffer.concat(stdout).toString("utf8").trim() || "[]");
+  const items = parseDocumentWorkerOutput(Buffer.concat(stdout).toString("utf8") || "[]");
   const inputs = [];
   for (const item of items) {
     const data = await fs.readFile(item.path);
@@ -829,7 +857,7 @@ async function runNativeVisionOcr({ absolutePath, relativePath, pages, dpi, onPr
   });
   const err = stderr.end();
   if (code !== 0) throw new Error(err || `Vision OCR exited with ${code}.`);
-  const result = JSON.parse(Buffer.concat(stdout).toString("utf8") || "{}");
+  const result = parseDocumentWorkerOutput(Buffer.concat(stdout).toString("utf8") || "{}");
   return {
     blocks: (Array.isArray(result.blocks) ? result.blocks : [])
       .map((block, index) => ({
@@ -892,7 +920,7 @@ export async function writePdfOcrTextLayer(inputPath, outputPath, blocks, option
   });
   const err = stderr.end();
   if (code !== 0) throw new Error(err || `PDF OCR normalization exited with ${code}.`);
-  return JSON.parse(Buffer.concat(stdout).toString("utf8") || "{}");
+  return parseDocumentWorkerOutput(Buffer.concat(stdout).toString("utf8") || "{}");
 }
 
 function progressLineCollector(onProgress) {

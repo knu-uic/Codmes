@@ -61,6 +61,7 @@ bearer와 MCP service credential은 전달하지 않는다. data 응답은 sourc
       "document": {
         "schemaVersion": 1,
         "presentation": "collection",
+        "collectionStyle": "cards",
         "title": "공지사항",
         "subtitle": { "literal": "최신 공지를 확인하세요." },
         "collection": {
@@ -68,6 +69,11 @@ bearer와 MCP service credential은 전달하지 않는다. data 응답은 sourc
           "item": {
             "id": "url",
             "title": "title",
+            "eyebrow": {"join": ["source_name", "department"], "separator": " · "},
+            "meta": "posted_at",
+            "badge": "deadline_label",
+            "badgeTone": "deadline_tone",
+            "systemImage": {"literal": "bell"},
             "body": { "coalesce": ["summary", "content"] },
             "action": { "type": "openURL", "url": "url" }
           }
@@ -128,6 +134,7 @@ mapping을 지원한다.
 {
   "schemaVersion": 1,
   "presentation": "collection",
+  "collectionStyle": "cards",
   "title": "공지사항",
   "subtitle": "최신 학사·일반 공지를 확인하세요.",
   "search": {
@@ -154,6 +161,11 @@ mapping을 지원한다.
       "id": "stable-item-id",
       "title": "2026학년도 장학금 신청 안내",
       "subtitle": "학생지원과 · 2026-07-28",
+      "eyebrow": "공주대학교 · 컴퓨터공학과",
+      "meta": "2026-07-28",
+      "badge": "D-3",
+      "badgeTone": "danger",
+      "systemImage": "bell",
       "body": "신청 기간과 제출 서류를 확인하세요.",
       "tags": ["재학생", "장학금"],
       "filterValues": { "category": "장학" },
@@ -167,6 +179,14 @@ mapping을 지원한다.
 ```
 
 - 검색과 filter는 client에서 즉시 수행한다.
+- `collectionStyle`은 `list` 또는 `cards`다. 생략하면 기존 compact list를
+  사용하며, `cards`는 공지·과제처럼 출처와 상태를 한눈에 비교해야 하는 화면에
+  사용한다.
+- card item의 `eyebrow`는 출처·학과 같은 상단 문맥, `meta`는 게시일·마감일,
+  `badge`는 `D-3` 같은 짧은 상태를 표시한다. `badgeTone`은 `accent`, `danger`,
+  `warning`, `success`, `neutral` 중 하나이며 `systemImage`는 행의 의미 아이콘이다.
+- 이 필드는 React/CSS를 실행하는 확장점이 아니다. plugin은 정보 계층만 선언하고
+  실제 간격, 글꼴, 색상, hover와 접근성은 Codmes의 SwiftUI renderer가 통일한다.
 - `__all__` filter option은 해당 filter를 적용하지 않는 예약 값이다.
 - v1 action은 `http`/`https` `openURL`만 허용한다.
 - plugin package가 선언한 system image 이름은 client가 지원하지 않으면 기본 icon으로

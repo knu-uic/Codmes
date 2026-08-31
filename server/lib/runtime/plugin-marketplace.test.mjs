@@ -24,22 +24,30 @@ import {
   rollbackPlugin
 } from "./plugin-registry.mjs";
 
-test("Marketplace registry accepts only supported Apple platforms", () => {
+test("Marketplace registry normalizes supported OS and form factors", () => {
   const entry = {
     id: "com.example.demo",
     name: "Demo",
     version: "1.0.0",
     packagePath: "demo.codmes-plugin",
-    platforms: ["MACOS", "ios", "ios"]
+    platforms: ["MACOS", "ios", "android", "windows", "ios"],
+    formFactors: ["phone", "tablet", "desktop"]
   };
   const registry = normalizeMarketplaceRegistry({ schemaVersion: 1, plugins: [entry] });
-  assert.deepEqual(registry.plugins[0].platforms, ["macos", "ios"]);
+  assert.deepEqual(registry.plugins[0].platforms, ["macos", "ios", "android", "windows"]);
+  assert.deepEqual(registry.plugins[0].formFactors, ["phone", "tablet", "desktop"]);
+  const legacy = normalizeMarketplaceRegistry({
+    schemaVersion: 1,
+    plugins: [{ ...entry, platforms: ["macos", "ios", "ipados"], formFactors: undefined }]
+  });
+  assert.deepEqual(legacy.plugins[0].platforms, ["macos", "ios"]);
+  assert.deepEqual(legacy.plugins[0].formFactors, ["desktop", "phone", "tablet"]);
   assert.throws(
     () => normalizeMarketplaceRegistry({
       schemaVersion: 1,
-      plugins: [{ ...entry, platforms: ["android"] }]
+      plugins: [{ ...entry, platforms: ["linux"] }]
     }),
-    /unsupported platforms: android/
+    /unsupported platforms: linux/
   );
 });
 

@@ -14,6 +14,11 @@ KNU 웹사이트를 WebView나 iframe으로 여는 구조가 아니다. KNU 서�
 구조와 데이터 바인딩을 소유한다. Codmes 서버가 둘을 검증·결합한 뒤 Apple
 클라이언트가 SwiftUI로 렌더링한다.
 
+0.3.3부터 공지와 LMS collection은 standalone React 웹의 정보 계층을 반영한
+native card를 사용한다. 출처·학과, 게시일·마감일, 상태 badge, 요약과 tag를
+분리해 표시하지만 React bundle이나 CSS를 앱 안에서 실행하지는 않는다. 이 card
+계약은 KNU 전용 UI가 아니라 다른 declarative plugin도 재사용할 수 있다.
+
 ## 바로 실행하기
 
 아래 명령은 각 서버 컴퓨터에서 다음 조건이 충족된 상태를 기준으로 한다.
@@ -598,6 +603,18 @@ KNU MCP
 KNU MCP는 질문을 다시 LLM으로 분류하지 않는다. 카테고리·상태·연도 같은 인자는
 Codmes AI가 정하고, KNU 서버는 그 구조화 인자를 그대로 검증·실행한다. 독립형 KNU
 웹 챗봇의 대화 경로는 MCP와 별개다.
+
+사용자 session으로 호출할 때 `department`를 생략하면 MCP가 학번으로 동기화된
+학적정보를 조회해 출처 범위를 `학교 공통 + 사용자 학과`로 자동 제한한다. 예를
+들어 컴퓨터공학과 3학년 사용자의 Scan은 공통·컴퓨터공학과 공지와 3학년 대상
+조건을 사용하고, Deep도 임베딩 검색 전에 공통·컴퓨터공학과 출처만 남긴다.
+다른 학과를 명시적으로 질문하면 Codmes AI가 `department` 인자를 전달해 기본값을
+덮어쓴다.
+
+공지 출처 학과와 본문상 지원 대상 학과는 구분한다. `source.department`는
+컴퓨터공학과 게시판처럼 공지가 올라온 위치이고, `notice_audience.department`는
+본문에 적힌 신청 자격이다. 자동 범위 설정은 출처에 적용하며 지원 대상은 답변의
+자격 근거로 별도 유지한다.
 
 답변 품질은 KNU PostgreSQL에 수집·인덱싱된 공지와 검색/rerank 결과에 의존한다.
 데이터가 없거나 근거가 부족하면 MCP는 `no_results`를 반환하며 AI는 추측하지 않고

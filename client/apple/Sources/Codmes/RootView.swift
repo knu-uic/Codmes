@@ -1613,15 +1613,17 @@ struct PluginContentView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.top, 50)
                 } else {
-                    LazyVStack(spacing: 1) {
+                    LazyVStack(spacing: document.collectionStyle == "cards" ? 12 : 1) {
                         ForEach(items) { item in
                             collectionRow(item)
                         }
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(.quaternary.opacity(0.55), lineWidth: 0.5)
+                        if document.collectionStyle != "cards" {
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(.quaternary.opacity(0.55), lineWidth: 0.5)
+                        }
                     }
                 }
             }
@@ -2099,7 +2101,8 @@ struct PluginContentView: View {
     }
 
     private func collectionRow(_ item: PluginSurfaceItem) -> some View {
-        Button {
+        let usesCardStyle = document?.collectionStyle == "cards"
+        return Button {
             if let editor = document?.editor {
                 collectionEditor = PluginCollectionEditorContext(editor: editor, item: item)
             } else {
@@ -2107,6 +2110,39 @@ struct PluginContentView: View {
             }
         } label: {
             VStack(alignment: .leading, spacing: 7) {
+                if item.eyebrow != nil || item.meta != nil || item.badge != nil {
+                    HStack(alignment: .top, spacing: 12) {
+                        if let eyebrow = item.eyebrow, !eyebrow.isEmpty {
+                            HStack(spacing: 6) {
+                                if let systemImage = item.systemImage, !systemImage.isEmpty {
+                                    Image(systemName: systemImage)
+                                }
+                                Text(eyebrow)
+                            }
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
+                        }
+                        Spacer(minLength: 8)
+                        VStack(alignment: .trailing, spacing: 4) {
+                            if let badge = item.badge, !badge.isEmpty {
+                                Text(badge)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(pluginBadgeColor(item.badgeTone))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(
+                                        pluginBadgeColor(item.badgeTone).opacity(0.12),
+                                        in: Capsule()
+                                    )
+                            }
+                            if let meta = item.meta, !meta.isEmpty {
+                                Text(meta)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                }
                 if let subtitle = item.subtitle, !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.caption)
@@ -2136,13 +2172,30 @@ struct PluginContentView: View {
                     }
                 }
             }
-            .padding(15)
+            .padding(usesCardStyle ? 18 : 15)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .background(.background)
+            .clipShape(RoundedRectangle(cornerRadius: usesCardStyle ? 14 : 0))
+            .overlay {
+                if usesCardStyle {
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(.quaternary.opacity(0.65), lineWidth: 0.5)
+                }
+            }
         }
         .buttonStyle(.plain)
         .disabled(item.action == nil && document?.editor == nil)
+    }
+
+    private func pluginBadgeColor(_ tone: String?) -> Color {
+        switch tone {
+        case "danger": return .red
+        case "warning": return .orange
+        case "success": return .green
+        case "neutral": return .secondary
+        default: return .accentColor
+        }
     }
 
     private func filteredItems(in document: PluginViewDocument) -> [PluginSurfaceItem] {
@@ -3980,7 +4033,7 @@ private struct MarketplaceSettingsView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(isWorking || !plugin.supportsCurrentPlatform)
+                .disabled(isWorking)
             }
             if plugin.updateAvailable {
                 Button("Update") {
@@ -3992,7 +4045,7 @@ private struct MarketplaceSettingsView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .disabled(isWorking || plugin.blocked || !plugin.supportsCurrentPlatform)
+                .disabled(isWorking || plugin.blocked)
             }
             Button(role: .destructive) {
                 pendingRemoval = plugin
@@ -4001,7 +4054,7 @@ private struct MarketplaceSettingsView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .disabled(isWorking || !plugin.supportsCurrentPlatform)
+            .disabled(isWorking)
             .help("Remove \(plugin.name)")
         } else {
             Button("Install") {
@@ -4009,7 +4062,7 @@ private struct MarketplaceSettingsView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
-            .disabled(isWorking || plugin.blocked || !plugin.supportsCurrentPlatform)
+            .disabled(isWorking || plugin.blocked)
         }
     }
 
@@ -4057,6 +4110,7 @@ private struct MarketplacePluginDetailView: View {
 
                     detailSection("Compatibility") {
                         Label(plugin.platforms.joined(separator: ", "), systemImage: "laptopcomputer.and.iphone")
+                        Label((plugin.formFactors ?? []).joined(separator: ", "), systemImage: "rectangle.3.group")
                         Label(plugin.installed ? "Installed" : "Not installed", systemImage: plugin.installed ? "checkmark.circle.fill" : "circle")
                             .foregroundStyle(plugin.installed ? .green : .secondary)
                         if let installedVersion = plugin.installedVersion {
@@ -4241,7 +4295,7 @@ private struct PluginSettingsView: View {
             ))
             .labelsHidden()
             .controlSize(.small)
-            .disabled(plugin.id == "com.codmes.chat" || !plugin.supportsCurrentPlatform)
+            .disabled(plugin.id == "com.codmes.chat")
 
             Button {
                 selectedPluginId = plugin.id

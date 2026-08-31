@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readPluginManifestSource } from "./plugin-registry.mjs";
+import { normalizeClientCompatibility } from "./plugin-compatibility.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const BUNDLED_ROOT = path.join(REPO_ROOT, "bundled", "plugins");
@@ -63,6 +64,11 @@ async function loadBuiltInPlugin(name) {
       hasAuthentication: Boolean(contributed?.auth)
     };
   });
+  const compatibility = normalizeClientCompatibility({
+    platforms: runtime.platforms,
+    formFactors: runtime.formFactors,
+    subject: `Built-in plugin '${runtime.id}'`
+  });
   return Object.freeze({
     schemaVersion: 1,
     id: runtime.id,
@@ -71,7 +77,8 @@ async function loadBuiltInPlugin(name) {
     description: String(runtime.description || ""),
     publisher: "Codmes",
     icon: String(runtime.icon || "square.grid.2x2"),
-    platforms: runtime.platforms.map(String),
+    platforms: compatibility.platforms,
+    formFactors: compatibility.formFactors,
     permissions: contribution?.permissions || [],
     distribution: "builtin",
     builtIn: true,
@@ -99,6 +106,7 @@ function validateRuntimeManifest(value, directoryName) {
   if (!/^\d+\.\d+\.\d+/.test(String(value.version || ""))
       || !String(value.name || "").trim()
       || !Array.isArray(value.platforms)
+      || !Array.isArray(value.formFactors)
       || !Array.isArray(value.views)
       || value.views.length === 0) {
     throw new Error(`Built-in plugin '${value.id}' metadata is incomplete.`);

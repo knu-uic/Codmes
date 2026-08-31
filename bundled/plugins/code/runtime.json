@@ -5,7 +5,8 @@
   "name": "Code",
   "description": "코드 프로젝트, 검사, 패치, Git과 승인 작업을 제공합니다.",
   "icon": "chevron.left.forwardslash.chevron.right",
-  "platforms": ["macos", "ios", "ipados"],
+  "platforms": ["macos", "ios", "android", "windows"],
+  "formFactors": ["phone", "tablet", "desktop"],
   "views": [
     {
       "id": "code",

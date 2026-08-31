@@ -121,6 +121,7 @@ function createCommunityRuntimePlugin(plugin) {
     publisher: plugin.publisher,
     icon: plugin.surface.icon,
     platforms: plugin.platforms,
+    formFactors: plugin.formFactors,
     permissions: plugin.permissions,
     distribution: "community",
     builtIn: false,

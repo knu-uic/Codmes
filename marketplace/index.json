@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-07-30T15:29:06+09:00",
+  "updatedAt": "2026-08-30T00:00:00+09:00",
   "signaturePolicy": "optional",
   "governancePolicy": "open",
   "publishers": [],
@@ -20,8 +20,12 @@
       "sha256": "43854bda95a9d3b1e994803abf6b0338dff44e71f5ab26e5fb4278cfa61ed466",
       "platforms": [
         "macos",
-        "ios",
-        "ipados"
+        "ios"
+      ],
+      "formFactors": [
+        "desktop",
+        "phone",
+        "tablet"
       ],
       "permissions": [
         "network:127.0.0.1"

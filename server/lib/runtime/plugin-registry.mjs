@@ -16,13 +16,13 @@ import {
   isBuiltInPluginId,
   pluginDistribution
 } from "./plugin-distribution.mjs";
+import { normalizeClientCompatibility } from "./plugin-compatibility.mjs";
 
 const PLUGIN_SCHEMA_VERSION = 1;
 const PLUGIN_ID_PATTERN = /^[a-z0-9]+(?:[._-][a-z0-9]+)+$/;
 const SURFACE_ID_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
 const EDITOR_FIELD_ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
 const MCP_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
-const SUPPORTED_PLUGIN_PLATFORMS = new Set(["macos", "ios", "ipados"]);
 
 export function pluginsDirectory(workspaceRoot) {
   return path.join(workspaceRoot, ".codmes", "plugins");
@@ -117,14 +117,11 @@ export function validatePluginManifest(value) {
     storageCollections
   });
   if (!mcp && !storage) throw new Error("Plugin must include MCP or Workspace storage.");
-  const platforms = Array.isArray(value.platforms)
-    ? [...new Set(value.platforms.map(String).map((item) => item.trim().toLowerCase()).filter(Boolean))]
-    : [];
-  if (!platforms.length) throw new Error("Plugin must declare at least one platform.");
-  const unsupportedPlatforms = platforms.filter((platform) => !SUPPORTED_PLUGIN_PLATFORMS.has(platform));
-  if (unsupportedPlatforms.length) {
-    throw new Error(`Plugin declares unsupported platforms: ${unsupportedPlatforms.join(", ")}.`);
-  }
+  const compatibility = normalizeClientCompatibility({
+    platforms: value.platforms,
+    formFactors: value.formFactors,
+    subject: "Plugin"
+  });
 
   return {
     schemaVersion: PLUGIN_SCHEMA_VERSION,
@@ -133,7 +130,8 @@ export function validatePluginManifest(value) {
     name,
     description: String(value.description || "").trim(),
     publisher: String(value.publisher || "").trim(),
-    platforms,
+    platforms: compatibility.platforms,
+    formFactors: compatibility.formFactors,
     permissions,
     surface,
     mcp,
@@ -256,6 +254,12 @@ function normalizeSurfaceUiRoute(value, surfaceSchemaVersion, storageCollections
     throw new Error("Plugin surface UI document title is required.");
   }
   const normalizedDocument = JSON.parse(JSON.stringify(document));
+  if (normalizedDocument.collectionStyle != null) {
+    if (normalizedDocument.presentation !== "collection"
+        || !["list", "cards"].includes(String(normalizedDocument.collectionStyle))) {
+      throw new Error("Plugin collectionStyle must be 'list' or 'cards' on a collection document.");
+    }
+  }
   if (surfaceSchemaVersion === 2 && normalizedDocument.editor != null) {
     normalizedDocument.editor = normalizeSurfaceEditor(
       normalizedDocument.editor,

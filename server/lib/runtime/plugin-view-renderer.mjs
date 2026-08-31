@@ -16,6 +16,9 @@ export function renderPluginViewDocument(route, payloads) {
     filters: Array.isArray(binding.filters) ? binding.filters : [],
     emptyState: binding.emptyState || null,
     items: [],
+    ...(binding.collectionStyle
+      ? { collectionStyle: String(binding.collectionStyle) }
+      : {}),
     ...(binding.editor
       ? { editor: JSON.parse(JSON.stringify(binding.editor)) }
       : {}),
@@ -73,6 +76,11 @@ function renderItem(binding, value, payloads, editor = null) {
     filterValues,
     action: actionUrl ? { type: "openURL", url: actionUrl } : null
   };
+  for (const key of ["eyebrow", "meta", "badge", "badgeTone", "systemImage"]) {
+    if (binding[key] == null) continue;
+    const rendered = renderValue(binding[key], value, payloads);
+    if (rendered) item[key] = rendered;
+  }
   if (binding.temporal && typeof binding.temporal === "object") {
     item.temporal = {
       startsAt: renderValue(binding.temporal.startsAt, value, payloads),

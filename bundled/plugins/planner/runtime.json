@@ -5,7 +5,8 @@
   "name": "Planner",
   "description": "할 일, 일정과 간단한 텍스트 메모를 제공합니다.",
   "icon": "checklist",
-  "platforms": ["macos", "ios", "ipados"],
+  "platforms": ["macos", "ios", "android", "windows"],
+  "formFactors": ["phone", "tablet", "desktop"],
   "contribution": "plugin.json",
   "views": [
     {

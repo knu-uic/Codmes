@@ -9,6 +9,7 @@ test("plugin-owned collection binding maps raw service data into a Surface docum
     document: {
       schemaVersion: 1,
       presentation: "collection",
+      collectionStyle: "cards",
       title: "Notices",
       subtitle: { literal: "Latest notices" },
       filters: [],
@@ -17,6 +18,11 @@ test("plugin-owned collection binding maps raw service data into a Surface docum
         item: {
           id: "url",
           title: "title",
+          eyebrow: { join: ["source", "department"] },
+          meta: "date",
+          badge: "deadline",
+          badgeTone: "deadlineTone",
+          systemImage: { literal: "bell" },
           subtitle: { join: ["source", "date"] },
           body: { coalesce: ["summary", "content"] },
           tags: ["category", "targets"],
@@ -33,7 +39,10 @@ test("plugin-owned collection binding maps raw service data into a Surface docum
         url: "https://example.test/1",
         title: "Scholarship",
         source: "Student Office",
+        department: "Computer Engineering",
         date: "2026-07-28",
+        deadline: "D-3",
+        deadlineTone: "danger",
         summary: "Apply now",
         category: "장학",
         targets: ["재학생"]
@@ -42,6 +51,7 @@ test("plugin-owned collection binding maps raw service data into a Surface docum
   });
 
   assert.equal(document.presentation, "collection");
+  assert.equal(document.collectionStyle, "cards");
   assert.equal(document.subtitle, "Latest notices");
   assert.deepEqual(document.items[0], {
     id: "https://example.test/1",
@@ -50,7 +60,12 @@ test("plugin-owned collection binding maps raw service data into a Surface docum
     body: "Apply now",
     tags: ["장학", "재학생"],
     filterValues: { category: "장학" },
-    action: { type: "openURL", url: "https://example.test/1" }
+    action: { type: "openURL", url: "https://example.test/1" },
+    eyebrow: "Student Office · Computer Engineering",
+    meta: "2026-07-28",
+    badge: "D-3",
+    badgeTone: "danger",
+    systemImage: "bell"
   });
 });
 

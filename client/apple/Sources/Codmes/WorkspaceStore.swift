@@ -748,10 +748,6 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func setPluginEnabled(_ plugin: RuntimePlugin, enabled: Bool) async {
-        guard plugin.supportsCurrentPlatform else {
-            pluginSetupMessage = "This plugin does not support this device."
-            return
-        }
         guard let api else { return }
         do {
             _ = try await api.updatePluginConfiguration(

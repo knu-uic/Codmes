@@ -27,6 +27,15 @@ test("Plugin Runtime exposes Chat, Notes, Code, and Planner as built-in plugins"
   );
   assert.equal(plugins.every((plugin) => plugin.distribution === "builtin"), true);
   assert.equal(plugins.every((plugin) => plugin.removable === false), true);
+  assert.equal(
+    plugins.every((plugin) => plugin.platforms.includes("android")
+      && plugin.platforms.includes("windows")),
+    true
+  );
+  assert.equal(
+    plugins.every((plugin) => plugin.formFactors.join(",") === "phone,tablet,desktop"),
+    true
+  );
   assert.deepEqual(
     (await listRuntimeViews(root)).map((view) => view.id),
     ["chat", "notes", "code", "planner"]

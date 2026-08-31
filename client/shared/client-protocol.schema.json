@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codmes.dev/schemas/client-protocol-v1.json",
+  "title": "Codmes client protocol v1",
+  "$defs": {
+    "compatibility": {
+      "type": "object",
+      "required": ["platforms", "formFactors"],
+      "properties": {
+        "platforms": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["macos", "ios", "android", "windows"] }
+        },
+        "formFactors": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["phone", "tablet", "desktop"] }
+        }
+      }
+    },
+    "plugin": {
+      "allOf": [
+        { "$ref": "#/$defs/compatibility" },
+        {
+          "type": "object",
+          "required": ["id", "version", "name", "views"],
+          "properties": {
+            "id": { "type": "string" },
+            "version": { "type": "string" },
+            "name": { "type": "string" },
+            "enabled": { "type": "boolean" },
+            "views": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["id", "title", "renderer"],
+                "properties": {
+                  "id": { "type": "string" },
+                  "title": { "type": "string" },
+                  "renderer": { "enum": ["native", "declarative"] },
+                  "dataPath": { "type": ["string", "null"] }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "surfaceDocument": {
+      "type": "object",
+      "required": ["schemaVersion", "presentation", "title", "items"],
+      "properties": {
+        "schemaVersion": { "enum": [1, 2] },
+        "presentation": { "enum": ["collection", "calendar", "dashboard"] },
+        "collectionStyle": { "enum": ["list", "cards"] },
+        "title": { "type": "string" },
+        "subtitle": { "type": ["string", "null"] },
+        "items": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/surfaceItem" }
+        },
+        "sections": { "type": "array" }
+      }
+    },
+    "surfaceItem": {
+      "type": "object",
+      "required": ["id", "title"],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "subtitle": { "type": ["string", "null"] },
+        "body": { "type": ["string", "null"] },
+        "eyebrow": { "type": ["string", "null"] },
+        "meta": { "type": ["string", "null"] },
+        "badge": { "type": ["string", "null"] },
+        "badgeTone": { "enum": ["accent", "danger", "warning", "success", "neutral", null] },
+        "systemImage": { "type": ["string", "null"] }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["plugins"],
+      "properties": {
+        "plugins": { "type": "array", "items": { "$ref": "#/$defs/plugin" } }
+      }
+    },
+    { "$ref": "#/$defs/surfaceDocument" }
+  ]
+}

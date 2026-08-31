@@ -107,18 +107,32 @@ test("plugin manifest rejects insecure remote services and cross-surface MCP acc
   );
 });
 
-test("plugin manifest accepts only supported Apple platforms", () => {
-  assert.deepEqual(
-    validatePluginManifest({ ...manifest, platforms: ["MACOS", "ios", "ios"] }).platforms,
-    ["macos", "ios"]
-  );
+test("plugin manifest normalizes OS and form-factor compatibility", () => {
+  const modern = validatePluginManifest({
+    ...manifest,
+    platforms: ["MACOS", "ios", "android", "windows", "ios"],
+    formFactors: ["PHONE", "tablet", "desktop", "phone"]
+  });
+  assert.deepEqual(modern.platforms, ["macos", "ios", "android", "windows"]);
+  assert.deepEqual(modern.formFactors, ["phone", "tablet", "desktop"]);
+  const legacy = validatePluginManifest({
+    ...manifest,
+    platforms: ["macos", "ios", "ipados"],
+    formFactors: undefined
+  });
+  assert.deepEqual(legacy.platforms, ["macos", "ios"]);
+  assert.deepEqual(legacy.formFactors, ["desktop", "phone", "tablet"]);
   assert.throws(
     () => validatePluginManifest({ ...manifest, platforms: [] }),
     /at least one platform/
   );
   assert.throws(
-    () => validatePluginManifest({ ...manifest, platforms: ["android"] }),
-    /unsupported platforms: android/
+    () => validatePluginManifest({ ...manifest, platforms: ["linux"], formFactors: ["desktop"] }),
+    /unsupported platforms: linux/
+  );
+  assert.throws(
+    () => validatePluginManifest({ ...manifest, platforms: ["android"], formFactors: ["watch"] }),
+    /unsupported formFactors: watch/
   );
 });
 
@@ -135,6 +149,7 @@ test("plugin installation resolves a package-owned Surface UI file", async () =>
       document: {
         schemaVersion: 1,
         presentation: "collection",
+        collectionStyle: "cards",
         title: "Notices",
         collection: {
           source: "notices.notices",
@@ -156,12 +171,24 @@ test("plugin installation resolves a package-owned Surface UI file", async () =>
   const installed = await installPlugin(root, source);
 
   assert.equal(installed.plugin.surface.ui.schemaVersion, 1);
+  assert.equal(installed.plugin.surface.ui.routes[0].document.collectionStyle, "cards");
   assert.deepEqual(installed.plugin.surface.navigation.map((item) => item.id), ["notices"]);
   assert.equal(installed.plugin.surface.ui.routes[0].dataSources[0].path, "/api/notices?limit=100");
   assert.deepEqual(
     (await getInstalledPlugin(root, manifest.id)).surface.ui,
     installed.plugin.surface.ui
   );
+
+  const invalid = structuredClone({
+    ...manifest,
+    surface: {
+      ...manifest.surface,
+      navigation: undefined,
+      ui
+    }
+  });
+  invalid.surface.ui.routes[0].document.collectionStyle = "grid";
+  assert.throws(() => validatePluginManifest(invalid), /collectionStyle/);
 });
 
 test("Surface v2 validates declared collection data sources and editor fields", () => {
