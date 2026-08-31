@@ -1,0 +1,28 @@
+name: distribution-cli-release
+
+on:
+  push:
+    tags:
+      - "codmes-distribution-cli-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  verify-versioned-tool:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run runtime:bootstrap
+      - name: Verify tag matches Distribution CLI version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cli_tag="$(node bin/codmes.mjs plugin distribution version --json | node -e 'let input=""; process.stdin.on("data", value => input += value); process.stdin.on("end", () => process.stdout.write(JSON.parse(input).tag));')"
+          test "$cli_tag" = "$RELEASE_TAG"
+      - run: npm run check
