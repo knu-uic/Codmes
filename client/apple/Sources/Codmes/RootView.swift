@@ -1492,21 +1492,30 @@ struct PluginContentView: View {
         Group {
             if surface.renderer == "declarative", surface.pluginId != nil {
                 if let document {
-                    if document.presentation == "calendar" {
-                        calendar(document)
-                    } else if document.presentation == "dashboard" {
-                        dashboard(document)
-                    } else {
-                        collection(document)
+                    VStack(spacing: 0) {
+                        if let dataState = document.dataState {
+                            pluginDataStateBanner(dataState)
+                        }
+                        if document.presentation == "calendar" {
+                            calendar(document)
+                        } else if document.presentation == "dashboard" {
+                            dashboard(document)
+                        } else {
+                            collection(document)
+                        }
                     }
                 } else if let loadError {
-                    ContentUnavailableView(
-                        "Couldn’t open \(surface.title)",
-                        systemImage: "exclamationmark.triangle",
-                        description: Text(loadError)
-                    )
+                    ContentUnavailableView {
+                        Label("Couldn’t open \(activeRouteTitle)", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(loadError)
+                    } actions: {
+                        Button("Retry") {
+                            Task { await loadPluginViewDocument() }
+                        }
+                    }
                 } else {
-                    ProgressView("Loading \(surface.title)…")
+                    ProgressView("Loading \(activeRouteTitle)…")
                 }
             } else {
                 placeholder
@@ -1541,6 +1550,44 @@ struct PluginContentView: View {
                 }
             )
         }
+    }
+
+    private var activeRouteTitle: String {
+        surface.navigation?.first(where: { $0.id == routeId })?.title ?? surface.title
+    }
+
+    private func pluginDataStateBanner(_ state: PluginSurfaceDataState) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: state.status == "partial" ? "exclamationmark.circle" : "wifi.exclamationmark")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(state.status == "partial" ? "Some data could not be loaded" : "Plugin data is unavailable")
+                    .font(.callout.weight(.semibold))
+                Text(dataStateMessage(state))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            if state.errors.contains(where: \.retryable) {
+                Button("Retry") {
+                    Task { await loadPluginViewDocument() }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 11)
+        .background(Color.orange.opacity(0.10))
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private func dataStateMessage(_ state: PluginSurfaceDataState) -> String {
+        state.errors.map(\.message).reduce(into: [String]()) { messages, message in
+            if !messages.contains(message) {
+                messages.append(message)
+            }
+        }.joined(separator: " ")
     }
 
     private func collection(_ document: PluginViewDocument) -> some View {
@@ -2308,14 +2355,24 @@ struct PluginContentView: View {
     @MainActor
     private func loadPluginViewDocument() async {
         guard surface.renderer == "declarative", let pluginId = surface.pluginId else { return }
+        let requestedRouteId = routeId
+        document = nil
         loadError = nil
+        query = ""
+        selectedFilters = [:]
         guard let api = store.api else {
             loadError = "Connect to the Codmes server first."
             return
         }
         do {
-            document = try await api.pluginViewDocument(pluginId: pluginId, routeId: routeId)
+            let loadedDocument = try await api.pluginViewDocument(
+                pluginId: pluginId,
+                routeId: requestedRouteId
+            )
+            guard !Task.isCancelled, routeId == requestedRouteId else { return }
+            document = loadedDocument
         } catch {
+            guard !Task.isCancelled, routeId == requestedRouteId else { return }
             loadError = error.localizedDescription
         }
     }
@@ -4008,11 +4065,11 @@ private struct MarketplaceSettingsView: View {
             }
 
             HStack(spacing: 8) {
-                Text("v\(plugin.version)")
+                Text("Latest v\(plugin.version)")
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
                 if plugin.installed, let installedVersion = plugin.installedVersion {
-                    Text(plugin.updateAvailable ? "Installed v\(installedVersion)" : "Installed")
+                    Text("Installed v\(installedVersion)")
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(plugin.updateAvailable ? .orange : .green)
                 }
@@ -4028,7 +4085,7 @@ private struct MarketplaceSettingsView: View {
     private func pluginActions(_ plugin: MarketplacePlugin, isWorking: Bool) -> some View {
         if plugin.installed {
             if plugin.canRollback {
-                Button("Restore v\(plugin.previousVersion ?? "")") {
+                Button("Rollback to v\(plugin.previousVersion ?? "")") {
                     Task { await store.rollbackMarketplacePlugin(plugin) }
                 }
                 .buttonStyle(.bordered)

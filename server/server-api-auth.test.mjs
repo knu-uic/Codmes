@@ -724,6 +724,24 @@ test("plugin package owns UI while the upstream returns data only", async () => 
     assert.equal(upstreamRequests.every((request) => request.authorization === undefined), true);
     assert.equal(upstreamRequests.every((request) => request.cookie === undefined), true);
 
+    await new Promise((resolve) => upstream.close(resolve));
+    const unavailableDocument = await fetchJson(
+      `${baseUrl}/api/plugins/com.example.portal/view-document`,
+      { token }
+    );
+    assert.equal(unavailableDocument.title, "Portal");
+    assert.equal(unavailableDocument.presentation, "dashboard");
+    assert.deepEqual(unavailableDocument.items, []);
+    assert.deepEqual(unavailableDocument.sections, []);
+    assert.deepEqual(unavailableDocument.dataState, {
+      status: "unavailable",
+      errors: [{
+        sourceId: "api",
+        message: "The plugin service is unavailable. Check that it is running and retry.",
+        retryable: true
+      }]
+    });
+
     const removed = await fetchJson(`${baseUrl}/api/plugins/com.example.portal`, {
       token,
       method: "DELETE"
@@ -731,7 +749,9 @@ test("plugin package owns UI while the upstream returns data only", async () => 
     assert.equal(removed.removed, true);
   } finally {
     server.kill("SIGTERM");
-    await new Promise((resolve) => upstream.close(resolve));
+    if (upstream.listening) {
+      await new Promise((resolve) => upstream.close(resolve));
+    }
     await fs.rm(workspaceRoot, { recursive: true, force: true });
     await fs.rm(source, { recursive: true, force: true });
   }

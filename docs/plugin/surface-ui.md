@@ -126,6 +126,30 @@ mapping을 지원한다.
 
 ## 컴파일된 Surface document v1
 
+원격 data source가 일시적으로 응답하지 않아도 route의 UI 구조는 유지한다.
+Codmes 서버는 실패한 source에 빈 payload를 대입해 document를 컴파일하고,
+다음 `dataState`를 추가한다.
+
+```json
+{
+  "dataState": {
+    "status": "unavailable",
+    "errors": [
+      {
+        "sourceId": "notices",
+        "message": "The plugin service is unavailable. Check that it is running and retry.",
+        "retryable": true
+      }
+    ]
+  }
+}
+```
+
+`partial`은 여러 source 중 일부만 실패했을 때, `unavailable`은 모두 실패했을
+때 사용한다. Client는 route 제목과 화면 구조를 먼저 표시하고 내부에 오류
+안내와 재시도 조작을 제공한다. 실패한 upstream URL이나 credential은 document에
+노출하지 않는다.
+
 이 문서는 plugin backend가 직접 반환하는 계약이 아니라 Codmes가
 `surface.json`과 domain data를 결합한 뒤 Apple 앱에 보내는 내부 렌더링
 계약이다. `collection`, `dashboard`, `calendar` presentation을 지원한다.

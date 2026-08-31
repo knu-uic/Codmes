@@ -1063,6 +1063,19 @@ struct PluginViewDocument: Codable {
     let items: [PluginSurfaceItem]
     let sections: [PluginSurfaceSection]?
     let editor: PluginSurfaceEditor?
+    let dataState: PluginSurfaceDataState?
+}
+
+struct PluginSurfaceDataState: Codable {
+    let status: String
+    let errors: [PluginSurfaceDataSourceError]
+}
+
+struct PluginSurfaceDataSourceError: Codable, Identifiable {
+    var id: String { sourceId }
+    let sourceId: String
+    let message: String
+    let retryable: Bool
 }
 
 struct PluginSurfaceEditor: Codable, Hashable {

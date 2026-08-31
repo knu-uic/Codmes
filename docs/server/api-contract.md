@@ -199,7 +199,13 @@ Plugin Runtime routes:
 - `GET /api/plugins/:pluginId/view-document?route=<navigationId>` loads the
   installed plugin-owned route binding, fetches its domain JSON data sources,
   compiles them into one declarative document, and validates it for native
-  client rendering.
+  client rendering. A declarative route remains a successful document response
+  when a remote data source is temporarily unavailable. The document keeps the
+  route-owned title, presentation, filters, empty state, and other UI structure,
+  substitutes an empty payload for the failed source, and includes
+  `dataState.status` (`partial` or `unavailable`) plus retryable source errors.
+  Clients render that state inside the selected route instead of replacing the
+  whole plugin Surface with a transport error.
 - `GET /api/plugins/:pluginId/auth/status` returns login state without a token.
 - `POST /api/plugins/:pluginId/auth/login` accepts `{username,password}`,
   maps those values to the manifest's `usernameField` and `passwordField`,

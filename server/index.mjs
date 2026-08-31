@@ -3155,18 +3155,47 @@ async function fetchPluginViewDocument(pluginId, routeId) {
     };
   }
   if (uiRoute) {
-    const entries = await Promise.all(uiRoute.dataSources.map(async (source) => {
-      if (source.path.startsWith("collection:")) {
-        const { readPluginCollection } = await import("./lib/runtime/plugin-collection-store.mjs");
-        return [
-          source.id,
-          await readPluginCollection(WORKSPACE_ROOT, manifest, source.path.slice("collection:".length))
-        ];
+    const results = await Promise.all(uiRoute.dataSources.map(async (source) => {
+      try {
+        if (source.path.startsWith("collection:")) {
+          const { readPluginCollection } = await import("./lib/runtime/plugin-collection-store.mjs");
+          return {
+            id: source.id,
+            value: await readPluginCollection(
+              WORKSPACE_ROOT,
+              manifest,
+              source.path.slice("collection:".length)
+            )
+          };
+        }
+        const sourceUrl = new URL(source.path, manifest.surface.upstreamUrl);
+        return {
+          id: source.id,
+          value: await fetchPluginSurfaceJson(sourceUrl, credential)
+        };
+      } catch (error) {
+        return {
+          id: source.id,
+          value: {},
+          error: {
+            sourceId: source.id,
+            message: pluginDataSourceErrorMessage(error),
+            retryable: true
+          }
+        };
       }
-      const sourceUrl = new URL(source.path, manifest.surface.upstreamUrl);
-      return [source.id, await fetchPluginSurfaceJson(sourceUrl, credential)];
     }));
-    const document = renderPluginViewDocument(uiRoute, Object.fromEntries(entries));
+    const document = renderPluginViewDocument(
+      uiRoute,
+      Object.fromEntries(results.map((result) => [result.id, result.value]))
+    );
+    const dataSourceErrors = results.flatMap((result) => result.error ? [result.error] : []);
+    if (dataSourceErrors.length) {
+      document.dataState = {
+        status: dataSourceErrors.length === results.length ? "unavailable" : "partial",
+        errors: dataSourceErrors
+      };
+    }
     validatePluginViewDocument(document);
     return document;
   }
@@ -3229,6 +3258,17 @@ async function fetchPluginSurfaceJson(url, credential) {
     throw Object.assign(new Error("Plugin data source returned invalid JSON."), { status: 502 });
   }
   return document;
+}
+
+function pluginDataSourceErrorMessage(error) {
+  const message = String(error?.message || "");
+  if (message.includes("returned 401") || message.includes("returned 403")) {
+    return "The plugin service rejected the current login. Sign in again and retry.";
+  }
+  if (message.includes("returned ")) {
+    return "The plugin service returned an error. Please retry shortly.";
+  }
+  return "The plugin service is unavailable. Check that it is running and retry.";
 }
 
 async function pluginAuthStatus(pluginId) {
@@ -3405,6 +3445,22 @@ function validatePluginViewDocument(document) {
       new Error("Plugin surface items must be an array of at most 500 entries."),
       { status: 502 }
     );
+  }
+  if (document.dataState != null) {
+    if (!document.dataState
+        || !["partial", "unavailable"].includes(String(document.dataState.status || ""))
+        || !Array.isArray(document.dataState.errors)
+        || !document.dataState.errors.length
+        || document.dataState.errors.length > 8) {
+      throw Object.assign(new Error("Plugin surface data state is invalid."), { status: 502 });
+    }
+    for (const error of document.dataState.errors) {
+      if (!/^[a-z][a-z0-9_-]{0,63}$/.test(String(error?.sourceId || ""))
+          || !String(error?.message || "").trim()
+          || typeof error?.retryable !== "boolean") {
+        throw Object.assign(new Error("Plugin surface data source error is invalid."), { status: 502 });
+      }
+    }
   }
   if (document.collectionStyle != null
       && (presentation !== "collection"
