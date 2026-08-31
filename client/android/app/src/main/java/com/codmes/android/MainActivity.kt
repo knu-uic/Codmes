@@ -3,6 +3,9 @@ package com.codmes.android
 import android.app.Activity
 import android.app.AlertDialog
 import android.graphics.BitmapFactory
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.ViewGroup
 import android.widget.Button
@@ -310,11 +313,15 @@ class MainActivity : Activity() {
             panel.addView(title(document.optString("title", pluginId)))
             document.optString("subtitle").takeIf { it.isNotBlank() }?.let { panel.addView(text(it)) }
             val items = document.optJSONArray("items") ?: JSONArray()
+            val usesCards = document.optString("collectionStyle") == "cards"
             for (index in 0 until items.length()) {
                 val item = items.getJSONObject(index)
-                panel.addView(title(item.optString("title")))
-                item.optString("subtitle").takeIf { it.isNotBlank() }?.let { panel.addView(text(it)) }
-                item.optString("body").takeIf { it.isNotBlank() }?.let { panel.addView(text(it)) }
+                if (usesCards) panel.addView(surfaceCard(item))
+                else {
+                    panel.addView(title(item.optString("title")))
+                    item.optString("subtitle").takeIf { it.isNotBlank() }?.let { panel.addView(text(it)) }
+                    item.optString("body").takeIf { it.isNotBlank() }?.let { panel.addView(text(it)) }
+                }
             }
             val sections = document.optJSONArray("sections") ?: JSONArray()
             for (index in 0 until sections.length()) panel.addView(title(sections.getJSONObject(index).optString("title")))
@@ -372,5 +379,47 @@ class MainActivity : Activity() {
     private fun showMessage(message: String) = show { it.addView(text(message)) }
     private fun title(value: String) = TextView(this).apply { text = value; textSize = 20f; setPadding(0, 18, 0, 8) }
     private fun text(value: String) = TextView(this).apply { text = value; textSize = 15f; setPadding(0, 4, 0, 8) }
+    private fun surfaceCard(item: JSONObject) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(16), dp(14), dp(16), dp(14))
+        background = GradientDrawable().apply {
+            setColor(Color.rgb(250, 250, 250))
+            setStroke(dp(1), Color.rgb(218, 218, 218))
+            cornerRadius = dp(14).toFloat()
+        }
+        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(6), 0, dp(6)) }
+
+        val context = listOfNotNull(
+            item.optString("systemImage").takeIf { it.isNotBlank() }?.let(::surfaceSymbol),
+            item.optString("eyebrow").takeIf { it.isNotBlank() }
+        ).joinToString(" ")
+        if (context.isNotBlank()) addView(text(context).apply {
+            setTextColor(Color.rgb(30, 100, 210)); textSize = 13f; setTypeface(null, Typeface.BOLD)
+        })
+        item.optString("badge").takeIf { it.isNotBlank() }?.let { value ->
+            addView(text(value).apply {
+                setTextColor(surfaceTone(item.optString("badgeTone")))
+                textSize = 12f; setTypeface(null, Typeface.BOLD)
+            })
+        }
+        item.optString("meta").takeIf { it.isNotBlank() }?.let { addView(text(it).apply { textSize = 12f }) }
+        addView(title(item.optString("title")).apply { textSize = 18f })
+        item.optString("subtitle").takeIf { it.isNotBlank() }?.let { addView(text(it)) }
+        item.optString("body").takeIf { it.isNotBlank() }?.let { addView(text(it)) }
+    }
+    private fun surfaceTone(value: String) = when (value) {
+        "danger" -> Color.rgb(190, 35, 45)
+        "warning" -> Color.rgb(180, 105, 0)
+        "success" -> Color.rgb(20, 125, 65)
+        "neutral" -> Color.DKGRAY
+        else -> Color.rgb(30, 100, 210)
+    }
+    private fun surfaceSymbol(value: String) = when (value) {
+        "bell" -> "🔔"
+        "calendar" -> "📅"
+        "checkmark.circle" -> "✓"
+        else -> ""
+    }
+    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     private fun encode(value: String) = java.net.URLEncoder.encode(value, Charsets.UTF_8.name())
 }

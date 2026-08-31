@@ -154,13 +154,20 @@ public partial class MainWindow : Window
             SurfaceContent.Children.Clear();
             AddHeading(root.GetProperty("title").GetString() ?? pluginId, 24);
             if (root.TryGetProperty("subtitle", out var subtitle) && subtitle.ValueKind == JsonValueKind.String) AddBodyText(subtitle.GetString());
+            var usesCards = root.TryGetProperty("collectionStyle", out var collectionStyle)
+                && collectionStyle.ValueKind == JsonValueKind.String
+                && collectionStyle.GetString() == "cards";
             if (root.TryGetProperty("items", out var items))
             {
                 foreach (var item in items.EnumerateArray())
                 {
-                    AddHeading(item.GetProperty("title").GetString() ?? "", 17);
-                    if (item.TryGetProperty("subtitle", out var itemSubtitle) && itemSubtitle.ValueKind == JsonValueKind.String) AddBodyText(itemSubtitle.GetString());
-                    if (item.TryGetProperty("body", out var body) && body.ValueKind == JsonValueKind.String) AddBodyText(body.GetString());
+                    if (usesCards) AddSurfaceCard(item);
+                    else
+                    {
+                        AddHeading(item.GetProperty("title").GetString() ?? "", 17);
+                        if (item.TryGetProperty("subtitle", out var itemSubtitle) && itemSubtitle.ValueKind == JsonValueKind.String) AddBodyText(itemSubtitle.GetString());
+                        if (item.TryGetProperty("body", out var body) && body.ValueKind == JsonValueKind.String) AddBodyText(body.GetString());
+                    }
                 }
             }
             if (root.TryGetProperty("sections", out var sections))
@@ -444,6 +451,65 @@ public partial class MainWindow : Window
     private void ShowMessage(string message) { SurfaceContent.Children.Clear(); AddBodyText(message); }
     private void AddHeading(string value, double size) => SurfaceContent.Children.Add(new TextBlock { Text = value, FontSize = size, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 12, 0, 5), TextWrapping = TextWrapping.Wrap });
     private void AddBodyText(string? value) { if (!string.IsNullOrWhiteSpace(value)) SurfaceContent.Children.Add(new TextBlock { Text = value, Margin = new Thickness(0, 0, 0, 7), TextWrapping = TextWrapping.Wrap }); }
+    private void AddSurfaceCard(JsonElement item)
+    {
+        var panel = new StackPanel();
+        if (item.TryGetProperty("eyebrow", out var eyebrow) && eyebrow.ValueKind == JsonValueKind.String)
+        {
+            var symbol = item.TryGetProperty("systemImage", out var image) && image.ValueKind == JsonValueKind.String
+                ? SurfaceSymbol(image.GetString())
+                : "";
+            panel.Children.Add(new TextBlock {
+                Text = $"{symbol}{eyebrow.GetString()}",
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = System.Windows.Media.Brushes.RoyalBlue,
+                Margin = new Thickness(0, 0, 0, 5)
+            });
+        }
+        if (item.TryGetProperty("badge", out var badge) && badge.ValueKind == JsonValueKind.String)
+        {
+            var tone = item.TryGetProperty("badgeTone", out var badgeTone) && badgeTone.ValueKind == JsonValueKind.String
+                ? badgeTone.GetString()
+                : null;
+            panel.Children.Add(new TextBlock {
+                Text = badge.GetString(),
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = SurfaceTone(tone),
+                Margin = new Thickness(0, 0, 0, 4)
+            });
+        }
+        if (item.TryGetProperty("meta", out var meta) && meta.ValueKind == JsonValueKind.String)
+            panel.Children.Add(new TextBlock { Text = meta.GetString(), FontSize = 11, Opacity = .65, Margin = new Thickness(0, 0, 0, 5) });
+        panel.Children.Add(new TextBlock { Text = item.GetProperty("title").GetString() ?? "", FontSize = 17, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
+        if (item.TryGetProperty("subtitle", out var subtitle) && subtitle.ValueKind == JsonValueKind.String)
+            panel.Children.Add(new TextBlock { Text = subtitle.GetString(), Margin = new Thickness(0, 5, 0, 0), TextWrapping = TextWrapping.Wrap });
+        if (item.TryGetProperty("body", out var body) && body.ValueKind == JsonValueKind.String)
+            panel.Children.Add(new TextBlock { Text = body.GetString(), Margin = new Thickness(0, 5, 0, 0), TextWrapping = TextWrapping.Wrap });
+        SurfaceContent.Children.Add(new Border {
+            Child = panel,
+            Padding = new Thickness(16, 14, 16, 14),
+            Margin = new Thickness(0, 6, 0, 6),
+            CornerRadius = new CornerRadius(12),
+            BorderThickness = new Thickness(1),
+            BorderBrush = System.Windows.Media.Brushes.LightGray,
+            Background = System.Windows.Media.Brushes.White
+        });
+    }
+    private static System.Windows.Media.Brush SurfaceTone(string? tone) => tone switch {
+        "danger" => System.Windows.Media.Brushes.Firebrick,
+        "warning" => System.Windows.Media.Brushes.DarkOrange,
+        "success" => System.Windows.Media.Brushes.ForestGreen,
+        "neutral" => System.Windows.Media.Brushes.DimGray,
+        _ => System.Windows.Media.Brushes.RoyalBlue
+    };
+    private static string SurfaceSymbol(string? value) => value switch {
+        "bell" => "🔔 ",
+        "calendar" => "📅 ",
+        "checkmark.circle" => "✓ ",
+        _ => ""
+    };
 
     protected override async void OnClosed(EventArgs e) { await DisconnectChat(); base.OnClosed(e); }
 }

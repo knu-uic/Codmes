@@ -3406,6 +3406,14 @@ function validatePluginViewDocument(document) {
       { status: 502 }
     );
   }
+  if (document.collectionStyle != null
+      && (presentation !== "collection"
+        || !["list", "cards"].includes(String(document.collectionStyle)))) {
+    throw Object.assign(
+      new Error("Plugin collectionStyle must be 'list' or 'cards' on a collection document."),
+      { status: 502 }
+    );
+  }
   if (presentation === "calendar") {
     if (document.editor != null
         && !/^[a-z][a-z0-9_-]{0,63}$/.test(String(document.editor.collection || ""))) {

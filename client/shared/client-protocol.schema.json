@@ -53,10 +53,29 @@
       "properties": {
         "schemaVersion": { "enum": [1, 2] },
         "presentation": { "enum": ["collection", "calendar", "dashboard"] },
+        "collectionStyle": { "enum": ["list", "cards"] },
         "title": { "type": "string" },
         "subtitle": { "type": ["string", "null"] },
-        "items": { "type": "array" },
+        "items": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/surfaceItem" }
+        },
         "sections": { "type": "array" }
+      }
+    },
+    "surfaceItem": {
+      "type": "object",
+      "required": ["id", "title"],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "subtitle": { "type": ["string", "null"] },
+        "body": { "type": ["string", "null"] },
+        "eyebrow": { "type": ["string", "null"] },
+        "meta": { "type": ["string", "null"] },
+        "badge": { "type": ["string", "null"] },
+        "badgeTone": { "enum": ["accent", "danger", "warning", "success", "neutral", null] },
+        "systemImage": { "type": ["string", "null"] }
       }
     }
   },
