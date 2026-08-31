@@ -149,6 +149,7 @@ test("plugin installation resolves a package-owned Surface UI file", async () =>
       document: {
         schemaVersion: 1,
         presentation: "collection",
+        collectionStyle: "cards",
         title: "Notices",
         collection: {
           source: "notices.notices",
@@ -170,12 +171,24 @@ test("plugin installation resolves a package-owned Surface UI file", async () =>
   const installed = await installPlugin(root, source);
 
   assert.equal(installed.plugin.surface.ui.schemaVersion, 1);
+  assert.equal(installed.plugin.surface.ui.routes[0].document.collectionStyle, "cards");
   assert.deepEqual(installed.plugin.surface.navigation.map((item) => item.id), ["notices"]);
   assert.equal(installed.plugin.surface.ui.routes[0].dataSources[0].path, "/api/notices?limit=100");
   assert.deepEqual(
     (await getInstalledPlugin(root, manifest.id)).surface.ui,
     installed.plugin.surface.ui
   );
+
+  const invalid = structuredClone({
+    ...manifest,
+    surface: {
+      ...manifest.surface,
+      navigation: undefined,
+      ui
+    }
+  });
+  invalid.surface.ui.routes[0].document.collectionStyle = "grid";
+  assert.throws(() => validatePluginManifest(invalid), /collectionStyle/);
 });
 
 test("Surface v2 validates declared collection data sources and editor fields", () => {

@@ -1054,6 +1054,7 @@ struct PluginAuthLogoutResponse: Codable {
 struct PluginViewDocument: Codable {
     let schemaVersion: Int
     let presentation: String
+    let collectionStyle: String?
     let title: String
     let subtitle: String?
     let search: PluginSurfaceSearch?
@@ -1151,6 +1152,11 @@ struct PluginSurfaceItem: Codable, Identifiable {
     let tags: [String]
     let filterValues: [String: String]
     let action: PluginSurfaceAction?
+    let eyebrow: String?
+    let meta: String?
+    let badge: String?
+    let badgeTone: String?
+    let systemImage: String?
     let temporal: PluginSurfaceTemporal?
     let editorValues: [String: PluginSurfaceEditorValue]?
 }

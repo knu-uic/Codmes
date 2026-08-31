@@ -254,6 +254,12 @@ function normalizeSurfaceUiRoute(value, surfaceSchemaVersion, storageCollections
     throw new Error("Plugin surface UI document title is required.");
   }
   const normalizedDocument = JSON.parse(JSON.stringify(document));
+  if (normalizedDocument.collectionStyle != null) {
+    if (normalizedDocument.presentation !== "collection"
+        || !["list", "cards"].includes(String(normalizedDocument.collectionStyle))) {
+      throw new Error("Plugin collectionStyle must be 'list' or 'cards' on a collection document.");
+    }
+  }
   if (surfaceSchemaVersion === 2 && normalizedDocument.editor != null) {
     normalizedDocument.editor = normalizeSurfaceEditor(
       normalizedDocument.editor,
