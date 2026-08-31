@@ -54,6 +54,7 @@ import {
   createRegistryRootKeyPair,
   signMarketplaceRegistryFile
 } from "../server/lib/runtime/plugin-registry-signature.mjs";
+import { distributionCliInfo } from "../server/lib/runtime/distribution-cli-version.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -192,7 +193,7 @@ Usage:
   codmes sessions [list|rename|export|prune|delete]        (Interactive session browser if no subcommand)
   codmes tools [list|enable|disable] <name>
   codmes mcp [list|add|remove|enable|disable|credential] <name> [...]
-  codmes plugin [list|install|remove] [...]
+  codmes plugin [list|install|remove|distribution] [...]
   codmes skills [list|show|enable|disable|add|remove] <name>
   codmes security [show|set-approval-mode|allow-command|deny-command|list] [...]
   codmes doctor [--deep]                                   (Diagnostics helper)
@@ -1548,7 +1549,7 @@ async function runPlugins(args) {
     ]
   });
   const [subcommand = "list", target, extra, fourth] = options._;
-  const root = ["publisher", "registry", "pack", "verify"].includes(subcommand)
+  const root = ["publisher", "registry", "pack", "verify", "distribution"].includes(subcommand)
     ? null
     : workspaceRoot(options);
 
@@ -1564,6 +1565,7 @@ async function runPlugins(args) {
   codmes plugin remove <PLUGIN_ID> [--root PATH]
   codmes plugin pack <PATH> [--output FILE] [--sign-key PRIVATE_KEY --publisher-id ID]
   codmes plugin verify <PACKAGE> --public-key PUBLISHER_JSON
+  codmes plugin distribution version [--json]
   codmes plugin publisher init <PUBLISHER_ID> [--output DIRECTORY] [--force]
   codmes plugin publisher prepare <PATH> --sign-key PRIVATE_KEY --publisher-id ID
     --registry FILE [--package-url URL] [--package-directory SLUG]
@@ -1584,6 +1586,16 @@ async function runPlugins(args) {
     [--severity low|medium|high|critical] --registry FILE
   codmes plugin registry unblock <PLUGIN_ID> <VERSION> --registry FILE
 `);
+    return;
+  }
+
+  if (subcommand === "distribution") {
+    if (target !== "version") {
+      throw new Error("Usage: codmes plugin distribution version [--json]");
+    }
+    const info = distributionCliInfo();
+    if (options.json) printJson(info);
+    else console.log(`${info.name} ${info.version} (${info.tag})`);
     return;
   }
 

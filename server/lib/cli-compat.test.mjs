@@ -18,6 +18,26 @@ test("codmes CLI exposes help", () => {
   assert.match(codmes.stdout, /codmes serve/);
 });
 
+test("codmes CLI exposes an independently versioned Distribution CLI contract", () => {
+  const codmes = spawnSync(process.execPath, [
+    path.join(repoRoot, "bin", "codmes.mjs"),
+    "plugin", "distribution", "version", "--json"
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+  assert.equal(codmes.status, 0, codmes.stderr);
+  const info = JSON.parse(codmes.stdout);
+  assert.equal(info.name, "Codmes Distribution CLI");
+  assert.equal(info.version, "1.0.0");
+  assert.equal(info.tag, "codmes-distribution-cli-v1.0.0");
+  assert.deepEqual(info.manifestSchemaVersions, [1]);
+  assert.deepEqual(info.registrySchemaVersions, [1]);
+  assert.deepEqual(info.surfaceSchemaVersions, [1, 2]);
+  assert.ok(info.capabilities.includes("publisher-prepare"));
+  assert.ok(info.capabilities.includes("registry-validate"));
+});
+
 test("codmes CLI provisions MCP credentials from stdin without echoing the token", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-cli-mcp-"));
   const run = (args, input = "") => spawnSync(process.execPath, [path.join(repoRoot, "bin", "codmes.mjs"), ...args], { cwd: repoRoot, encoding: "utf8", input });
