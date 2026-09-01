@@ -86,6 +86,8 @@ final class WorkspaceStore: ObservableObject {
     private let uploadChunkSize = 1024 * 1024
     private var pluginAuthTasks: [String: Task<Void, Never>] = [:]
     private var pluginAuthMonitorTasks: [String: Task<Void, Never>] = [:]
+    private var pluginAuthRefreshesInFlight: Set<String> = []
+    private var lastPluginAuthRefreshAt: [String: Date] = [:]
 
     var api: WorkspaceAPI? {
         guard let url = currentServerURL else { return nil }
@@ -108,10 +110,18 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func refreshPluginAuthStatus(pluginId: String) async {
+        guard !pluginAuthRefreshesInFlight.contains(pluginId) else { return }
+        if let lastRefresh = lastPluginAuthRefreshAt[pluginId],
+           Date().timeIntervalSince(lastRefresh) < 2 {
+            return
+        }
         guard let api else {
             pluginAuthErrors[pluginId] = "Codmes 서버에 연결되지 않았습니다."
             return
         }
+        pluginAuthRefreshesInFlight.insert(pluginId)
+        lastPluginAuthRefreshAt[pluginId] = Date()
+        defer { pluginAuthRefreshesInFlight.remove(pluginId) }
         do {
             let status = try await api.pluginAuthStatus(pluginId: pluginId)
             updatePluginAuthStatus(status, pluginId: pluginId)
@@ -214,10 +224,15 @@ final class WorkspaceStore: ObservableObject {
             for attempt in 0..<120 {
                 await self.refreshPluginAuthStatus(pluginId: pluginId)
                 guard !Task.isCancelled else { return }
-                guard self.pluginAuthStatuses[pluginId]?.authenticated == true else { break }
-                guard self.pluginAuthStatuses[pluginId]?.profileSyncing == true else { break }
+                guard let status = self.pluginAuthStatuses[pluginId],
+                      status.authenticated else { break }
+                if status.reachable != false,
+                   status.profileSyncing != true {
+                    break
+                }
                 if attempt < 119 {
-                    try? await Task.sleep(for: .seconds(3))
+                    let delay = status.reachable == false ? 10 : 3
+                    try? await Task.sleep(for: .seconds(delay))
                 }
             }
             self.pluginAuthMonitorTasks[pluginId] = nil

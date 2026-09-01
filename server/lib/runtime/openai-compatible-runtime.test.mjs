@@ -64,6 +64,38 @@ test("OpenAI-compatible runtime streams chat completions from Codmes config", as
   assert.equal(typeof events[0].contextUsageRatio, "number");
 });
 
+test("OpenAI-compatible runtime uses the model selected when the session was created", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-session-model-"));
+  await setDefaultModel(root, "custom", "workspace-default");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_BASE_URL", "http://model.test/v1");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_API_KEY", "test-key");
+
+  let request = null;
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: root,
+    fetchImpl: async (_url, options) => {
+      request = JSON.parse(options.body);
+      return {
+        ok: true,
+        headers: { get: () => "text/event-stream" },
+        body: streamChunks([
+          'data: {"choices":[{"delta":{"content":"ok"}}]}\\n\\n',
+          "data: [DONE]\\n\\n"
+        ])
+      };
+    }
+  });
+
+  await runtime.createSession({
+    sessionId: "session-selected-model",
+    provider: "custom",
+    model: "session-selected"
+  });
+  await runtime.submitPrompt({ sessionId: "session-selected-model", message: "hello" });
+
+  assert.equal(request.model, "session-selected");
+});
+
 test("OpenAI-compatible runtime streams Ollama reasoning deltas as activity events", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-ollama-reasoning-"));
   await setDefaultModel(root, "ollama-local", "gemma4:e2b-mlx");

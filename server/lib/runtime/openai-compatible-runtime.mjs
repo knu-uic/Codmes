@@ -145,7 +145,12 @@ export class OpenAICompatibleRuntime extends EventEmitter {
   }
 
   async submitPrompt(params = {}) {
-    let activeParams = { ...params };
+    // The client chooses its provider/model when it creates a session. Prompt
+    // submission only carries the session id, so restore that selection before
+    // resolving the runtime model instead of silently falling back to the
+    // workspace default model.
+    const sessionParams = this.sessions.get(params.sessionId) || {};
+    let activeParams = { ...sessionParams, ...params };
     let attempts = 0;
     let lastError = null;
 

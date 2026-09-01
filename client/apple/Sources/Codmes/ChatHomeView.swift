@@ -161,10 +161,6 @@ struct ChatHomeView: View {
             .padding(compact ? 12 : 16)
             .background(.background.opacity(0.96))
         }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            isDraftFocused = false
-        }
         .sheet(isPresented: $showingSessionManager) {
             SessionManagerView(isPresented: $showingSessionManager)
                 .environmentObject(store)

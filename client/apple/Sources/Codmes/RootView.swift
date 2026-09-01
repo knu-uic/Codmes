@@ -44,7 +44,15 @@ struct RootView: View {
                 }
             }
         }
-        .frame(minWidth: 640, idealWidth: 1120, minHeight: 420, idealHeight: 740)
+        // A plugin surface with the navigation sidebar and the side chat needs
+        // room for three panes. Keeping the old 640pt minimum let AppKit
+        // compress the chat pane until its composer/menus were clipped.
+        .frame(
+            minWidth: isChatPanelVisible && activeSurfaceId != "chat" ? 960 : 640,
+            idealWidth: 1120,
+            minHeight: 420,
+            idealHeight: 740
+        )
         .sheet(isPresented: $showingSettings) {
             WorkspaceSettingsView(isPresented: $showingSettings)
                 .environmentObject(store)
@@ -340,15 +348,25 @@ struct RootView: View {
     @ViewBuilder
     private var detailView: some View {
         #if os(macOS)
-        if activeSurfaceId != "chat" && isChatPanelVisible {
-            HSplitView {
-                primaryDetailView
-                    .frame(minWidth: 0)
-                ChatHomeView(compact: true, showsHeader: false, onOpenModelSettings: openModelSettings)
-                    .frame(minWidth: 320, idealWidth: 390, maxWidth: 460)
-            }
-        } else {
+        // AppKit's HSplitView may rebuild its SwiftUI children while resolving
+        // pane constraints. That repeatedly recreated PluginContentView and
+        // cancelled/restarted an otherwise successful view-document request.
+        // A stable HStack keeps the plugin surface identity intact.
+        HStack(spacing: 0) {
             primaryDetailView
+                .frame(
+                    minWidth: activeSurfaceId != "chat" && isChatPanelVisible ? 360 : 0,
+                    maxWidth: .infinity,
+                    maxHeight: .infinity
+                )
+
+            if activeSurfaceId != "chat" && isChatPanelVisible {
+                Divider()
+
+                ChatHomeView(compact: true, showsHeader: false, onOpenModelSettings: openModelSettings)
+                    .frame(width: 400)
+                    .frame(maxHeight: .infinity)
+            }
         }
         #else
         if activeSurfaceId == "chat" {
@@ -1255,6 +1273,7 @@ private struct PluginAuthenticationSettingsView: View {
     private var portalProfileNeedsRefresh: Bool {
         isKNUPortal
             && authStatus?.authenticated == true
+            && authStatus?.reachable != false
             && (
                 authStatus?.profileSyncing == true
                     || authStatus?.name?.isEmpty != false
@@ -1273,6 +1292,9 @@ private struct PluginAuthenticationSettingsView: View {
 
     private var connectedAccountDetail: String {
         if isKNUPortal {
+            if authStatus?.reachable == false {
+                return "학교 서버 상태를 확인할 수 없습니다. 잠시 후 다시 시도합니다."
+            }
             let academic = [
                 authStatus?.studentId ?? "",
                 authStatus?.major ?? "",
