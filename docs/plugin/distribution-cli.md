@@ -32,6 +32,10 @@ Codmes-Marketplace와 plugin publisher workflow는 임의의 Codmes commit SHA�
 아니라 이 tag를 checkout한다. 두 workflow는 checkout 후 CLI가 보고하는 버전도
 확인해 tag 이름과 실제 도구 버전이 다른 경우 즉시 실패해야 한다.
 
+이 tag는 다른 저장소를 가리키는 배포 표시가 아니라, Codmes 소스 안의
+검증 도구 계약을 고정하는 참조다. 사용자용 설치 파일이 없으므로 새
+Distribution CLI 버전에는 별도 GitHub Release를 만들지 않는다.
+
 ## 버전 변경
 
 - patch: 기존 유효 package의 결과를 바꾸지 않는 오류 수정
@@ -42,5 +46,5 @@ Codmes-Marketplace와 plugin publisher workflow는 임의의 Codmes commit SHA�
 재사용하지 않는다. Marketplace와 publisher는 새 버전 검증 PR이 통과한 뒤 각각
 독립적으로 새 tag로 전환한다.
 
-장기적으로 Distribution CLI가 독립 package로 배포되더라도 이 버전 계약과 명령
-출력은 유지한다.
+장기적으로 Distribution CLI를 독립 package로 추출할 때는 배포물만 따로
+옮기지 않고 소스, 의존성, 테스트와 이 버전 계약을 함께 이전한다.

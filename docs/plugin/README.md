@@ -1,5 +1,8 @@
 # Codmes plugin 문서
 
+> 저장소별 소유권과 built-in/community plugin의 배포 차이는
+> [Release 정책](../release-policy.md)을 먼저 참고한다.
+
 이 디렉터리는 Codmes plugin의 설치, manifest, native view, MCP 연결과
 plugin별 운영 문서를 모아둔다.
 

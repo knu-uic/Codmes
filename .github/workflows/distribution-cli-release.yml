@@ -1,4 +1,4 @@
-name: distribution-cli-release
+name: distribution-cli-tag-contract
 
 on:
   push:

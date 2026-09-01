@@ -11,6 +11,8 @@ Planner 0.2.0은 외부 backend나 MCP 없이 Codmes Workspace 안에서 실행�
   `builtIn: true`, `removable: false`로 포함된다.
 - Marketplace에서 별도로 설치하거나 제거하지 않는다.
 - Planner 코드와 UI 규격은 Codmes 앱 버전과 함께 업데이트된다.
+- manifest의 Planner 내부 버전은 migration·호환성에 사용하며 별도 제품
+  Release를 의미하지 않는다.
 - 예전 Surface Registry나 호환 API를 거치지 않고 Plugin Runtime에서 직접 로드한다.
 
 `Planner` plugin의 `플래너`, `달력`, `메모` view와 다음 AI 도구가 기본으로
@@ -33,8 +35,9 @@ CodmesWorkspace/.codmes/plugin-data/com.codmes.planner/events.json
 CodmesWorkspace/.codmes/plugin-data/com.codmes.planner/memos.json
 ```
 
-Mac, iPhone, iPad는 같은 Workspace 서버 API를 사용하므로 별도 클라우드 계정 없이
-같은 데이터를 본다. Planner는 built-in plugin이라 사용자가 제거할 수 없다.
+Mac, iPhone, iPad, Android, Windows는 같은 Workspace 서버 API를 사용하므로
+별도 클라우드 계정 없이 같은 데이터를 본다. Planner는 built-in plugin이라
+사용자가 제거할 수 없다.
 
 ## 모드별 쓰기
 
@@ -51,8 +54,9 @@ Planner는 선언형 view의 세 route를 제공한다.
 - `달력`: 월 이동, 날짜 선택, 일정 생성·수정·삭제
 - `메모`: 제목과 여러 줄 텍스트를 작성하고 검색·고정·수정·삭제
 
-두 화면 모두 WebView가 아닌 SwiftUI renderer다. package가 `schemaVersion: 2`,
-collection과 `editor.fields`를 선언하고 Codmes가 native UI와 collection mutation을
+세 route 모두 WebView가 아닌 클라이언트별 native/declarative renderer로 표시한다.
+package가 `schemaVersion: 2`, collection과 `editor.fields`를 선언하고 Apple,
+Android, Windows client가 공통 Surface contract에 맞는 UI와 collection mutation을
 제공한다. 자세한 계약은 [Declarative Surface v2](./surface-v2.md)를 참고한다.
 
 `메모`는 기존 `Notes`를 확장하거나 그 파일 구조를 섞지 않는다. `Notes`는 학습

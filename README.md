@@ -56,6 +56,11 @@ Server Manager와 그 안에 포함된 서버는 하나의 Codmes Server 제품 
 배포됩니다. 예를 들어 `codmes-server-v0.1.0` Release에는 같은 `0.1.0` Manager와
 서버가 들어갑니다.
 
+Chat·Notes·Code·Planner는 Codmes에 포함된 built-in plugin으로, 독립
+GitHub Release를 만들지 않고 Codmes 제품 버전과 함께 업데이트됩니다. KNU처럼
+독립적으로 설치·업데이트하는 community plugin만 자체 저장소와 Release를
+갖습니다. 상세한 규칙은 [Release 정책](docs/release-policy.md)을 참고하세요.
+
 ### 클라이언트 상태
 
 - Apple 앱은 macOS와 iPhone·iPad를 지원합니다. Android와 Windows native client는
