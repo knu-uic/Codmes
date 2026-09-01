@@ -31,10 +31,10 @@ jobs:
             bundles: dmg
           - os: windows-latest
             artifact: codmes-server-manager-windows
-            bundles: nsis,msi
+            bundles: nsis
           - os: ubuntu-24.04
             artifact: codmes-server-manager-linux
-            bundles: deb,rpm
+            bundles: deb
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -70,10 +70,8 @@ jobs:
           name: ${{ matrix.artifact }}
           path: |
             apps/server-manager/src-tauri/target/release/bundle/**/*.dmg
-            apps/server-manager/src-tauri/target/release/bundle/**/*.msi
             apps/server-manager/src-tauri/target/release/bundle/**/*.exe
             apps/server-manager/src-tauri/target/release/bundle/**/*.deb
-            apps/server-manager/src-tauri/target/release/bundle/**/*.rpm
           if-no-files-found: error
           retention-days: 14
 
@@ -95,8 +93,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           mapfile -d '' files < <(find release-assets -type f \( \
-            -name '*.dmg' -o -name '*.msi' -o -name '*.exe' -o \
-            -name '*.deb' -o -name '*.rpm' \
+            -name '*.dmg' -o -name '*.exe' -o -name '*.deb' \
           \) -print0)
           if (( ${#files[@]} == 0 )); then
             echo "No installable bundles were produced."
@@ -130,8 +127,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           mapfile -d '' files < <(find release-assets -type f \( \
-            -name '*.dmg' -o -name '*.msi' -o -name '*.exe' -o \
-            -name '*.deb' -o -name '*.rpm' \
+            -name '*.dmg' -o -name '*.exe' -o -name '*.deb' \
           \) -print0)
           if (( ${#files[@]} == 0 )); then
             echo "No installable bundles were produced."

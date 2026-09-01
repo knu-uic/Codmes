@@ -44,8 +44,12 @@ Python과 built-in plugin을 하나의 설치 패키지로 제공합니다. Node
 운영체제에 맞는 파일을 내려받습니다.
 
 - macOS: `.dmg`
-- Windows: `.exe` 또는 `.msi`
-- Linux: `.deb` 또는 `.rpm`
+- Windows x64: `.exe`
+- Ubuntu/Debian x64: `.deb`
+
+초기 지원 범위를 명확히 하기 위해 Windows 기업 일괄 배포용 `.msi`와
+Fedora/RHEL 계열용 `.rpm`은 생성하지 않습니다. 해당 환경은 실제 요구와
+설치 검증 범위가 준비된 후 추가합니다.
 
 앱을 실행하면 서버가 자동으로 시작됩니다. 기본값은 이 컴퓨터에서만 접근 가능한
 `127.0.0.1:8787`입니다. iPhone·iPad·Android·다른 PC에서 접속하려면 Manager의
