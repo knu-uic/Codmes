@@ -32,17 +32,45 @@ Codmes는 단순한 AI 채팅 앱이 아니라, 사용자의 지식과 파일, �
 - Search: 대화 기록 검색, 파일 및 문서 검색, 검색 인덱스를 활용한 통합 검색
 - Server: AI Provider 및 모델 관리, Tool 실행, 파일과 검색 인덱스 관리, Workspace API 제공
 
-아직 구현되지 않은 기능은[roadmap](docs/roadmap.md)을 참고하세요.
+아직 구현되지 않은 기능은 [roadmap](docs/roadmap.md)을 참고하세요.
 
 ## 빠른 시작
 
-### 요구사항
+### 일반 사용자: Codmes Server 설치
+
+Codmes Server는 Server Manager, 실제 Workspace 서버, Node, PDF/Office용 portable
+Python과 built-in plugin을 하나의 설치 패키지로 제공합니다. Node나 Python을
+별도로 설치할 필요가 없습니다. [GitHub Releases](https://github.com/knu-uic/Codmes/releases)에서
+운영체제에 맞는 파일을 내려받습니다.
+
+- macOS: `.dmg`
+- Windows: `.exe` 또는 `.msi`
+- Linux: `.AppImage`, `.deb` 또는 `.rpm`
+
+앱을 실행하면 서버가 자동으로 시작됩니다. 기본값은 이 컴퓨터에서만 접근 가능한
+`127.0.0.1:8787`입니다. iPhone·iPad·Android·다른 PC에서 접속하려면 Manager의
+Access를 `Local network`로 바꾸고 자동 생성된 connection password(server token)를
+클라이언트에 입력합니다.
+
+Server Manager와 그 안에 포함된 서버는 하나의 Codmes Server 제품 버전으로 함께
+배포됩니다. 예를 들어 `codmes-server-v0.1.0` Release에는 같은 `0.1.0` Manager와
+서버가 들어갑니다.
+
+### 클라이언트 상태
+
 - Apple 앱은 macOS와 iPhone·iPad를 지원합니다. Android와 Windows native client는
   공통 protocol, declarative Surface, Live Chat, 편집 가능한 Notes/Code 탐색을
   지원합니다. Code patch 승인·거절과 선택적 검사 실행, PDF 페이지 표시·필기·
   사각형·텍스트 주석 동기화도 지원합니다.
 - Apple, Android, Windows 클라이언트는 GitHub Actions에서 각각 테스트·빌드되며
   Android APK와 Windows win-x64 실행 패키지는 CI artifact로 생성됩니다.
+
+Apple 클라이언트는 현재 개발 실행에 Xcode와 Development Team 설정이 필요합니다.
+Android는 Gradle/Android Studio, Windows는 .NET publish 또는 CI artifact로
+실행합니다. 일반 사용자용 App Store/TestFlight/서명 설치본 배포는 별도 단계입니다.
+
+### 개발자 요구사항
+
 - Node.js 22 이상
 - npm
 - document runtime bootstrap용 Python 3.11~3.13
@@ -77,7 +105,7 @@ codmes ollama
 codmes ollama --model gemma4:e2b-mlx --serve
 ```
 
-### Server 실행
+### 개발자용 CLI Server 실행
 
 기본 주소는 `127.0.0.1:8787`, 기본 Workspace는 `~/CodmesWorkspace`입니다.
 
@@ -108,6 +136,25 @@ iPhone과 iPad는 Mac의 `127.0.0.1`에 접속할 수 없습니다. Mac의 LAN �
 Tailscale 주소를 앱의 Server URL에 입력하고, 외부 interface로 열 때는
 `CODMES_SERVER_TOKEN`을 설정하세요.
 
+Server Manager 자체를 개발 실행하려면 다음 명령을 사용합니다. macOS에서는
+기본적으로 Dock을 차지하지 않고 메뉴바에서 실행되며, Windows와 Linux에서는
+system tray에서 시작·중지합니다.
+
+```bash
+npm --prefix apps/server-manager install
+npm run manager:dev
+```
+
+설치 패키지를 만들 때는 현재 OS용 Node, portable Python과 Codmes 서버 파일을
+앱에 포함합니다. 패키징 환경에는 `uv`가 필요합니다.
+
+```bash
+npm run manager:build
+```
+
+Server Manager의 구조, 보안 기본값, 배포 방법은
+[Server Manager 문서](docs/server/manager.md)를 참고하세요.
+
 ## Apple 앱 build
 
 Xcode project는 `client/apple/Codmes.xcodeproj`입니다.
@@ -137,6 +184,27 @@ xcodebuild \
 실제 iPhone/iPad 설치에는 Xcode에서 Apple Development Team을 지정해야 합니다.
 앱 settings에서 Server URL과 token을 입력하며 token은 Keychain에 저장됩니다.
 
+## Android 앱 build
+
+```bash
+cd client/android
+./gradlew testDebugUnitTest lintDebug assembleDebug
+```
+
+APK는 `client/android/app/build/outputs/apk/debug/`에 생성됩니다.
+
+## Windows 앱 build
+
+```bash
+dotnet publish client/windows/Codmes.Windows.csproj \
+  --configuration Release \
+  --runtime win-x64 \
+  --self-contained true \
+  --output artifacts/windows
+```
+
+Linux용 Server Manager는 제공하지만 Linux Codmes 클라이언트는 아직 없습니다.
+
 전체 JavaScript 문법 검사와 server test:
 
 ```bash
@@ -148,6 +216,8 @@ npm run check
 - [Server architecture](docs/server/architecture.md)
 - [Server API](docs/server/api-contract.md)
 - [Server data model](docs/server/data-model.md)
+- [Server Manager](docs/server/manager.md)
 - [Apple client](docs/client/apple.md)
+- [Client compatibility](docs/client/compatibility.md)
 - [UI/UX 원칙](docs/client/ui-ux.md)
 - [Debug 기록](docs/debug/)

@@ -1,0 +1,22 @@
+{
+  "name": "codmes-server-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "check": "node scripts/check-release-version.mjs && tsc --noEmit && cargo test --manifest-path src-tauri/Cargo.toml",
+    "stage:runtime": "node scripts/stage-runtime.mjs",
+    "bundle": "npm run stage:runtime && tauri build",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "typescript": "7.0.2",
+    "vite": "8.2.2"
+  }
+}

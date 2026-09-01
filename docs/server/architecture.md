@@ -3,10 +3,14 @@
 ## 실행 구조
 
 ```text
-Apple App
+Apple / Android / Windows client
   | HTTP + WebSocket
   v
-Codmes Server
+Codmes Server Manager
+  |- native menu bar / system tray process
+  |- bundled Node + portable Python
+  v
+Codmes Workspace Server
   |- Workspace file APIs
   |- Search and document ingest
   |- Session and agent runtime
@@ -16,8 +20,10 @@ Workspace + .codmes state
 ```
 
 `server/index.mjs`가 HTTP/WebSocket 진입점이다. 기능 로직은 `server/lib`에,
-문서 추출 worker는 `server/workers/document-ingest`에 있다. Apple 앱은
-`client/apple/Sources/Codmes`의 SwiftUI, PDFKit, AppKit/UIKit 코드로 구성된다.
+문서 추출 worker는 `server/workers/document-ingest`에 있다. 설치형 Server
+Manager는 `apps/server-manager`에 있으며 실제 서버를 bundled Node child process로
+실행한다. PDF/Office worker는 설치 패키지의 OS·CPU별 portable Python을 사용한다.
+클라이언트는 `client/apple`, `client/android`, `client/windows`에 나뉜다.
 
 ## 주요 서버 모듈
 
@@ -41,7 +47,8 @@ Workspace + .codmes state
 
 - 모든 파일 API는 Workspace-relative POSIX 경로를 받는다.
 - 절대 경로와 `..` traversal은 서버에서 거부한다.
-- Apple 앱은 파일, annotation, 검색 상태를 `WorkspaceAPI`를 통해 요청한다.
+- 모든 클라이언트는 파일, annotation, 검색 상태를 Workspace HTTP/WebSocket API로
+  요청한다.
 - Notes PDF 업로드 binary는 먼저 원본 경로에 저장한 뒤 server job에서 검사한다.
   정상 PDF는 그대로 두고 OCR 정규화가 필요한 PDF는 검증된 적용본으로 원자적으로
   교체한다. 최초 binary는 문서 상태의 `source/original.pdf`에 보관한다.
@@ -70,14 +77,15 @@ upload queue가 아니라 이 server job 목록의 `running` 상태만 반영한
 
 Chat·Notes·Code·Planner는 Codmes에 포함된 built-in plugin이고, KNU 같은 optional
 plugin은 Workspace 서버에 한 번 설치한다. 둘 다 `Plugin Runtime`에서 동일한
-plugin/view/tool/settings 계약으로 조회되며 연결된 macOS/iOS client에 함께
+plugin/view/tool/settings 계약으로 조회되며 호환되는 macOS/iOS/Android/Windows
+client에 함께
 표시된다. 별도의 Surface Registry나 `/api/surfaces` 호환 API는 없다.
 
 Community plugin 설치는 declarative view와 Streamable HTTP MCP entry를 원자적으로
-등록한다. Apple 앱은 plugin service에 직접 연결하지 않는다.
+등록한다. 클라이언트 앱은 plugin service에 직접 연결하지 않는다.
 
 ```text
-Apple SwiftUI renderer <- Codmes binding compiler <- plugin package UI JSON
+Native client renderer  <- Codmes binding compiler <- plugin package UI JSON
                                      ^              + plugin domain data API
 AI runtime             -> Codmes MCP client    -> plugin MCP service
 ```

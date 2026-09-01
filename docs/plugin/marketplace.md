@@ -149,8 +149,8 @@ Registry entry에는 다음 정보가 필요하다.
 {
   "id": "kr.ac.kongju.knu",
   "name": "KNU",
-  "version": "0.3.3",
-  "packagePath": "packages/knu-plugin/0.3.3.codmes-plugin",
+  "version": "0.4.0",
+  "packagePath": "packages/knu-plugin/0.4.0.codmes-plugin",
   "sha256": "<64 hex characters>",
   "signature": {
     "algorithm": "ed25519",

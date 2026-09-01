@@ -2,17 +2,19 @@
 
 KNU는 Codmes의 선택형 plugin PoC다. 한 번 설치하면 다음 두 기능이 함께 등록된다.
 
-- **KNU Surface**: 공지, LMS, 포털, 설정을 Codmes의 macOS/iOS native UI로 표시
+- **KNU Surface**: 공지, LMS, 포털, 설정을 Codmes의 Apple/Android/Windows native UI로 표시
 - **KNU MCP**: AI가 공주대 공지를 검색하고 상세 근거를 읽는 도구
 
 0.3.2부터 package의 `tools.json`이 Scan, Deep, 원문 조회 도구의 이름·입력
 schema·승인 정책을 선언한다. 실제 검색과 상세 조회는 계속 KNU MCP 서버가 실행하며
-Codmes Tool Registry가 선언과 MCP `tools/list` 결과를 연결한다.
+Codmes Tool Registry가 선언과 MCP `tools/list` 결과를 연결한다. 현재 Marketplace
+배포 버전은 `0.4.0`이며 `macos`, `ios`, `android`, `windows`와 `phone`, `tablet`,
+`desktop` 호환성을 선언한다.
 
 KNU 웹사이트를 WebView나 iframe으로 여는 구조가 아니다. KNU 서버는 공지·포털·LMS
 도메인 데이터만 JSON으로 제공하고, KNU plugin package의 `surface.json`이 화면
-구조와 데이터 바인딩을 소유한다. Codmes 서버가 둘을 검증·결합한 뒤 Apple
-클라이언트가 SwiftUI로 렌더링한다.
+구조와 데이터 바인딩을 소유한다. Codmes 서버가 둘을 검증·결합한 뒤 각 native
+클라이언트가 플랫폼 UI로 렌더링한다.
 
 0.3.3부터 공지와 LMS collection은 standalone React 웹의 정보 계층을 반영한
 native card를 사용한다. 출처·학과, 게시일·마감일, 상태 badge, 요약과 tag를
@@ -25,8 +27,9 @@ native card를 사용한다. 출처·학과, 게시일·마감일, 상태 badge,
 
 - **KNU 서버 컴퓨터**: `knu-ai-assistant` 저장소, Python 가상환경,
   `services/api/.env`, PostgreSQL과 KNU DB가 준비되어 있다.
-- **Codmes 서버 컴퓨터**: Codmes CLI, `CodmesWorkspace`, KNU plugin과 MCP
-  credential이 설치되어 있다.
+- **Codmes 서버 컴퓨터**: 일반 사용자는 Codmes Server Manager와 KNU plugin을
+  사용한다. CLI 기반 개발 환경에서는 `CodmesWorkspace`와 MCP credential이
+  준비되어 있어야 한다.
 - 두 서버를 같은 컴퓨터에서 실행한다면 KNU plugin의 기본 주소인
   `http://127.0.0.1:8000`을 그대로 사용할 수 있다.
 - 서로 다른 컴퓨터에서 실행한다면 plugin의 KNU API/MCP 주소를 KNU 서버의 실제
@@ -44,7 +47,13 @@ python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
 
 `Uvicorn running on http://127.0.0.1:8000`이 나오면 성공
 
-### 터미널 2: Codmes 서버
+### Codmes Server Manager
+
+일반 사용자는 Codmes Server 앱을 열면 Workspace 서버가 자동으로 실행된다. KNU
+서버가 같은 컴퓨터의 `127.0.0.1:8000`에서 실행 중이면 별도 Codmes 터미널이
+필요하지 않다. 아래 명령은 Server Manager를 사용하지 않는 개발자용 대안이다.
+
+### 개발자 대안: Codmes CLI 서버
 
 ```sh
 CODMES_WORKSPACE_ROOT="$HOME/CodmesWorkspace" \
@@ -227,7 +236,7 @@ node bin/codmes.mjs plugin install \
   --root "$CODMES_WORKSPACE"
 ```
 
-`KNU 0.3.2`가 표시되는지 확인한다. 설치 후 KNU 설정에서 포털 계정으로 로그인하면
+`KNU 0.4.0`이 표시되는지 확인한다. 설치 후 KNU 설정에서 포털 계정으로 로그인하면
 발급된 사용자 session token을 Surface와 MCP가 함께 사용한다. 일반 사용자는
 `MCP_AUTH_TOKEN`을 직접 등록하지 않는다.
 
@@ -242,7 +251,9 @@ node bin/codmes.mjs plugin list --root "$CODMES_WORKSPACE"
 
 ## 개발환경 실행 명령 설명
 
-앱을 사용할 때는 터미널 두 개와 Xcode를 실행한다.
+Server Manager를 사용하는 경우 KNU 서버와 Codmes 클라이언트만 실행하면 된다.
+아래 절은 KNU 및 Codmes 서버를 모두 source에서 개발할 때 사용하는 CLI/Xcode
+절차다.
 
 ### 터미널 1: KNU DB와 KNU 서버
 
@@ -325,8 +336,9 @@ Server URL: http://127.0.0.1:8787
 
 ## 실제 iPhone/iPad에서 실행
 
-Simulator가 아니라 실제 기기를 사용하면 기기에서 Mac의 `127.0.0.1`로 접속할 수
-없다. Codmes 서버만 LAN에 공개한다.
+Simulator가 아니라 실제 기기를 사용하면 기기에서 서버 컴퓨터의 `127.0.0.1`로
+접속할 수 없다. Server Manager에서 Access를 `Local network`로 변경한다. 이때
+connection password(server token)가 자동 생성된다.
 
 Mac의 IP를 확인한다.
 
@@ -334,7 +346,7 @@ Mac의 IP를 확인한다.
 ipconfig getifaddr en0
 ```
 
-Codmes 서버를 다음처럼 실행한다.
+CLI 개발 환경에서는 다음처럼 실행할 수 있다.
 
 ```sh
 cd "$CODMES_REPO"
@@ -343,19 +355,22 @@ node bin/codmes.mjs serve \
   --root "$CODMES_WORKSPACE"
 ```
 
-iPhone/iPad의 `Settings → Connection`에는 다음처럼 Mac의 IP를 입력한다.
+iPhone/iPad의 `Settings → Connection`에는 서버 컴퓨터의 IP와 Server Manager에
+표시된 token을 입력한다.
 
 ```text
 http://192.168.x.x:8787
 ```
 
-Mac과 iPhone/iPad는 같은 Wi-Fi에 있어야 한다. KNU plugin의
+서버 컴퓨터와 iPhone/iPad는 같은 Wi-Fi에 있거나 Tailscale로 연결되어야 한다.
+KNU plugin의
 `upstreamUrl=http://127.0.0.1:8000`은 바꾸지 않는다. Apple 기기가 아니라 Mac에서
 실행되는 Codmes 서버가 KNU 서버에 접속하기 때문이다.
 
 ## 종료 방법
 
-KNU 서버와 Codmes 서버가 실행 중인 각 터미널에서 `Control-C`를 누른다.
+Server Manager 메뉴에서 `Quit Codmes Server`를 선택하면 Manager가 시작한 Codmes
+서버도 함께 종료된다. CLI 개발 환경과 KNU 서버 터미널은 `Control-C`로 종료한다.
 PostgreSQL은 다음 부팅 뒤에도 자동 실행된다. PostgreSQL까지 중지하려면 다음
 명령을 실행한다.
 
@@ -465,7 +480,7 @@ LMS 재인증이 필요한 경우 사용자가 다시 연결해야 한다.
 ### 예시 1: 사용자가 포털 로그인
 
 ```text
-Apple 앱
+Codmes native client
   → Codmes 서버 POST /api/plugins/kr.ac.kongju.knu/auth/login
   → KNU 서버 POST /api/auth/portal-login
   → 공주대 포털 SSO 검증
@@ -483,12 +498,12 @@ KNU 서버 background task
 폐기하고, Workspace의 Surface·MCP credential 복사본을 함께 삭제한다. 같은 학번의
 다른 기기 session은 유지된다.
 
-Apple 앱에는 KNU JWT, 포털 cookie, MCP 토큰 또는 비밀번호가 전달되지 않는다.
+Codmes native client에는 KNU JWT, 포털 cookie, MCP 토큰 또는 비밀번호가 전달되지 않는다.
 
 ### 예시 2: 포털 화면 열기
 
 ```text
-Apple 앱
+Codmes native client
   → Codmes 서버에 KNU portal route 요청
   → Codmes 서버가 설치된 surface.json에서 portal binding을 선택
   → 저장한 KNU JWT를 Authorization 헤더에 추가
@@ -496,12 +511,12 @@ Apple 앱
   ← 학적·시간표·성적 domain JSON
   → Codmes 서버가 binding을 적용해 declarative dashboard document 생성
   → 생성 결과의 schema/크기/action 검증
-  ← Apple 앱이 SwiftUI table/key-value UI로 렌더링
+  ← 각 native client가 table/key-value UI로 렌더링
 ```
 
 KNU 서버는 `presentation`, `sections`, `systemImage` 같은 UI 정보를 알지 못한다.
 Codmes 서버도 KNU의 HTML을 전달하지 않고, 설치된 plugin UI 규약으로 만든 허용된
-JSON 문서만 Apple 앱에 전달한다.
+JSON 문서만 호환되는 native client에 전달한다.
 
 ### 예시 3: AI에게 “이번 학기 장학금 신청 공지 찾아줘”
 

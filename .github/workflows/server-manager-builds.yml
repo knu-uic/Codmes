@@ -1,0 +1,96 @@
+name: server-manager-builds
+
+on:
+  push:
+    branches: [main]
+    tags: ["codmes-server-v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: codmes-server-manager-macos
+          - os: windows-latest
+            artifact: codmes-server-manager-windows
+          - os: ubuntu-24.04
+            artifact: codmes-server-manager-linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/server-manager/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install uv for portable Python packaging
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.12.1"
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Install Server Manager dependencies
+        working-directory: apps/server-manager
+        run: npm ci
+      - name: Test Server Manager
+        working-directory: apps/server-manager
+        run: npm run check
+      - name: Stage Codmes runtime
+        working-directory: apps/server-manager
+        run: npm run stage:runtime
+      - name: Build native bundle
+        working-directory: apps/server-manager
+        run: npm run tauri build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            apps/server-manager/src-tauri/target/release/bundle/**/*.dmg
+            apps/server-manager/src-tauri/target/release/bundle/**/*.msi
+            apps/server-manager/src-tauri/target/release/bundle/**/*.exe
+            apps/server-manager/src-tauri/target/release/bundle/**/*.AppImage
+            apps/server-manager/src-tauri/target/release/bundle/**/*.deb
+            apps/server-manager/src-tauri/target/release/bundle/**/*.rpm
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/codmes-server-v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: codmes-server-manager-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -d '' files < <(find release-assets -type f \( \
+            -name '*.dmg' -o -name '*.msi' -o -name '*.exe' -o \
+            -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \
+          \) -print0)
+          if (( ${#files[@]} == 0 )); then
+            echo "No installable bundles were produced."
+            exit 1
+          fi
+          version="${GITHUB_REF_NAME#codmes-server-v}"
+          gh release create "$GITHUB_REF_NAME" "${files[@]}" \
+            --verify-tag \
+            --title "Codmes Server $version" \
+            --generate-notes

@@ -3,7 +3,7 @@
 Codmes plugin Surface는 외부 웹사이트를 WebView/iframe으로 표시하지 않는다.
 plugin package가 화면 구조와 제한된 action, data binding을 선언하고 plugin
 backend는 domain data만 JSON으로 제공한다. Codmes 서버가 두 입력을 결합하며
-클라이언트는 macOS/iOS의 네이티브 UI로 렌더링한다.
+클라이언트는 macOS/iOS, Android, Windows의 네이티브 UI로 렌더링한다.
 
 이 문서의 기본 binding과 presentation은 v1/v2가 공유한다. collection editor와
 field type을 선언하는 v2 추가 계약은 [Declarative Surface v2](./surface-v2.md)를
@@ -151,7 +151,7 @@ Codmes 서버는 실패한 source에 빈 payload를 대입해 document를 컴파
 노출하지 않는다.
 
 이 문서는 plugin backend가 직접 반환하는 계약이 아니라 Codmes가
-`surface.json`과 domain data를 결합한 뒤 Apple 앱에 보내는 내부 렌더링
+`surface.json`과 domain data를 결합한 뒤 호환되는 native client에 보내는 내부 렌더링
 계약이다. `collection`, `dashboard`, `calendar` presentation을 지원한다.
 
 ```json

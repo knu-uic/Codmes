@@ -9,6 +9,10 @@
   "scripts": {
     "start": "node server/index.mjs",
     "runtime:bootstrap": "node scripts/bootstrap-runtime.mjs",
+    "manager:dev": "npm --prefix apps/server-manager run tauri dev",
+    "manager:check": "npm --prefix apps/server-manager run check",
+    "manager:stage": "npm --prefix apps/server-manager run stage:runtime",
+    "manager:build": "npm --prefix apps/server-manager run bundle",
     "check": "node --check bin/codmes.mjs && node --check server/index.mjs && node --check server/lib/path-utils.mjs && node --test server/*.test.mjs server/lib/*.test.mjs server/lib/runtime/*.test.mjs"
   },
   "engines": {

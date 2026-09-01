@@ -1,0 +1,24 @@
+[package]
+name = "codmes-server-manager"
+version = "0.1.0"
+description = "Desktop manager for the Codmes Workspace server"
+authors = ["Codmes"]
+edition = "2021"
+
+[lib]
+name = "codmes_server_manager_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+directories = "6.0.0"
+rand = "0.9.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri = { version = "2.11.5", features = ["tray-icon"] }
+tauri-plugin-autostart = "2.5.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

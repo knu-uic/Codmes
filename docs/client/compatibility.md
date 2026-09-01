@@ -34,4 +34,6 @@ contract do not depend on a platform PDF SDK.
 
 Client CI runs the Apple package tests, Android compatibility tests/lint/APK
 build, and Windows compatibility tests/self-contained win-x64 publish. This
-keeps compatibility declarations tied to executable client artifacts.
+keeps compatibility declarations tied to executable client artifacts. Linux is
+supported as a Server Manager host, but a Linux Codmes client is not currently
+provided.

@@ -11,7 +11,6 @@
 
 ## Notes와 PDF
 
-- Windows와 Android annotation renderer/editor
 - 더 풍부한 text box 서식
 - 대규모 PDF의 thumbnail/cache 성능 측정과 개선
 - PDF 표준 annotation과의 선택적 round-trip

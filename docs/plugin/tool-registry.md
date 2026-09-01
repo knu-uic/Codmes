@@ -158,7 +158,7 @@ calendar_create({title, startsAt, endsAt})
   → 사용자 승인
   → Calendar collection storage adapter
   → Workspace에 event 저장
-  → 연결된 Apple client에서 같은 일정 표시
+  → 연결된 호환 native client에서 같은 일정 표시
 ```
 
 ## Workspace collection storage

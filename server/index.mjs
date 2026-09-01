@@ -2399,13 +2399,17 @@ async function documentIngestDiagnostics() {
 async function documentWorkerPython() {
   if (process.env.CODMES_PYTHON) return process.env.CODMES_PYTHON;
   if (process.env.PYTHON) return process.env.PYTHON;
-  const bundled = path.join(REPO_ROOT, ".codmes-runtime", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
-  try {
-    await fs.access(bundled);
-    return bundled;
-  } catch {
-    return "python3";
+  const bundledCandidates = process.platform === "win32"
+    ? ["python.exe", "Scripts/python.exe"]
+    : ["bin/python"];
+  for (const relativePath of bundledCandidates) {
+    const bundled = path.join(REPO_ROOT, ".codmes-runtime", relativePath);
+    try {
+      await fs.access(bundled);
+      return bundled;
+    } catch {}
   }
+  return "python3";
 }
 
 async function pythonLibraryDiagnostics(python, modules) {

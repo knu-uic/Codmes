@@ -198,7 +198,7 @@ Marketplace가 완전히 같은 byte를 배포한다. 잘못된 파일이나 다
 
 저장소 이름처럼 더 읽기 쉬운 폴더를 사용하려면 `--package-directory`를 지정한다.
 예를 들어 KNU는 `--package-directory knu-plugin`을 사용해
-`registry/packages/knu-plugin/0.3.3.codmes-plugin`에 저장한다. 슬러그를 생략하면
+`registry/packages/knu-plugin/0.4.0.codmes-plugin`에 저장한다. 슬러그를 생략하면
 plugin id가 폴더 이름이 되므로 외부 Publisher도 별도 하드코딩 없이 같은 구조를
 사용할 수 있다.
 
