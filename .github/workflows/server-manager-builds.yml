@@ -82,6 +82,7 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           mapfile -d '' files < <(find release-assets -type f \( \
             -name '*.dmg' -o -name '*.msi' -o -name '*.exe' -o \
