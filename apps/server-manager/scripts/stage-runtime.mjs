@@ -25,7 +25,22 @@ for (const entry of ["server", "bin", "bundled", "vendor", "package.json", "pack
 
 await stagePortablePython();
 
-await run(process.platform === "win32" ? "npm.cmd" : "npm", ["ci", "--omit=dev", "--ignore-scripts"], appRoot);
+if (process.platform === "win32") {
+  // Node's spawn does not reliably execute .cmd shims directly on Windows.
+  // Invoke npm through the system command interpreter without enabling a shell
+  // for any of the other runtime-packaging commands.
+  await run(process.env.ComSpec || "cmd.exe", [
+    "/d",
+    "/s",
+    "/c",
+    "npm",
+    "ci",
+    "--omit=dev",
+    "--ignore-scripts",
+  ], appRoot);
+} else {
+  await run("npm", ["ci", "--omit=dev", "--ignore-scripts"], appRoot);
+}
 await fs.copyFile(process.execPath, path.join(binRoot, nodeName));
 if (process.platform !== "win32") await fs.chmod(path.join(binRoot, nodeName), 0o755);
 
