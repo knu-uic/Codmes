@@ -6,12 +6,22 @@ on:
     tags: ["codmes-server-v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Completed build workflow run ID whose artifacts should be published"
+        required: false
+        type: string
+      release_tag:
+        description: "Existing release tag to publish (for example codmes-server-v0.1.0)"
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   build:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_run_id == ''
     strategy:
       fail-fast: false
       matrix:
@@ -94,6 +104,41 @@ jobs:
           fi
           version="${GITHUB_REF_NAME#codmes-server-v}"
           gh release create "$GITHUB_REF_NAME" "${files[@]}" \
+            --verify-tag \
+            --title "Codmes Server $version" \
+            --generate-notes
+
+  publish-existing-artifacts:
+    if: github.event_name == 'workflow_dispatch' && inputs.source_run_id != '' && inputs.release_tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: codmes-server-manager-*
+          path: release-assets
+          merge-multiple: true
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+      - name: Publish existing build artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          mapfile -d '' files < <(find release-assets -type f \( \
+            -name '*.dmg' -o -name '*.msi' -o -name '*.exe' -o \
+            -name '*.deb' -o -name '*.rpm' \
+          \) -print0)
+          if (( ${#files[@]} == 0 )); then
+            echo "No installable bundles were produced."
+            exit 1
+          fi
+          version="${RELEASE_TAG#codmes-server-v}"
+          gh release create "$RELEASE_TAG" "${files[@]}" \
             --verify-tag \
             --title "Codmes Server $version" \
             --generate-notes
