@@ -23,7 +23,7 @@ plugin이 모두 포함되므로 별도 서버·Node·Python 설치는 필요하
 | --- | --- | --- |
 | macOS | DMG | 메뉴바 앱, 선택적 Dock icon |
 | Windows | EXE/MSI | system tray 앱 |
-| Linux | AppImage/DEB/RPM | system tray 앱 |
+| Linux | DEB/RPM | system tray 앱 |
 
 macOS arm64 설치본은 실제 앱 설치, 내장 서버 health, PDF/DOCX 추출까지 검증했다.
 Windows와 Linux는 각 OS의 GitHub-hosted runner에서 native bundle과 portable Python을

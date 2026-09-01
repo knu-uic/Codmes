@@ -18,10 +18,13 @@ jobs:
         include:
           - os: macos-latest
             artifact: codmes-server-manager-macos
+            bundles: dmg
           - os: windows-latest
             artifact: codmes-server-manager-windows
+            bundles: nsis,msi
           - os: ubuntu-24.04
             artifact: codmes-server-manager-linux
+            bundles: deb,rpm
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +54,7 @@ jobs:
         run: npm run stage:runtime
       - name: Build native bundle
         working-directory: apps/server-manager
-        run: npm run tauri build
+        run: npm run tauri build -- --bundles ${{ matrix.bundles }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -59,7 +62,6 @@ jobs:
             apps/server-manager/src-tauri/target/release/bundle/**/*.dmg
             apps/server-manager/src-tauri/target/release/bundle/**/*.msi
             apps/server-manager/src-tauri/target/release/bundle/**/*.exe
-            apps/server-manager/src-tauri/target/release/bundle/**/*.AppImage
             apps/server-manager/src-tauri/target/release/bundle/**/*.deb
             apps/server-manager/src-tauri/target/release/bundle/**/*.rpm
           if-no-files-found: error
@@ -83,7 +85,7 @@ jobs:
         run: |
           mapfile -d '' files < <(find release-assets -type f \( \
             -name '*.dmg' -o -name '*.msi' -o -name '*.exe' -o \
-            -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \
+            -name '*.deb' -o -name '*.rpm' \
           \) -print0)
           if (( ${#files[@]} == 0 )); then
             echo "No installable bundles were produced."

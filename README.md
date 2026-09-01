@@ -45,7 +45,7 @@ Python과 built-in plugin을 하나의 설치 패키지로 제공합니다. Node
 
 - macOS: `.dmg`
 - Windows: `.exe` 또는 `.msi`
-- Linux: `.AppImage`, `.deb` 또는 `.rpm`
+- Linux: `.deb` 또는 `.rpm`
 
 앱을 실행하면 서버가 자동으로 시작됩니다. 기본값은 이 컴퓨터에서만 접근 가능한
 `127.0.0.1:8787`입니다. iPhone·iPad·Android·다른 PC에서 접속하려면 Manager의
