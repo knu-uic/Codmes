@@ -1,6 +1,10 @@
 process.env.NODE_ENV = "test";
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import { buildSessionSummary, SessionRuntime } from "./session-runtime.mjs";
 
 test("SessionRuntime summary captures topics, decisions, preferences, entities, and covered ids", () => {
@@ -40,4 +44,40 @@ test("SessionRuntime promptHistory returns recent visible user and assistant tur
     { role: "assistant", content: "two" },
     { role: "user", content: "three" }
   ]);
+});
+
+test("SessionRuntime keeps selected notice images with the chat and removes them on delete", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-session-assets-"));
+  const sessionsDirectory = path.join(root, "sessions");
+  await fs.mkdir(sessionsDirectory, { recursive: true });
+  const sessionId = "session-assets-1";
+  await fs.writeFile(path.join(sessionsDirectory, `${sessionId}.json`), JSON.stringify({ id: sessionId }), "utf8");
+  const server = http.createServer((req, res) => {
+    if (req.url !== "/api/notice-assets/118/content") return res.writeHead(404).end();
+    res.writeHead(200, { "content-type": "image/png" });
+    res.end(Buffer.from("fake-png"));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const runtime = new SessionRuntime({
+    stateStore: { root, workspaceRoot: root }
+  });
+
+  try {
+    const localized = await runtime.localizeSessionImages(
+      sessionId,
+      `화면입니다.\n![그림](http://127.0.0.1:${port}/api/notice-assets/118/content)`
+    );
+    assert.match(localized, new RegExp(`/api/sessions/${sessionId}/assets/[a-f0-9]{24}\\.png`));
+    const usage = await runtime.storageUsage();
+    assert.equal(usage.sessionCount, 1);
+    assert.equal(usage.assetCount, 1);
+    assert.ok(await runtime.sessionStorageBytes(sessionId) > Buffer.byteLength(JSON.stringify({ id: sessionId })));
+
+    await runtime.deleteSession(sessionId);
+    assert.equal((await runtime.storageUsage()).assetCount, 0);
+  } finally {
+    server.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });

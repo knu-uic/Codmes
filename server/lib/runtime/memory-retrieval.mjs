@@ -15,7 +15,7 @@ export const MEMORY_SEARCH_DEFINITION = {
   type: "function",
   function: {
     name: "memory_search",
-    description: "Search long-term user, project, folder, and session-summary memories.",
+    description: "Search past long-term user preferences, project/folder memories, and session summaries. Never use this for current external-service state such as KNU notices, LMS tasks, portal grades, account status, or other live data; use tool_discovery for those.",
     parameters: {
       type: "object",
       additionalProperties: false,

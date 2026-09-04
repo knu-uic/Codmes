@@ -74,11 +74,18 @@ Codmes의 선택형 plugin은 서버 Workspace에 한 번 설치하며, 연결�
   로그인 요청에만 사용하고 저장하지 않으며, 반환된 사용자 session token만 Codmes
   서버 credential store에 저장한다. MCP가 같은 `credentialId`를 선언하면 한 번의
   로그인으로 두 경로가 token을 공유하고 로그아웃할 때 함께 폐기한다.
-- `tools`는 package 내부 `tools.json`을 가리킨다. Manifest v1에서는 plugin 자신의
-  MCP 또는 선언된 Workspace collection 도구만 등록할 수 있고, 다른 plugin,
-  MCP server나 Surface 권한을 요청할 수 없다.
-  각 도구는 독립된 JSON input schema를 가진다. 자세한 규격은
+- `tools`는 선택적인 package 내부 `tools.json`을 가리킨다. Workspace collection
+  도구나 이전 MCP 서버의 정적 선언에 사용할 수 있다. 최신 MCP 서버는 `tools/list`의
+  설명·input schema와 `com.codmes/tool` 메타데이터로 공개 이름과 계층 그룹을 직접
+  제공할 수 있으므로 중복 `tools.json`이 필요하지 않다. 어느 방식이든 plugin은
+  다른 plugin, MCP server나 Surface 권한을 요청할 수 없다. 자세한 규격은
   [Common Tool Registry](./tool-registry.md)를 따른다.
+- plugin MCP의 도구 이름·설명·schema는 manifest에 복사하지 않는다. Codmes가
+  `tools/list`로 처음 발견한 도구는 Workspace별 대기 목록에 넣고, Plugin 설정에서
+  사용자가 승인한 이름만 AI에게 노출한다. 원격 MCP가 나중에 도구를 추가해도
+  plugin과 Marketplace package를 다시 배포할 필요는 없지만, 새 도구는 자동 승인되지
+  않는다. `mcp.allowedTools`처럼 package가 자기 권한을 스스로 승인하는 필드는 사용하지
+  않는다.
 - `storage`는 선택적인 package 내부 `storage.json`이다. Planner처럼
   외부 backend가 필요 없는 plugin은 MCP 없이 Surface + storage + plugin tool로
   구성할 수 있다.

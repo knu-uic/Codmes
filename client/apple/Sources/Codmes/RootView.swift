@@ -68,6 +68,7 @@ struct RootView: View {
         }
         .task(id: activeSurfaceTaskKey) {
             store.activeChatSurface = activeSurfaceId
+            store.activeChatRoute = selectedPluginView == nil ? nil : selectedPluginRouteId
             await autoRefreshVisibleFileTree()
         }
         .task {
@@ -106,7 +107,7 @@ struct RootView: View {
     }
 
     private var activeSurfaceTaskKey: String {
-        activeSurfaceId
+        "\(activeSurfaceId):\(selectedPluginRouteId ?? "")"
     }
 
     private var macHasSidebar: Bool {
@@ -447,6 +448,7 @@ struct RootView: View {
         }
         .task(id: activeSurfaceTaskKey) {
             store.activeChatSurface = activeSurfaceId
+            store.activeChatRoute = selectedPluginView == nil ? nil : selectedPluginRouteId
             await autoRefreshVisibleFileTree()
         }
         .task {
@@ -873,6 +875,7 @@ struct RootView: View {
         selectedPluginRouteId = nil
         selection = section
         store.activeChatSurface = section.runtimeSurfaceId
+        store.activeChatRoute = nil
     }
 
     private func selectSurfaceFromSearch(_ surface: String) {
@@ -894,6 +897,7 @@ struct RootView: View {
         selectedPluginRouteId = surface.navigation?.first?.id
         selection = nil
         store.activeChatSurface = surface.id
+        store.activeChatRoute = selectedPluginRouteId
     }
 
     private func openModelSettings() {
@@ -2909,6 +2913,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case model = "Model"
     case modelConfig = "Model Config"
     case search = "Search"
+    case chatHistory = "Chat History"
     case mcp = "MCP"
     case plugins = "Marketplace"
     case runtimePlugins = "Plugins"
@@ -2921,6 +2926,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .model: "cube"
         case .modelConfig: "key"
         case .search: "magnifyingglass"
+        case .chatHistory: "clock.arrow.circlepath"
         case .mcp: "point.3.connected.trianglepath.dotted"
         case .plugins: "shippingbox"
         case .runtimePlugins: "puzzlepiece.extension"
@@ -2933,6 +2939,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .model: "Choose provider and model"
         case .modelConfig: "Provider auth and endpoints"
         case .search: "Indexing and document search"
+        case .chatHistory: "Saved chats and storage"
         case .mcp: "External MCP tools"
         case .plugins: "Discover and update community plugins"
         case .runtimePlugins: "Built-in and installed plugins"
@@ -3030,7 +3037,10 @@ struct WorkspaceSettingsView: View {
 
     @ViewBuilder
     private var settingsDetail: some View {
-        ScrollView {
+        if selectedSection == .chatHistory {
+            SessionManagerView(isPresented: .constant(true), showsCloseButton: false)
+        } else {
+          ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 switch selectedSection {
                 case .connection:
@@ -3041,6 +3051,8 @@ struct WorkspaceSettingsView: View {
                     RuntimeProviderConfigSettingsView()
                 case .search:
                     SearchSettingsView()
+                case .chatHistory:
+                    EmptyView()
                 case .mcp:
                     MCPSettingsView()
                 case .plugins:
@@ -3051,6 +3063,7 @@ struct WorkspaceSettingsView: View {
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .topLeading)
+          }
         }
     }
 
@@ -4300,11 +4313,15 @@ private struct PluginSettingsView: View {
             }
         }
         .task(id: selectedPluginId) {
-            guard let plugin = selectedPlugin,
-                  let pluginId = plugin.views.first?.pluginId else {
+            guard let plugin = selectedPlugin else {
                 return
             }
-            await store.refreshPluginAuthStatus(pluginId: pluginId)
+            if let pluginId = plugin.views.first?.pluginId {
+                await store.refreshPluginAuthStatus(pluginId: pluginId)
+            }
+            if !plugin.builtIn {
+                await store.loadPluginMCPToolConsent(pluginId: plugin.id)
+            }
         }
     }
 
@@ -4458,6 +4475,10 @@ private struct PluginSettingsView: View {
                 .padding(14)
                 .background(.quaternary.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
 
+                if !plugin.builtIn {
+                    pluginMCPToolsSection(plugin)
+                }
+
                 if let primaryView,
                    let navigation = primaryView.navigation,
                    !navigation.isEmpty {
@@ -4496,6 +4517,88 @@ private struct PluginSettingsView: View {
         } else {
             EmptyView()
         }
+    }
+
+    @ViewBuilder
+    private func pluginMCPToolsSection(_ plugin: RuntimePlugin) -> some View {
+        let consent = store.pluginMCPToolConsent(for: plugin.id)
+        let isRefreshing = store.pluginMCPToolOperations.contains(plugin.id)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("MCP tools")
+                        .font(.callout.weight(.semibold))
+                    Text("Discovered tools stay unavailable to AI until you approve them for this Workspace.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    Task { await store.refreshPluginMCPTools(pluginId: plugin.id) }
+                } label: {
+                    if isRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Label("Discover", systemImage: "arrow.clockwise")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(isRefreshing || !plugin.enabled)
+            }
+
+            if let consent, !consent.discoveredTools.isEmpty {
+                ForEach(consent.discoveredTools) { tool in
+                    HStack(alignment: .top, spacing: 9) {
+                        Image(systemName: tool.destructive ? "exclamationmark.triangle" : (tool.readOnly ? "eye" : "wrench.and.screwdriver"))
+                            .foregroundStyle(tool.destructive ? .orange : .secondary)
+                            .frame(width: 18)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(tool.name)
+                                    .font(.caption.monospaced().weight(.medium))
+                                if !tool.approved {
+                                    Text("Waiting for approval")
+                                        .font(.caption2)
+                                        .foregroundStyle(.orange)
+                                }
+                            }
+                            if !tool.description.isEmpty {
+                                Text(tool.description)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(3)
+                            }
+                        }
+                        Spacer()
+                        Toggle("", isOn: Binding(
+                            get: { tool.approved },
+                            set: { approved in
+                                Task {
+                                    await store.setPluginMCPToolApproved(
+                                        pluginId: plugin.id,
+                                        toolName: tool.name,
+                                        approved: approved
+                                    )
+                                }
+                            }
+                        ))
+                        .labelsHidden()
+                        .controlSize(.small)
+                    }
+                    .padding(.vertical, 4)
+                }
+            } else {
+                Text("No tool catalog has been stored yet. Connect the plugin service, then choose Discover.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 6)
+            }
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
     }
 }
 

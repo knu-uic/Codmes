@@ -61,6 +61,13 @@ class MainActivity : Activity() {
             for (index in 0 until plugins.length()) {
                 val plugin = plugins.getJSONObject(index)
                 if (!supportsCurrentDevice(plugin)) continue
+                val pluginId = plugin.getString("id")
+                if (!plugin.optBoolean("builtIn", false)) {
+                    panel.addView(Button(this).apply {
+                        text = "${plugin.getString("name")} · MCP tools"
+                        setOnClickListener { openMcpTools(pluginId) }
+                    })
+                }
                 val views = plugin.optJSONArray("views") ?: JSONArray()
                 for (viewIndex in 0 until views.length()) {
                     val view = views.getJSONObject(viewIndex)
@@ -83,6 +90,42 @@ class MainActivity : Activity() {
             }
         }
     } }
+
+    private fun openMcpTools(pluginId: String, refresh: Boolean = false) {
+        val encoded = encode(pluginId)
+        val method = if (refresh) "POST" else "GET"
+        val path = if (refresh) "/api/plugins/$encoded/mcp-tools/refresh" else "/api/plugins/$encoded/mcp-tools"
+        requestJson(method, path, if (refresh) JSONObject() else null) { consent ->
+            val tools = consent.optJSONArray("discoveredTools") ?: JSONArray()
+            val approved = mutableSetOf<String>()
+            val approvedJson = consent.optJSONArray("approvedTools") ?: JSONArray()
+            for (index in 0 until approvedJson.length()) approved.add(approvedJson.getString(index))
+            show { panel ->
+                panel.addView(title("MCP tools"))
+                panel.addView(text("Discovered tools stay unavailable to AI until you approve them for this Workspace."))
+                panel.addView(Button(this).apply {
+                    text = "Discover"
+                    setOnClickListener { openMcpTools(pluginId, refresh = true) }
+                })
+                if (tools.length() == 0) panel.addView(text("No tool catalog has been stored yet."))
+                for (index in 0 until tools.length()) {
+                    val tool = tools.getJSONObject(index)
+                    val name = tool.getString("name")
+                    panel.addView(CheckBox(this).apply {
+                        text = if (tool.optBoolean("approved")) name else "$name · Waiting for approval"
+                        isChecked = tool.optBoolean("approved")
+                        setOnCheckedChangeListener { _, checked ->
+                            if (checked) approved.add(name) else approved.remove(name)
+                            val body = JSONObject().put("approvedTools", JSONArray(approved.sorted()))
+                            requestJson("POST", "/api/plugins/$encoded/mcp-tools/consent", body) {}
+                        }
+                    })
+                    tool.optString("description").takeIf { it.isNotBlank() }?.let { panel.addView(text(it)) }
+                }
+                panel.addView(Button(this).apply { text = "Back"; setOnClickListener { loadPlugins() } })
+            }
+        }
+    }
 
     private fun openApprovals(): Unit { request("/api/agent/approvals?status=pending&limit=50") { response ->
         val approvals = response.optJSONArray("approvals") ?: JSONArray()

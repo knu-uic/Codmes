@@ -1154,6 +1154,7 @@ private extension UTType {
 struct SessionManagerView: View {
     @EnvironmentObject private var store: WorkspaceStore
     @Binding var isPresented: Bool
+    var showsCloseButton = true
     @State private var pendingDelete: HermesSessionSummary?
     @State private var renamingSession: HermesSessionSummary?
     @State private var renameTitle = ""
@@ -1178,13 +1179,27 @@ struct SessionManagerView: View {
                     Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.borderless)
-                Button {
-                    isPresented = false
-                } label: {
-                    Image(systemName: "xmark")
+                if showsCloseButton {
+                    Button {
+                        isPresented = false
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.borderless)
                 }
-                .buttonStyle(.borderless)
             }
+
+            HStack(spacing: 16) {
+                Label("Total \(store.chatHistoryStorageText)", systemImage: "internaldrive")
+                Text("\(store.chatHistoryStorage.sessionCount) chats")
+                Text("\(store.chatHistoryStorage.assetCount) saved images")
+                Spacer()
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(.quaternary.opacity(0.16), in: RoundedRectangle(cornerRadius: 8))
 
             TextField("Search session title...", text: $store.sessionManagerSearch)
                 .textFieldStyle(.roundedBorder)
@@ -1259,6 +1274,9 @@ struct SessionManagerView: View {
                                         .foregroundStyle(.secondary)
                                         .lineLimit(1)
                                 }
+                                Text(ByteCountFormatter.string(fromByteCount: session.storageBytes, countStyle: .file))
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
                                 if let projectTitle = session.projectTitle {
                                     Label(projectTitle, systemImage: "folder")
                                         .font(.caption2)
@@ -1826,6 +1844,16 @@ struct RenderedMarkdownWebView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             updateHeight(webView)
+            updateHeightAfterRemoteImagesLoad(webView)
+        }
+
+        private func updateHeightAfterRemoteImagesLoad(_ webView: WKWebView) {
+            for delay in [0.25, 0.8, 1.8] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak webView] in
+                    guard let self, let webView else { return }
+                    self.updateHeight(webView)
+                }
+            }
         }
 
         private func updateHeight(_ webView: WKWebView) {
@@ -1876,6 +1904,16 @@ struct RenderedMarkdownWebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             updateHeight(webView)
+            updateHeightAfterRemoteImagesLoad(webView)
+        }
+
+        private func updateHeightAfterRemoteImagesLoad(_ webView: WKWebView) {
+            for delay in [0.25, 0.8, 1.8] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak webView] in
+                    guard let self, let webView else { return }
+                    self.updateHeight(webView)
+                }
+            }
         }
 
         private func updateHeight(_ webView: WKWebView) {

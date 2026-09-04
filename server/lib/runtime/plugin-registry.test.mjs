@@ -14,6 +14,11 @@ import {
   validatePluginManifest
 } from "./plugin-registry.mjs";
 import { listRuntimeViews } from "./plugin-runtime.mjs";
+import {
+  getPluginMcpToolConsent,
+  reconcilePluginMcpTools,
+  setPluginMcpToolConsent
+} from "./mcp-tool-consent.mjs";
 
 const manifest = {
   schemaVersion: 1,
@@ -67,6 +72,7 @@ test("a plugin installs and removes its surface and MCP as one unit", async () =
   assert.equal(mcp.name, "knu");
   assert.equal(mcp.allowUnauthenticated, true);
   assert.deepEqual(mcp.surfaces, ["knu"]);
+  assert.equal(mcp.allowedTools, undefined);
 
   const surface = (await listRuntimeViews(root)).find((item) => item.id === "knu");
   assert.equal(surface.renderer, "declarative");
@@ -85,9 +91,17 @@ test("a plugin installs and removes its surface and MCP as one unit", async () =
   const target = await resolvePluginSurfaceTarget(root, manifest.id, "api/notices", "?limit=20");
   assert.equal(target.url.toString(), "http://127.0.0.1/api/notices?limit=20");
 
+  await reconcilePluginMcpTools(root, {
+    pluginId: manifest.id,
+    serverName: "knu",
+    tools: [{ name: "search_knu_notices" }]
+  });
+  await setPluginMcpToolConsent(root, manifest.id, ["search_knu_notices"]);
+
   assert.equal((await removePlugin(root, manifest.id)).removed, true);
   assert.equal(await getInstalledPlugin(root, manifest.id), null);
   assert.equal((await readRuntimeConfig(root)).mcpServers.some((server) => server.pluginId === manifest.id), false);
+  assert.deepEqual((await getPluginMcpToolConsent(root, manifest.id)).approvedTools, []);
 });
 
 test("plugin manifest rejects insecure remote services and cross-surface MCP access", () => {

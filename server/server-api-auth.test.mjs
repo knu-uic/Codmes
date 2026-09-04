@@ -54,6 +54,13 @@ test("workspace server protects APIs with CODMES_SERVER_TOKEN and exposes manage
     assert.equal(installedMarketplacePlugin.plugin.id, "kr.ac.kongju.knu");
     const installedPlugins = await fetchJson(`${baseUrl}/api/plugins`, { token });
     assert.equal(installedPlugins.plugins.some((plugin) => plugin.id === "kr.ac.kongju.knu"), true);
+    const emptyToolConsent = await fetchJson(
+      `${baseUrl}/api/plugins/kr.ac.kongju.knu/mcp-tools`,
+      { token }
+    );
+    assert.equal(emptyToolConsent.pluginId, "kr.ac.kongju.knu");
+    assert.deepEqual(emptyToolConsent.approvedTools, []);
+    assert.deepEqual(emptyToolConsent.pendingTools, []);
     const removedMarketplacePlugin = await fetchJson(
       `${baseUrl}/api/plugins/kr.ac.kongju.knu`,
       { token, method: "DELETE" }

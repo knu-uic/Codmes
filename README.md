@@ -26,7 +26,7 @@ Codmes는 단순한 AI 채팅 앱이 아니라, 사용자의 지식과 파일, �
 
 ## 주요 기능
 
-- Chat: 세션 관리, AI 모델 선택, 실시간 응답 스트리밍, 대화 문맥 유지, 접근 권한 관리, 파일 및 사용자 멘션
+- Chat: 세션 관리, AI 모델 선택, 실시간 응답 스트리밍, 대화 문맥 유지, 접근 권한 관리, 파일 및 사용자 멘션, 대화 이미지 보관과 용량 확인
 - Notes: 트리 기반 파일 관리, PDF 필기, 다양한 형식의 파일 열람 및 편집, 노트 내보내기, 노트와 문서를 기반으로 하는 AI 채팅
 - Code: 소스 코드 탐색 및 편집, Code Agent 작업 실행, 변경 사항 패치 검토, 테스트 및 검사 결과 확인
 - Search: 대화 기록 검색, 파일 및 문서 검색, 검색 인덱스를 활용한 통합 검색
@@ -57,8 +57,13 @@ Access를 `Local network`로 바꾸고 자동 생성된 connection password(serv
 클라이언트에 입력합니다.
 
 Server Manager와 그 안에 포함된 서버는 하나의 Codmes Server 제품 버전으로 함께
-배포됩니다. 예를 들어 `codmes-server-v0.1.0` Release에는 같은 `0.1.0` Manager와
+배포됩니다. 예를 들어 `codmes-server-v0.1.1` Release에는 같은 `0.1.1` Manager와
 서버가 들어갑니다.
+
+외부 plugin이 답변에 사용한 이미지는 세션에 필요한 항목만 Codmes Workspace로
+복사해 대화 기록과 함께 보관합니다. 이후 대화를 열 때 plugin 서버에 다시
+요청하지 않으며, `Settings > Chat History`에서 전체·세션별 용량을 확인하고
+기존 기록을 수정·삭제할 수 있습니다.
 
 Chat·Notes·Code·Planner는 Codmes에 포함된 built-in plugin으로, 독립
 GitHub Release를 만들지 않고 Codmes 제품 버전과 함께 업데이트됩니다. KNU처럼

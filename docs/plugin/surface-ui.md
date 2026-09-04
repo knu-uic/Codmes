@@ -160,7 +160,7 @@ Codmes 서버는 실패한 source에 빈 payload를 대입해 document를 컴파
   "presentation": "collection",
   "collectionStyle": "cards",
   "title": "공지사항",
-  "subtitle": "최신 학사·일반 공지를 확인하세요.",
+  "subtitle": "최신 학생·학과 공지를 확인하세요.",
   "search": {
     "placeholder": "제목·내용으로 검색",
     "fields": ["title", "body", "subtitle", "tags"]

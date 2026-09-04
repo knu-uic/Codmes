@@ -687,6 +687,27 @@ struct WorkspaceAPI {
         return try await request(components, method: "POST", body: body)
     }
 
+    func pluginMCPToolConsent(pluginId: String) async throws -> PluginMCPToolConsent {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        return try await get("/api/plugins/\(encoded)/mcp-tools")
+    }
+
+    func refreshPluginMCPTools(pluginId: String) async throws -> PluginMCPToolConsent {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        return try await post("/api/plugins/\(encoded)/mcp-tools/refresh", body: EmptyRequestBody())
+    }
+
+    func updatePluginMCPToolConsent(
+        pluginId: String,
+        approvedTools: [String]
+    ) async throws -> PluginMCPToolConsent {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        return try await post(
+            "/api/plugins/\(encoded)/mcp-tools/consent",
+            body: PluginMCPToolConsentBody(approvedTools: approvedTools)
+        )
+    }
+
     func mcpServers() async throws -> [MCPServerConfig] {
         let response: MCPServersResponse = try await get("/api/mcp")
         return response.servers
@@ -739,6 +760,10 @@ struct WorkspaceAPI {
         let data = try await dataRequest(try components("/api/sessions"))
         let object = try JSONSerialization.jsonObject(with: data)
         return extractHermesSessions(from: object)
+    }
+
+    func chatHistoryStorage() async throws -> ChatHistoryStorage {
+        try await get("/api/sessions/storage")
     }
 
     func hermesSessionMessages(sessionId: String) async throws -> [HermesSessionMessage] {
@@ -820,6 +845,12 @@ struct EmptyResponse: Codable {}
 private struct MarketplaceMutationBody: Encodable {
     let version: String?
     let acceptedPermissions: [String]
+}
+
+private struct EmptyRequestBody: Encodable {}
+
+private struct PluginMCPToolConsentBody: Encodable {
+    let approvedTools: [String]
 }
 
 private struct PluginCollectionWriteBody<Item: Encodable>: Encodable {
@@ -1022,6 +1053,7 @@ private func collectHermesSessions(from object: Any, into sessions: inout [Herme
         let folderId = stringValue(dict["folder_id"]) ?? stringValue(dict["folderId"])
         let folderTitle = stringValue(dict["folder_title"]) ?? stringValue(dict["folderTitle"])
         let pinned = boolValue(dict["pinned"]) ?? false
+        let storageBytes = Int64(intValue(dict["storageBytes"]) ?? intValue(dict["storage_bytes"]) ?? 0)
         if messageCount > 0 || preview != nil || explicitTitle != nil {
             sessions.append(
                 HermesSessionSummary(
@@ -1032,7 +1064,8 @@ private func collectHermesSessions(from object: Any, into sessions: inout [Herme
                     folderTitle: folderTitle,
                     projectId: projectId,
                     projectTitle: projectTitle,
-                    pinned: pinned
+                    pinned: pinned,
+                    storageBytes: storageBytes
                 )
             )
         }

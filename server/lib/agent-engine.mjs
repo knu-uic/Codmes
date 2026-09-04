@@ -9,6 +9,8 @@ import { ModelRuntime } from "./model-runtime.mjs";
 import { SessionRuntime } from "./session-runtime.mjs";
 import { LLMRuntime } from "./llm-runtime.mjs";
 import { OpenAICompatibleRuntime } from "./runtime/openai-compatible-runtime.mjs";
+import { isBuiltInPluginId } from "./runtime/plugin-distribution.mjs";
+import { listInstalledPlugins } from "./runtime/plugin-registry.mjs";
 import { migrateWorkspaceState, stateRoot } from "./runtime/state-dir.mjs";
 
 export function createWorkspaceAgentEngine(config) {
@@ -157,10 +159,13 @@ export class WorkspaceAgentEngine extends EventEmitter {
   async submitPrompt(params = {}) {
     await this.state.ensure();
     const priorSession = params.sessionId ? await this.state.readSession(params.sessionId) : null;
+    const uiSurface = params.uiSurface || params.surface || priorSession?.surface || "chat";
     const routedSurface = await inferSurfaceForPrompt(params, priorSession, this.runtime);
     params = {
       ...params,
-      surface: routedSurface
+      uiSurface,
+      surface: routedSurface,
+      executionSurface: routedSurface
     };
     const context = await this.resolveContext(params);
     const task = await this.state.startTask({
@@ -178,6 +183,10 @@ export class WorkspaceAgentEngine extends EventEmitter {
       const history = this.sessionRuntime.promptHistory(priorSession);
       const memoryResults = await this.searchRelevantMemory(params, priorSession);
       const codeTaskContext = await this.ensureCodeSurfaceTask(params, priorSession, context);
+      const ensureCodeTask = async () => await this.ensureCodeSurfaceTask({
+        ...params,
+        forceCodeTask: true
+      }, priorSession, context);
       if (params.sessionId) {
         await this.sessionRuntime.appendSessionMessage(params.sessionId, {
           role: "user",
@@ -186,7 +195,7 @@ export class WorkspaceAgentEngine extends EventEmitter {
           source: "user"
         });
       }
-      const result = await this.chatRuntime.submitPrompt({
+      let result = await this.chatRuntime.submitPrompt({
         ...params,
         context,
         history,
@@ -196,6 +205,7 @@ export class WorkspaceAgentEngine extends EventEmitter {
         folderId: priorSession?.folderId || params.folderId || null,
         projectId: priorSession?.projectId || params.projectId || null,
         codeRuntime: this.codeRuntime,
+        ensureCodeTask,
         currentCodeTaskId: codeTaskContext?.taskId || params.codeTaskId || null,
         currentCodeScopePath: codeTaskContext?.scopePath || params.scopePath || null,
         taskId: task.id
@@ -203,19 +213,27 @@ export class WorkspaceAgentEngine extends EventEmitter {
         if (this.chatRuntime.isAvailable()) throw error;
         return workspaceRuntimeNotConfiguredReply(params);
       });
+      if (params.sessionId && result.reply) {
+        result = {
+          ...result,
+          reply: await this.sessionRuntime.localizeSessionImages(params.sessionId, result.reply)
+        };
+      }
       await this.state.finishTask(task.id, {
         status: "submitted",
         result
       });
 
-      if (params.sessionId && result.reply && !this.hasPersistedAssistantTurn(params.sessionId, task.id)) {
-        await this.sessionRuntime.appendSessionMessage(params.sessionId, {
-          role: "assistant",
+      if (params.sessionId && result.reply) {
+        // Stream deltas are persisted for resilience, but the completed runtime
+        // reply may contain safe post-processing such as resolved figure URLs.
+        await this.flush();
+        await this.sessionRuntime.finalizeAssistantMessage(params.sessionId, {
           content: result.reply,
           reasoning: result.reasoning,
-          taskId: task.id,
-          source: "result"
+          taskId: task.id
         });
+        this.persistedAssistantTurns.add(assistantTurnKey(params.sessionId, task.id));
       }
       await this.flush();
 
@@ -375,6 +393,10 @@ export class WorkspaceAgentEngine extends EventEmitter {
 
   async listSessions(limit) {
     return await this.sessionRuntime.listSessions(limit);
+  }
+
+  async sessionStorageUsage() {
+    return await this.sessionRuntime.storageUsage();
   }
 
   async getSessionMessages(sessionId) {
@@ -706,9 +728,18 @@ export class WorkspaceAgentEngine extends EventEmitter {
         currentProjectId: session?.projectId || params.projectId || "",
         maxResults: 8
       });
+      const externalPluginSurface = await isExternalPluginSurface(
+        this.config.workspaceRoot,
+        params.uiSurface || params.surface || session?.surface || "chat"
+      );
       const trimmed = [];
       let usedChars = 0;
       for (const memory of rawResults) {
+        // A prior assistant answer is useful conversational history, but it is
+        // not fresh evidence for a live external service. External plugin
+        // Surfaces must re-read their MCP source instead of silently recycling
+        // a session summary from an earlier query.
+        if (externalPluginSurface && memory.type === "session_summary_memory") continue;
         const content = String(memory.content || "");
         if (!content) continue;
         if (usedChars + content.length > 2000) break;
@@ -723,7 +754,7 @@ export class WorkspaceAgentEngine extends EventEmitter {
 
   async ensureCodeSurfaceTask(params, session, context = {}) {
     const surface = params.surface || session?.surface || "";
-    if (surface !== "code") return null;
+    if (surface !== "code" && params.forceCodeTask !== true) return null;
     const existingTaskId = params.codeTaskId || session?.activeCodeTaskId || "";
     if (existingTaskId) {
       try {
@@ -774,6 +805,18 @@ export class WorkspaceAgentEngine extends EventEmitter {
       .finally(() => this.eventWrites.delete(tracked));
     this.eventWrites.add(tracked);
   }
+}
+
+export async function isExternalPluginSurface(workspaceRoot, surface) {
+  const surfaceId = String(surface || "").trim().toLowerCase();
+  if (!surfaceId || surfaceId === "chat") return false;
+  const plugins = await listInstalledPlugins(workspaceRoot);
+  return plugins.some((plugin) =>
+    !isBuiltInPluginId(plugin.id)
+    && [plugin.surface, ...(plugin.views || [])]
+      .filter(Boolean)
+      .some((view) => String(view.id || "").trim().toLowerCase() === surfaceId)
+  );
 }
 
 export class WorkspaceAgentStateStore {

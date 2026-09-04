@@ -22,8 +22,8 @@ plugin이 모두 포함되므로 별도 서버·Node·Python 설치는 필요하
 | OS | 배포 파일 | 실행 형태 |
 | --- | --- | --- |
 | macOS | DMG | 메뉴바 앱, 선택적 Dock icon |
-| Windows | EXE/MSI | system tray 앱 |
-| Linux | DEB/RPM | system tray 앱 |
+| Windows x64 | EXE (NSIS) | system tray 앱 |
+| Ubuntu/Debian x64 | DEB | system tray 앱 |
 
 macOS arm64 설치본은 실제 앱 설치, 내장 서버 health, PDF/DOCX 추출까지 검증했다.
 Windows와 Linux는 각 OS의 GitHub-hosted runner에서 native bundle과 portable Python을
@@ -36,10 +36,10 @@ Server Manager와 그 설치본에 포함된 서버는 `Codmes Server`라는 하
 Rust crate 버전이 모두 일치해야 `manager:check`가 통과합니다.
 
 ```text
-codmes-server-v0.1.0
-└── Codmes Server 0.1.0
-    ├── Server Manager 0.1.0
-    └── bundled Codmes server 0.1.0
+codmes-server-v0.1.1
+└── Codmes Server 0.1.1
+    ├── Server Manager 0.1.1
+    └── bundled Codmes server 0.1.1
 ```
 
 `codmes-server-vX.Y.Z` 태그를 push하면 `server-manager-builds` workflow가 macOS,
@@ -52,8 +52,8 @@ push합니다.
 
 ```bash
 npm run manager:check
-git tag -a codmes-server-v0.1.0 -m "Codmes Server 0.1.0"
-git push origin codmes-server-v0.1.0
+git tag -a codmes-server-v0.1.1 -m "Codmes Server 0.1.1"
+git push origin codmes-server-v0.1.1
 ```
 
 이미 존재하는 Release 태그는 다시 사용하지 않고 다음 patch/minor/major 버전으로
@@ -70,6 +70,10 @@ git push origin codmes-server-v0.1.0
   설정할 수 있습니다.
 - 관리 창에는 현재 주소, process ID, 자동 관리되는 데이터 경로와 최근 서버 로그가
   표시됩니다. 일반 사용자가 Workspace 폴더를 지정할 필요는 없습니다.
+- KNU Server Manager와 같은 사이드바·대시보드 구조를 사용합니다. `Tool` 메뉴에는
+  built-in 도구와 설치된 외부 MCP 도구가 plugin별로 표시됩니다.
+- 외부 MCP에서 새로 발견한 도구는 자동 허용하지 않습니다. `Tool` 메뉴에서
+  Workspace별 체크박스를 선택하고 저장해야 해당 도구가 모델에 노출됩니다.
 
 `Quit Codmes Server`로 앱을 완전히 종료하면 이 Manager가 시작한 서버 process도
 함께 종료됩니다. 같은 주소에서 사용자가 직접 실행한 외부 서버는 감지하되 임의로

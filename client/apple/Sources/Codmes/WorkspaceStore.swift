@@ -25,12 +25,14 @@ final class WorkspaceStore: ObservableObject {
     @Published var liveSessionId: String?
     @Published var hermesModels: [HermesModelOption] = []
     @Published var hermesSessions: [HermesSessionSummary] = []
+    @Published var chatHistoryStorage = ChatHistoryStorage(bytes: 0, sessionCount: 0, assetCount: 0)
     @Published var activeHermesSessionTitle = "No session"
     @Published var selectedHermesModelId = ""
     @Published var chatAccessMode: ChatAccessMode = .confirm
     @Published var chatReasoningMode: ChatReasoningMode = .balanced
     @Published var chatContextScope: ChatContextScope = .currentFile
     @Published var activeChatSurface = "chat"
+    @Published var activeChatRoute: String?
     @Published var statusMessage = "Not connected"
     @Published var activePDFStatusText = ""
     @Published var activePDFStatusPath = ""
@@ -59,6 +61,8 @@ final class WorkspaceStore: ObservableObject {
     @Published var runtimeModelSetupMessage = ""
     @Published var runtimePlugins: [RuntimePlugin] = []
     @Published var pluginSetupMessage = ""
+    @Published private(set) var pluginMCPToolConsents: [String: PluginMCPToolConsent] = [:]
+    @Published private(set) var pluginMCPToolOperations: Set<String> = []
     @Published var marketplacePlugins: [MarketplacePlugin] = []
     @Published var marketplaceMessage = ""
     @Published var marketplaceOperations: Set<String> = []
@@ -427,6 +431,7 @@ final class WorkspaceStore: ObservableObject {
         do {
             hermesModels = try await api.hermesModelOptions()
             hermesSessions = try await api.hermesSessions()
+            chatHistoryStorage = try await api.chatHistoryStorage()
             conversationFolders = try await api.conversationFolders()
             if selectedHermesModelId.isEmpty {
                 selectedHermesModelId = visibleHermesModels.first?.id ?? hermesModels.first?.id ?? ""
@@ -773,6 +778,51 @@ final class WorkspaceStore: ObservableObject {
                 )
             )
             await refreshPlugins()
+        } catch {
+            pluginSetupMessage = error.localizedDescription
+        }
+    }
+
+    func pluginMCPToolConsent(for pluginId: String) -> PluginMCPToolConsent? {
+        pluginMCPToolConsents[pluginId]
+    }
+
+    func loadPluginMCPToolConsent(pluginId: String) async {
+        guard let api else { return }
+        do {
+            pluginMCPToolConsents[pluginId] = try await api.pluginMCPToolConsent(pluginId: pluginId)
+        } catch {
+            pluginSetupMessage = error.localizedDescription
+        }
+    }
+
+    func refreshPluginMCPTools(pluginId: String) async {
+        guard let api, !pluginMCPToolOperations.contains(pluginId) else { return }
+        pluginMCPToolOperations.insert(pluginId)
+        defer { pluginMCPToolOperations.remove(pluginId) }
+        do {
+            let consent = try await api.refreshPluginMCPTools(pluginId: pluginId)
+            pluginMCPToolConsents[pluginId] = consent
+            pluginSetupMessage = consent.pendingTools.isEmpty
+                ? "MCP tools are up to date."
+                : "\(consent.pendingTools.count) new MCP tool(s) are waiting for approval."
+        } catch {
+            pluginSetupMessage = error.localizedDescription
+        }
+    }
+
+    func setPluginMCPToolApproved(pluginId: String, toolName: String, approved: Bool) async {
+        guard let api, let current = pluginMCPToolConsents[pluginId] else { return }
+        var names = Set(current.approvedTools)
+        if approved { names.insert(toolName) } else { names.remove(toolName) }
+        do {
+            pluginMCPToolConsents[pluginId] = try await api.updatePluginMCPToolConsent(
+                pluginId: pluginId,
+                approvedTools: names.sorted()
+            )
+            pluginSetupMessage = approved
+                ? "Approved MCP tool \(toolName)."
+                : "Disabled MCP tool \(toolName)."
         } catch {
             pluginSetupMessage = error.localizedDescription
         }
@@ -1797,7 +1847,8 @@ final class WorkspaceStore: ObservableObject {
                     folderTitle: nil,
                     projectId: result.target.projectId,
                     projectTitle: nil,
-                    pinned: false
+                    pinned: false,
+                    storageBytes: 0
                 )
             )
             if let messageId = result.target.messageId {
@@ -2127,12 +2178,21 @@ final class WorkspaceStore: ObservableObject {
         activeActivityLineId = nil
         isChatTurnOpen = true
         do {
-            try await liveClient.submit(
+            let finalReply = try await liveClient.submit(
                 sessionId: liveSessionId,
                 message: trimmed,
                 contextRequest: chatContextRequest(),
-                surface: activeChatSurface
+                surface: activeChatSurface,
+                route: activeChatRoute
             )
+            if let finalReply,
+               !finalReply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if let assistantIndex = chatLines.lastIndex(where: { $0.role == "assistant" }) {
+                    chatLines[assistantIndex].text = finalReply
+                } else {
+                    chatLines.append(ChatLine(role: "assistant", text: finalReply))
+                }
+            }
             statusMessage = "Message sent"
         } catch {
             statusMessage = error.localizedDescription
@@ -2159,7 +2219,8 @@ final class WorkspaceStore: ObservableObject {
                         folderTitle: $0.folderTitle,
                         projectId: $0.projectId,
                         projectTitle: $0.projectTitle,
-                        pinned: $0.pinned
+                        pinned: $0.pinned,
+                        storageBytes: $0.storageBytes
                     )
                     : $0
             }
@@ -2187,7 +2248,8 @@ final class WorkspaceStore: ObservableObject {
                     folderTitle: $0.folderTitle,
                     projectId: $0.projectId,
                     projectTitle: $0.projectTitle,
-                    pinned: pinned
+                    pinned: pinned,
+                    storageBytes: $0.storageBytes
                 )
             }
             statusMessage = pinned ? "Pinned \(session.title)" : "Unpinned \(session.title)"
@@ -2207,6 +2269,7 @@ final class WorkspaceStore: ObservableObject {
         do {
             try await api.deleteHermesSession(sessionId: session.id)
             hermesSessions.removeAll { $0.id == session.id }
+            chatHistoryStorage = try await api.chatHistoryStorage()
             statusMessage = "Deleted \(session.title)"
         } catch {
             statusMessage = error.localizedDescription
@@ -2239,6 +2302,10 @@ final class WorkspaceStore: ObservableObject {
             ? "Deleted \(deletedIds.count) sessions"
             : "Deleted \(deletedIds.count), failed \(failureCount)"
         await refreshHermesMetadata()
+    }
+
+    var chatHistoryStorageText: String {
+        ByteCountFormatter.string(fromByteCount: chatHistoryStorage.bytes, countStyle: .file)
     }
 
     func applyAccessModeToLiveSession() async {

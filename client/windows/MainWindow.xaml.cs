@@ -34,9 +34,15 @@ public partial class MainWindow : Window
             foreach (var plugin in document.RootElement.GetProperty("plugins").EnumerateArray())
             {
                 if (!SupportsWindowsDesktop(plugin)) continue;
+                var pluginId = plugin.GetProperty("id").GetString()!;
+                if (!plugin.GetProperty("builtIn").GetBoolean())
+                {
+                    var toolButton = new Button { Content = $"{plugin.GetProperty("name").GetString()} · MCP tools", Margin = new Thickness(0, 0, 0, 8), Padding = new Thickness(12) };
+                    toolButton.Click += async (_, _) => await OpenMcpTools(pluginId);
+                    SurfaceContent.Children.Add(toolButton);
+                }
                 foreach (var view in plugin.GetProperty("views").EnumerateArray())
                 {
-                    var pluginId = plugin.GetProperty("id").GetString()!;
                     var title = $"{plugin.GetProperty("name").GetString()} · {view.GetProperty("title").GetString()}";
                     var renderer = view.GetProperty("renderer").GetString();
                     var button = new Button { Content = title, Margin = new Thickness(0, 0, 0, 8), Padding = new Thickness(12) };
@@ -54,6 +60,49 @@ public partial class MainWindow : Window
                     SurfaceContent.Children.Add(button);
                 }
             }
+        }
+        catch (Exception error) { ShowMessage(error.Message); }
+    }
+
+    private async Task OpenMcpTools(string pluginId, bool refresh = false)
+    {
+        try
+        {
+            var encoded = Uri.EscapeDataString(pluginId);
+            if (refresh) await SendJson(HttpMethod.Post, $"/api/plugins/{encoded}/mcp-tools/refresh", new { });
+            using var document = await GetJson($"/api/plugins/{encoded}/mcp-tools");
+            var root = document.RootElement;
+            var approved = root.GetProperty("approvedTools").EnumerateArray()
+                .Select(item => item.GetString() ?? "").Where(name => name.Length > 0).ToHashSet();
+            SurfaceContent.Children.Clear();
+            AddHeading("MCP tools", 24);
+            AddBodyText("Discovered tools stay unavailable to AI until you approve them for this Workspace.");
+            var discover = new Button { Content = "Discover", Padding = new Thickness(12), Margin = new Thickness(0, 0, 0, 10) };
+            discover.Click += async (_, _) => await OpenMcpTools(pluginId, true);
+            SurfaceContent.Children.Add(discover);
+            var tools = root.GetProperty("discoveredTools");
+            if (tools.GetArrayLength() == 0) AddBodyText("No tool catalog has been stored yet.");
+            foreach (var tool in tools.EnumerateArray())
+            {
+                var name = tool.GetProperty("name").GetString()!;
+                var check = new CheckBox {
+                    Content = tool.GetProperty("approved").GetBoolean() ? name : $"{name} · Waiting for approval",
+                    IsChecked = tool.GetProperty("approved").GetBoolean(),
+                    Margin = new Thickness(0, 6, 0, 2)
+                };
+                check.Click += async (_, _) =>
+                {
+                    if (check.IsChecked == true) approved.Add(name); else approved.Remove(name);
+                    try
+                    {
+                        await SendJson(HttpMethod.Post, $"/api/plugins/{encoded}/mcp-tools/consent", new { approvedTools = approved.OrderBy(name => name).ToArray() });
+                    }
+                    catch (Exception error) { ShowMessage(error.Message); }
+                };
+                SurfaceContent.Children.Add(check);
+                if (tool.TryGetProperty("description", out var description)) AddBodyText(description.GetString());
+            }
+            AddBackButton(LoadPlugins);
         }
         catch (Exception error) { ShowMessage(error.Message); }
     }

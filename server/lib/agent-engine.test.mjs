@@ -4,10 +4,45 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { WorkspaceAgentEngine, WorkspaceAgentStateStore } from "./agent-engine.mjs";
+import { isExternalPluginSurface, WorkspaceAgentEngine, WorkspaceAgentStateStore } from "./agent-engine.mjs";
 import { OpenAICompatibleRuntime } from "./runtime/openai-compatible-runtime.mjs";
 import { setCredentialValue, setDefaultModel, setMcpCredential, writeRuntimeConfig } from "./runtime/config-store.mjs";
+import { installPlugin } from "./runtime/plugin-registry.mjs";
 import { checkAction, writeSecurityConfig } from "./runtime/security-policy.mjs";
+
+test("external plugin Surfaces are identified as live data contexts", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-external-surface-root-"));
+  const source = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-external-surface-source-"));
+  await fs.writeFile(path.join(source, "plugin.json"), JSON.stringify({
+    schemaVersion: 1,
+    id: "com.example.live",
+    version: "1.0.0",
+    name: "Live service",
+    platforms: ["macos"],
+    formFactors: ["desktop"],
+    surface: {
+      id: "live",
+      type: "declarative",
+      title: "Live",
+      upstreamUrl: "https://example.com",
+      entryPath: "/surface",
+      navigation: [{ id: "home", title: "Home", path: "/surface" }],
+      order: 100
+    },
+    mcp: {
+      name: "live",
+      transport: "streamable_http",
+      url: "https://example.com/mcp",
+      surfaces: ["live"],
+      credentialId: "live-session",
+      requiresApproval: true
+    }
+  }), "utf8");
+  await installPlugin(root, source);
+  assert.equal(await isExternalPluginSurface(root, "live"), true);
+  assert.equal(await isExternalPluginSurface(root, "chat"), false);
+  assert.equal(await isExternalPluginSurface(root, "notes"), false);
+});
 
 test("workspace agent engine resolves context and records task state", async () => {
   const root = await fixtureWorkspace();
@@ -81,12 +116,12 @@ test("workspace agent engine persists streamed assistant replies into sessions",
     sessionId: session.sessionId,
     message: "안녕"
   });
-  assert.equal(first.reply, "안녕하세요");
+  assert.equal(first.reply, "안녕하세요\n![그림](http://127.0.0.1/image.png)");
 
   const stored = await engine.getSessionMessages(session.sessionId);
   assert.deepEqual(stored.messages.map((message) => message.role), ["user", "assistant"]);
   assert.equal(stored.messages[0].content, "안녕");
-  assert.equal(stored.messages[1].content, "안녕하세요");
+  assert.equal(stored.messages[1].content, "안녕하세요\n![그림](http://127.0.0.1/image.png)");
   assert.equal(stored.messages[1].reasoning, "생각 중입니다.");
 
   await engine.submitPrompt({
@@ -95,7 +130,10 @@ test("workspace agent engine persists streamed assistant replies into sessions",
   });
 
   assert.deepEqual(runtime.lastPrompt.history.map((message) => message.role), ["user", "assistant"]);
-  assert.deepEqual(runtime.lastPrompt.history.map((message) => message.content), ["안녕", "안녕하세요"]);
+  assert.deepEqual(runtime.lastPrompt.history.map((message) => message.content), [
+    "안녕",
+    "안녕하세요\n![그림](http://127.0.0.1/image.png)"
+  ]);
 });
 
 test("workspace agent state creates the unified state directory shape", async () => {
@@ -442,7 +480,36 @@ test("chat surface prompt auto-routes to code when current context is code", asy
   });
 
   assert.equal(runtime.lastPrompt.surface, "code");
+  assert.equal(runtime.lastPrompt.uiSurface, "chat");
+  assert.equal(runtime.lastPrompt.executionSurface, "code");
   assert.match(runtime.lastPrompt.currentCodeTaskId, /^task-/);
+});
+
+test("chat can lazily create a Code task when a Code tool is selected later", async () => {
+  const root = await fixtureWorkspace();
+  await fs.mkdir(path.join(root, "Code", "demo"), { recursive: true });
+  const runtime = new FakeAgentRuntime();
+  const engine = new WorkspaceAgentEngine({ workspaceRoot: root }, runtime);
+  const session = await engine.createSession({ surface: "chat" });
+
+  await engine.submitPrompt({
+    sessionId: session.sessionId,
+    message: "이 작업을 처리해줘",
+    surface: "chat",
+    scopePath: "Code/demo"
+  });
+
+  assert.equal(runtime.lastPrompt.surface, "chat");
+  assert.equal(runtime.lastPrompt.currentCodeTaskId, null);
+  assert.equal(typeof runtime.lastPrompt.ensureCodeTask, "function");
+  const codeTask = await runtime.lastPrompt.ensureCodeTask();
+  assert.match(codeTask.taskId, /^task-/);
+  assert.equal(codeTask.scopePath, "Code/demo");
+  const storedTask = await engine.readTask(codeTask.taskId);
+  assert.equal(storedTask.type, "code");
+  assert.equal(storedTask.status, "context_ready");
+  const storedSession = await engine.state.readSession(session.sessionId);
+  assert.equal(storedSession.activeCodeTaskId, codeTask.taskId);
 });
 
 test("chat surface router can use an LLM classifier for ambiguous prompts", async () => {
@@ -636,19 +703,19 @@ class StreamingAgentRuntime extends EventEmitter {
       type: "message.delta",
       sessionId: params.sessionId,
       taskId: params.taskId,
-      text: "하세요"
+      text: "하세요\n[그림:118]"
     });
     this.emit("event", {
       type: "turn.complete",
       sessionId: params.sessionId,
       taskId: params.taskId,
-      text: "안녕하세요"
+      text: "안녕하세요\n[그림:118]"
     });
     return {
       ok: true,
       sessionId: params.sessionId,
       runtimeSessionId: params.sessionId,
-      reply: "안녕하세요",
+      reply: "안녕하세요\n![그림](http://127.0.0.1/image.png)",
       reasoning: "생각 중입니다."
     };
   }

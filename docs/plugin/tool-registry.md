@@ -87,10 +87,53 @@ plugin용 실행 adapter다. `storage.json`에 collection schema를 선언하고
 }
 ```
 
-## Plugin Manifest v1의 `tools.json`
+## MCP 서버가 직접 제공하는 도구 catalog
 
-현재 Marketplace Manifest v1에서 실제 설치 가능한 plugin tool은 자기 plugin에
-등록된 MCP 도구를 이름과 schema로 선언하는 방식이다.
+MCP가 `tools/list`로 반환하는 이름·설명·`inputSchema`가 실행 도구의 원본이다.
+Codmes 계층형 catalog에 안정적인 공개 이름과 그룹을 제공하려면 표준 MCP `_meta`에
+선택적인 확장 정보를 넣는다. 다른 MCP client는 모르는 metadata를 무시하므로 같은
+서버를 Hermes 등에서도 그대로 사용할 수 있다.
+
+플러그인 package는 MCP 도구 목록을 고정하지 않는다. 대신 Codmes Workspace가
+발견한 catalog와 승인된 이름을 `.codmes/plugin-runtime/mcp-tool-consent.json`에
+로컬로 저장한다. 이 상태는 Marketplace 서명이 아니라 해당 Workspace 사용자의
+선택이다.
+
+최초 연결에서 모든 도구는 대기 상태다. `Settings > Plugins > <plugin> > MCP tools`에서
+`Discover`를 눌러 catalog를 갱신하고 각 도구를 켜면 그때부터 계층형 도구 탐색과
+실행에 참여한다. 이후 MCP가 새 도구를 광고하면 기존 승인은 유지되지만
+새 이름만 다시 `Waiting for approval`로 남는다.
+
+```json
+{
+  "name": "knu_search_notice_details",
+  "description": "공주대학교 공지의 구체적인 근거를 검색합니다.",
+  "inputSchema": {"type": "object", "properties": {}},
+  "annotations": {"readOnlyHint": true, "destructiveHint": false},
+  "_meta": {
+    "com.codmes/tool": {
+      "publicName": "knu_search_notice_details",
+      "group": "knu.notices",
+      "groupDescriptions": {
+        "knu": "공주대학교 데이터를 조회합니다.",
+        "knu.notices": "학교·학과 공지를 검색합니다."
+      }
+    }
+  }
+}
+```
+
+`publicName`이 없거나 안전하지 않거나 이미 등록된 이름과 충돌하면 Codmes는
+`mcp__<server>__<tool>` 이름을 사용한다. MCP metadata는 도구를 읽기 전용으로
+설명할 수 있지만 Codmes의 승인 정책이나 Surface 접근 범위를 낮출 수 없다. 그
+보안 정책은 설치된 plugin manifest 또는 Workspace 설정이 계속 소유한다.
+승인되지 않은 이름은 유효한 metadata가 있어도 등록 전에 보류된다. 이름을 승인해도
+각 호출은 도구의 `requiresApproval`과 현재 Safe/Full mode 정책을 다시 거친다.
+
+## 선택적·호환용 `tools.json`
+
+`tools.json`은 MCP가 위 metadata를 제공하지 않는 기존 서버의 공개 이름·그룹을
+보완하거나 Workspace collection 도구를 선언할 때 계속 사용할 수 있다.
 
 ```json
 {
@@ -134,9 +177,10 @@ plugin용 실행 adapter다. `storage.json`에 collection schema를 선언하고
 - tool이 plugin 자신의 Surface 범위를 벗어나지 않는지
 - 중복 이름과 과도하게 큰 schema가 없는지
 
-MCP 연결 후 서버가 반환한 실제 `tools/list`와 선언을 provider 내부 이름으로
-연결한다. 모델에는 자동 생성된 `mcp__...` 이름 대신 package가 선언한 안정적인
-이름이 표시된다. 선언하지 않은 MCP 도구는 기존 자동 이름으로 계속 사용할 수 있다.
+MCP 연결 후 서버가 반환한 실제 `tools/list`와 정적 선언을 provider 내부 이름으로
+연결한다. 서버가 `com.codmes/tool` metadata를 제공하면 실시간 설명·schema·그룹을
+우선 사용한다. metadata와 정적 선언이 모두 없는 MCP 도구는 자동 생성된
+`mcp__...` 이름으로 계속 사용할 수 있다.
 
 ## 호출 흐름
 
@@ -202,8 +246,59 @@ collection, operation, item id, `before`, `after` 미리보기를 포함하고 �
 - plugin `tools.json` package 포함·설치 검증
 - plugin이 선언한 MCP 공개 이름 연결
 - Tool Discovery에서 설치 plugin 도구 검색
+- Surface → 기능 그룹 → 실제 도구의 계층형 Tool Discovery와 단계 건너뛰기 방지
 - Planner의 할 일·달력·메모처럼 서로 다른 schema와 adapter routing 단위 테스트
 - plugin collection CRUD, schema 검사, 원자적 저장과 쓰기 미리보기
+
+## 계층형 Tool Discovery
+
+모델에는 설치된 모든 도구 schema를 한 번에 보내지 않는다. 첫 요청에는
+`tool_discovery`와 공통 recall 도구만 제공하며, 모델은 아래처럼 한 단계씩
+탐색한다.
+
+```text
+tool_discovery()             → notes / code / planner / knu
+tool_discovery(path="knu")  → knu.notices / knu.lms / knu.portal / knu.account
+tool_discovery(path="knu.portal") → 포털 도구만 현재 turn에 활성화
+tool_discovery(path="planner") → planner.tasks / planner.calendar / planner.memos
+```
+
+서버는 이전 결과에서 공개되지 않은 단계를 건너뛰지 못하게 한다. 작은 모델이
+`knu.notices`를 바로 요청해도 실제 도구를 즉시 노출하지 않고 다음 안전한 한 단계만
+돌려준다. 현재 Surface와 route는 `nextSuggestedPath`를 정하는 문맥일 뿐이며,
+도구를 자동 실행하거나 다른 그룹 사용을 막지 않는다. 따라서 LMS 화면에서 누적
+성적을 물으면 모델이 `knu.portal`을 선택할 수 있다.
+
+한 요청 안에서는 발견한 도구와 각 도구의 실행 결과를 계속 유지한다. 따라서
+"LMS 과제 목록을 Planner에 추가해 줘"라는 요청은 `knu.lms`를 발견해 과제를
+조회한 뒤, 같은 turn에서 `planner.tasks`를 발견해 `planner_create`를 호출할 수
+있다. 모델은 한 응답에서 여러 도구를 호출하거나, 첫 결과를 읽고 다음 호출의
+인자를 구성할 수도 있다. 공지 두 건에 서로 다른 상세 검색이 필요할 때 같은
+공지 검색 도구를 반복 호출하는 것도 허용한다.
+
+`requiresApproval: true`인 쓰기 도구도 모델이 발견하고 호출 후보로 선택할 수
+있다. 다만 실제 변경 직전에 실행이 멈추고 사용자 승인을 기다린다. 승인 후에는
+앞서 공개된 도구와 이전 결과를 보존한 채 모델 실행을 재개한다. 즉, "도구가
+필요한지 판단하는 단계"와 "그 도구가 실제로 데이터를 변경해도 되는지 승인하는
+단계"를 분리한다.
+
+## 작업 기반 실행 예산
+
+Surface는 사용자가 보고 있는 UI 문맥이며, 도구 반복 예산을 고정하는 기준이
+아니다. Chat에서 시작해도 Notes와 Planner를 함께 사용하면 `cross-surface`, Code
+도구를 발견하면 `code` 프로필로 실행 예산이 자동 승격된다.
+
+| 실행 프로필 | 도구 라운드 | 적용 조건 |
+| --- | ---: | --- |
+| `standard` | 8 | 일반 대화와 단일 기능 조회 |
+| `cross-surface` | 16 | 서로 다른 기능 그룹을 함께 사용하는 작업 |
+| `code` | 32 | Code 그룹을 발견하거나 Code 도구를 사용하는 작업 |
+| `code-deep` | 64 | 코드 검사 실패 후 분석·수정 반복이 필요한 작업 |
+
+라운드는 도구 개수가 아니라 모델이 도구 실행을 요청한 응답 횟수다. 한 응답에서
+서로 독립적인 도구 여러 개를 요청하면 한 라운드로 계산한다. 같은 도구와 완전히
+같은 인자를 세 번 연속 요청하면 진전 없는 반복으로 판단해 중단한다. 서로 다른
+학과 공지 검색처럼 인자가 다른 반복 호출은 허용한다.
 
 다음 단계:
 
