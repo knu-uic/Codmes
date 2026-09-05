@@ -97,6 +97,13 @@ function safeRenderer() {
     const title = token.title ? ` title="${escapeHtml(token.title)}"` : "";
     return `<a href="${escapeHtml(href)}"${title} target="_blank" rel="noreferrer noopener">${text}</a>`;
   };
+  renderer.image = (token) => {
+    const href = String(token.href || "").trim();
+    if (!/^https?:/i.test(href)) return escapeHtml(token.text || "");
+    const alt = escapeHtml(token.text || "");
+    const title = token.title ? ` title="${escapeHtml(token.title)}"` : "";
+    return `<img src="${escapeHtml(href)}" alt="${alt}"${title}>`;
+  };
   return renderer;
 }
 
@@ -170,6 +177,14 @@ a {
   text-decoration: none;
 }
 a:hover { text-decoration: underline; }
+img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0.5em 0 0.9em;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
 code:not(pre code) {
   padding: 0.12em 0.34em;
   border-radius: 5px;

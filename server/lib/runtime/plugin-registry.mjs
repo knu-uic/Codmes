@@ -685,6 +685,8 @@ export async function removePlugin(workspaceRoot, pluginId) {
       ...previousConfig,
       mcpServers: (previousConfig.mcpServers || []).filter((server) => server.pluginId !== id)
     });
+    const { removePluginMcpToolConsent } = await import("./mcp-tool-consent.mjs");
+    await removePluginMcpToolConsent(workspaceRoot, id);
     await fs.rm(staging, { recursive: true, force: true });
     return { removed: true, pluginId: id };
   } catch (error) {

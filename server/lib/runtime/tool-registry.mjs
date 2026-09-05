@@ -65,13 +65,15 @@ export function normalizeToolDescriptor(value) {
   const inputSchema = normalizeInputSchema(value.inputSchema || value.parameters);
   const provider = normalizeProvider(value.provider);
   const surfaces = normalizeStringArray(value.surfaces, "surface");
+  const group = String(value.group || provider.type).trim() || provider.type;
   return Object.freeze({
     name,
     description,
     inputSchema,
     provider,
     surfaces,
-    group: String(value.group || provider.type).trim() || provider.type,
+    group,
+    groupDescriptions: normalizeGroupDescriptions(value.groupDescriptions, group),
     requiresApproval: value.requiresApproval === true,
     readOnly: value.readOnly === true,
     pluginId: String(value.pluginId || "").trim() || null,
@@ -90,6 +92,7 @@ export function descriptorFromOpenAITool(tool, metadata = {}) {
     provider: metadata.provider || { type: "native", id: "workspace", tool: tool.function.name },
     surfaces: metadata.surfaces || [],
     group: metadata.group,
+    groupDescriptions: metadata.groupDescriptions,
     requiresApproval: metadata.requiresApproval,
     readOnly: metadata.readOnly,
     pluginId: metadata.pluginId
@@ -189,4 +192,24 @@ function normalizeStringArray(value, label) {
     throw new Error(`Tool ${label} is invalid.`);
   }
   return items;
+}
+
+function normalizeGroupDescriptions(value, group) {
+  if (value == null) return Object.freeze({});
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Tool groupDescriptions must be an object.");
+  }
+  const normalized = {};
+  const root = String(group || "").toLowerCase().split(/[.:/]/)[0];
+  for (const [rawPath, rawDescription] of Object.entries(value)) {
+    const path = String(rawPath || "").trim().toLowerCase();
+    const description = String(rawDescription || "").trim();
+    if (!/^[a-z0-9][a-z0-9_.-]{0,127}$/.test(path)
+        || (path !== root && !path.startsWith(`${root}.`))
+        || !description || description.length > 500) {
+      throw new Error("Tool groupDescriptions entry is invalid.");
+    }
+    normalized[path] = description;
+  }
+  return Object.freeze(normalized);
 }

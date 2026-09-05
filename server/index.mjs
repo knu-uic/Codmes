@@ -53,6 +53,7 @@ import {
   readCredentials,
   readRuntimeConfig,
   getMcpCredentialStatus,
+  getMcpCredential,
   normalizeMcpServerConfig,
   removeProviderCredentialEntry,
   removeCredentialValue,
@@ -61,6 +62,7 @@ import {
   setDefaultModel,
   writeRuntimeConfig
 } from "./lib/runtime/config-store.mjs";
+import { discoverOllamaModels } from "./lib/runtime/provider-model-discovery.mjs";
 import { readSecurityConfig, writeSecurityConfig } from "./lib/runtime/security-policy.mjs";
 import { enableSkill, listSkills, readSkill } from "./lib/runtime/skill-registry.mjs";
 import {
@@ -305,6 +307,36 @@ async function handleRequest(req, res) {
         WORKSPACE_ROOT,
         decodeURIComponent(pluginConfigurationMatch[1]),
         await readJsonBody(req)
+      ));
+    }
+    const pluginMcpToolsMatch = url.pathname.match(
+      /^\/api\/plugins\/([^/]+)\/mcp-tools$/
+    );
+    if (pluginMcpToolsMatch && req.method === "GET") {
+      const { getPluginMcpToolConsent } = await import("./lib/runtime/mcp-tool-consent.mjs");
+      return sendJson(res, await getPluginMcpToolConsent(
+        WORKSPACE_ROOT,
+        decodeURIComponent(pluginMcpToolsMatch[1])
+      ));
+    }
+    const pluginMcpToolsRefreshMatch = url.pathname.match(
+      /^\/api\/plugins\/([^/]+)\/mcp-tools\/refresh$/
+    );
+    if (pluginMcpToolsRefreshMatch && req.method === "POST") {
+      return sendJson(res, await refreshPluginMcpTools(
+        decodeURIComponent(pluginMcpToolsRefreshMatch[1])
+      ));
+    }
+    const pluginMcpToolsConsentMatch = url.pathname.match(
+      /^\/api\/plugins\/([^/]+)\/mcp-tools\/consent$/
+    );
+    if (pluginMcpToolsConsentMatch && req.method === "POST") {
+      const { setPluginMcpToolConsent } = await import("./lib/runtime/mcp-tool-consent.mjs");
+      const body = await readJsonBody(req);
+      return sendJson(res, await setPluginMcpToolConsent(
+        WORKSPACE_ROOT,
+        decodeURIComponent(pluginMcpToolsConsentMatch[1]),
+        body.approvedTools
       ));
     }
     if (req.method === "GET" && url.pathname === "/api/marketplace/plugins") {
@@ -912,6 +944,10 @@ async function handleRequest(req, res) {
       } finally {
         engine.close();
       }
+    }
+    const sessionAssetMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/assets\/([a-f0-9]{24}\.(?:png|jpg|gif|webp|bmp))$/);
+    if (req.method === "GET" && sessionAssetMatch) {
+      return streamSessionAsset(res, decodeURIComponent(sessionAssetMatch[1]), sessionAssetMatch[2]);
     }
     const wsSessionMsgMatch = url.pathname.match(/^\/api\/workspace\/sessions\/([^/]+)\/messages$/);
     if (wsSessionMsgMatch) {
@@ -2098,6 +2134,43 @@ async function listMcpServers() {
   return { servers: await Promise.all((config.mcpServers || []).map(normalizeMcpServer)) };
 }
 
+async function refreshPluginMcpTools(pluginId) {
+  const [{ getRuntimePlugin }, { createMcpClient }, { reconcilePluginMcpTools }] = await Promise.all([
+    import("./lib/runtime/plugin-runtime.mjs"),
+    import("./lib/runtime/mcp-client.mjs"),
+    import("./lib/runtime/mcp-tool-consent.mjs")
+  ]);
+  const plugin = await getRuntimePlugin(WORKSPACE_ROOT, pluginId);
+  if (!plugin || plugin.builtIn) {
+    throw Object.assign(new Error("Community plugin was not found."), { status: 404 });
+  }
+  const config = await readRuntimeConfig(WORKSPACE_ROOT);
+  const mcp = (config.mcpServers || []).find((server) => server.pluginId === plugin.id);
+  if (!mcp) throw Object.assign(new Error("This plugin does not provide an MCP server."), { status: 404 });
+  if (mcp.enabled === false || plugin.enabled === false) {
+    throw Object.assign(new Error("Enable the plugin before discovering its MCP tools."), { status: 409 });
+  }
+  const client = createMcpClient(mcp, {
+    workspaceRoot: WORKSPACE_ROOT,
+    env: mcp.env || {},
+    tokenAccessor: () => mcp.credential_id
+      ? getMcpCredential(WORKSPACE_ROOT, mcp.credential_id)
+      : null,
+    allowUnauthenticated: mcp.allowUnauthenticated === true
+  });
+  try {
+    await client.start();
+    const tools = await client.listTools();
+    return await reconcilePluginMcpTools(WORKSPACE_ROOT, {
+      pluginId: plugin.id,
+      serverName: mcp.name,
+      tools
+    });
+  } finally {
+    try { client.stop(); } catch {}
+  }
+}
+
 async function addMcpServer(req) {
   const body = await readJsonBody(req);
   const name = safeMcpName(body.name);
@@ -2456,30 +2529,7 @@ async function discoverProviderModels(providerParam) {
   }
 
   if (providerId === "ollama-local") {
-    const credentials = await readCredentials(WORKSPACE_ROOT);
-    const values = credentials.providers?.[providerId]?.values || {};
-    const configuredUrl = values.baseUrl || values.BASE_URL || values.OLLAMA_HOST || process.env.OLLAMA_HOST || provider.defaultBaseUrl;
-    const host = String(configuredUrl || "http://127.0.0.1:11434")
-      .replace(/\/v1\/?$/, "")
-      .replace(/\/$/, "");
-    let response;
-    try {
-      response = await fetch(`${host}/api/tags`, { signal: AbortSignal.timeout(5000) });
-    } catch (error) {
-      throw Object.assign(new Error(`Could not connect to Ollama at ${host}: ${error.message}`), { status: 502 });
-    }
-    if (!response.ok) {
-      throw Object.assign(new Error(`Ollama model discovery failed: ${response.status}`), { status: 502 });
-    }
-    const payload = await response.json();
-    const models = (payload.models || [])
-      .filter((item) => {
-        const capabilities = Array.isArray(item.capabilities) ? item.capabilities : [];
-        return capabilities.length === 0 || capabilities.some((capability) => ["completion", "tools", "thinking"].includes(capability));
-      })
-      .map((item) => item.model || item.name)
-      .filter(Boolean);
-    return { provider: providerId, source: "ollama", baseUrl: `${host}/v1`, models };
+    return discoverOllamaModels(WORKSPACE_ROOT);
   }
 
   if (providerId === "openai-codex") {
@@ -2922,10 +2972,29 @@ async function extractMemoryFromSession(sessionIdParam) {
 
 async function renderMarkdown(req) {
   const body = await readJsonBody(req);
-  const html = await renderMarkdownDocument(body.markdown || body.content || "", {
+  const protocol = String(req.headers["x-forwarded-proto"] || "http").split(",")[0].trim();
+  const origin = `${protocol}://${req.headers.host || `${WORKSPACE_HOST}:${DEFAULT_PORT}`}`;
+  const markdown = String(body.markdown || body.content || "").replace(
+    /\]\((\/api\/sessions\/[^\s)]+\/assets\/[^\s)]+)\)/g,
+    (_match, assetPath) => `](${origin}${assetPath})`
+  );
+  const html = await renderMarkdownDocument(markdown, {
     theme: body.theme || "github-dark"
   });
   return { html };
+}
+
+async function streamSessionAsset(res, sessionId, fileName) {
+  const safeSessionId = String(sessionId || "").replace(/[^a-zA-Z0-9._-]/g, "_");
+  const absolutePath = path.join(WORKSPACE_ROOT, ".codmes", "sessions", "assets", safeSessionId, fileName);
+  const stat = await fs.stat(absolutePath);
+  if (!stat.isFile()) throw Object.assign(new Error("Session image not found."), { status: 404 });
+  res.writeHead(200, {
+    "content-type": contentTypeForPath(fileName),
+    "content-length": String(stat.size),
+    "cache-control": "private, max-age=31536000, immutable"
+  });
+  createReadStream(absolutePath).pipe(res);
 }
 
 async function renderCode(req) {
@@ -2944,6 +3013,7 @@ async function handleRuntimeProxy(req, res, url) {
     const isSessionsGet = url.pathname === "/api/sessions" && req.method === "GET";
     const isSessionsPost = url.pathname === "/api/sessions" && req.method === "POST";
     const isSessionsPrune = url.pathname === "/api/sessions/prune" && req.method === "POST";
+    const isSessionsStorage = url.pathname === "/api/sessions/storage" && req.method === "GET";
     
     const messagesMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/messages$/);
     const sessionMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)$/);
@@ -2958,6 +3028,9 @@ async function handleRuntimeProxy(req, res, url) {
     }
     if (isSessionsPrune) {
       return sendJson(res, await engine.pruneSessions());
+    }
+    if (isSessionsStorage) {
+      return sendJson(res, await engine.sessionStorageUsage());
     }
     if (messagesMatch && req.method === "GET") {
       const sessionId = decodeURIComponent(messagesMatch[1]);
@@ -3026,6 +3099,7 @@ async function normalizeSessionsResponse(value) {
       projectTitle: stringField(item.project_title, item.projectTitle, item.project?.title, item.project?.name, item.workspace_title, item.workspaceTitle, item.workspace?.title, item.workspace?.name, item.cwd, item.git_repo_root, item.gitRepoRoot),
       updatedAt: stringField(item.updated_at, item.updatedAt, item.modified_at, item.modifiedAt, item.last_active, item.lastActive),
       pinned: Boolean(item.pinned),
+      storageBytes: Number(item.storage_bytes ?? item.storageBytes ?? 0),
       isActive: Boolean(item.is_active ?? item.isActive)
     });
   }

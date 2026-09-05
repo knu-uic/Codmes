@@ -168,6 +168,9 @@ box를 반환하므로 client는 추가 baseline 보정 없이 `normalized` 값�
 - `/api/doctor`
 - `GET /api/plugins`
 - `POST /api/plugins/:id/configuration`
+- `GET /api/plugins/:id/mcp-tools`
+- `POST /api/plugins/:id/mcp-tools/refresh`
+- `POST /api/plugins/:id/mcp-tools/consent`
 - `/api/tool-modes...`
 - `/api/tools/available`
 - `/api/tools/discover`
@@ -193,6 +196,12 @@ Plugin Runtime routes:
 - `GET /api/plugins` lists built-in and installed community plugins through one
   response contract, including each plugin's native/declarative views.
 - `POST /api/plugins/:pluginId/configuration` changes plugin enablement.
+- `GET /api/plugins/:pluginId/mcp-tools` returns the Workspace-local discovered,
+  approved, and pending MCP tool catalog without exposing credentials.
+- `POST /api/plugins/:pluginId/mcp-tools/refresh` connects to that plugin's MCP
+  server and refreshes the catalog. New names remain pending.
+- `POST /api/plugins/:pluginId/mcp-tools/consent` replaces the approved snapshot
+  with `{ "approvedTools": ["tool_name"] }`; undiscovered names are rejected.
 - `POST /api/plugins/install` with `{path}` installs a server-local package.
 - `DELETE /api/plugins/:pluginId` removes a community plugin's view, tools, and
   MCP registration. Built-in plugins are not removable.

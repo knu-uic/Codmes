@@ -9,6 +9,7 @@ import { setCredentialValue, setDefaultModel, writeRuntimeConfig } from "./confi
 import { installPlugin } from "./plugin-registry.mjs";
 import { writeSecurityConfig } from "./security-policy.mjs";
 import { saveToolModeOverride } from "./tool-mode-registry.mjs";
+import { reconcilePluginMcpTools, setPluginMcpToolConsent } from "./mcp-tool-consent.mjs";
 
 test("OpenAI-compatible runtime streams chat completions from Codmes config", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-openai-runtime-"));
@@ -57,6 +58,8 @@ test("OpenAI-compatible runtime streams chat completions from Codmes config", as
   assert.equal(request.body.model, "demo-model");
   assert.equal(request.body.messages[0].role, "system");
   assert.match(request.body.messages[0].content, /Notes\/a\.md/);
+  assert.match(request.body.messages[0].content, /related_images/);
+  assert.match(request.body.messages[0].content, /do not append every available image/i);
   assert.deepEqual(request.body.messages.slice(-3).map((m) => m.role), ["user", "assistant", "user"]);
   assert.deepEqual(events.map((event) => event.type), ["turn.start", "message.delta", "message.delta", "turn.complete"]);
   assert.equal(typeof events[0].promptTokenEstimate, "number");
@@ -365,12 +368,32 @@ test("OpenAI-compatible runtime expands discovered safe tools within the same tu
           ok: true,
           headers: { get: () => "text/event-stream" },
           body: streamChunks([
-            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_discover","type":"function","function":{"name":"tool_discovery","arguments":"{\\"reason\\":\\"need indexed document search\\",\\"desiredCapability\\":\\"search indexed pdf notes documents\\"}"}}]}}]}\n\n',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_discover_root","type":"function","function":{"name":"tool_discovery","arguments":"{\\"reason\\":\\"need indexed document search\\",\\"desiredCapability\\":\\"search indexed pdf notes documents\\"}"}}]}}]}\n\n',
             'data: [DONE]\n\n'
           ])
         };
       }
       if (requests.length === 2) {
+        return {
+          ok: true,
+          headers: { get: () => "text/event-stream" },
+          body: streamChunks([
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_discover_notes","type":"function","function":{"name":"tool_discovery","arguments":"{\\"reason\\":\\"need indexed document search\\",\\"desiredCapability\\":\\"search indexed pdf notes documents\\",\\"path\\":\\"notes\\"}"}}]}}]}\n\n',
+            'data: [DONE]\n\n'
+          ])
+        };
+      }
+      if (requests.length === 3) {
+        return {
+          ok: true,
+          headers: { get: () => "text/event-stream" },
+          body: streamChunks([
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_discover_search","type":"function","function":{"name":"tool_discovery","arguments":"{\\"reason\\":\\"need indexed document search\\",\\"desiredCapability\\":\\"search indexed pdf notes documents\\",\\"path\\":\\"notes.search\\"}"}}]}}]}\n\n',
+            'data: [DONE]\n\n'
+          ])
+        };
+      }
+      if (requests.length === 4) {
         return {
           ok: true,
           headers: { get: () => "text/event-stream" },
@@ -400,14 +423,17 @@ test("OpenAI-compatible runtime expands discovered safe tools within the same tu
   });
 
   assert.equal(result.reply, "Codmes search 결과를 확인했어요.");
-  assert.equal(result.toolRounds, 2);
-  assert.equal(requests.length, 3);
+  assert.equal(result.toolRounds, 4);
+  assert.equal(requests.length, 5);
   assert.equal(requests[0].tools.some((tool) => tool.function.name === "codmes_search"), false);
-  assert.equal(requests[1].tools.some((tool) => tool.function.name === "codmes_search"), true);
-  const toolMessages = requests[2].messages.filter((message) => message.role === "tool");
+  assert.equal(requests[2].tools.some((tool) => tool.function.name === "codmes_search"), false);
+  assert.equal(requests[3].tools.some((tool) => tool.function.name === "codmes_search"), true);
+  const toolMessages = requests[4].messages.filter((message) => message.role === "tool");
   assert.equal(toolMessages[0].name, "tool_discovery");
-  assert.equal(toolMessages[1].name, "codmes_search");
-  assert.match(toolMessages[1].content, /Notes\/rag\.md/);
+  assert.equal(toolMessages[1].name, "tool_discovery");
+  assert.equal(toolMessages[2].name, "tool_discovery");
+  assert.equal(toolMessages[3].name, "codmes_search");
+  assert.match(toolMessages[3].content, /Notes\/rag\.md/);
   assert.equal(events.some((event) => event.type === "tool.discovery.request"), true);
   assert.equal(events.some((event) => event.type === "tool.discovery.result"), true);
   assert.equal(events.some((event) => event.type === "tool.expansion.applied" && event.expandedTools.includes("codmes_search")), true);
@@ -417,7 +443,7 @@ test("OpenAI-compatible runtime expands discovered safe tools within the same tu
     message: "다음 질문",
     surface: "chat"
   });
-  assert.equal(requests[3].tools.some((tool) => tool.function.name === "codmes_search"), false);
+  assert.equal(requests[5].tools.some((tool) => tool.function.name === "codmes_search"), false);
 });
 
 test("OpenAI-compatible runtime blocks discovered tools disabled by surface mode", async () => {
@@ -441,9 +467,23 @@ test("OpenAI-compatible runtime blocks discovered tools disabled by surface mode
           ok: true,
           headers: { get: () => "text/event-stream" },
           body: streamChunks([
-            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_discover","type":"function","function":{"name":"tool_discovery","arguments":"{\\"reason\\":\\"need indexed document search\\",\\"desiredCapability\\":\\"search indexed pdf notes documents\\"}"}}]}}]}\n\n',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_discover_root","type":"function","function":{"name":"tool_discovery","arguments":"{\\"reason\\":\\"need indexed document search\\",\\"desiredCapability\\":\\"search indexed pdf notes documents\\"}"}}]}}]}\n\n',
             'data: [DONE]\n\n'
           ])
+        };
+      }
+      if (requests.length === 2) {
+        return {
+          ok: true,
+          headers: { get: () => "text/event-stream" },
+          body: streamChunks(['data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_discover_notes","type":"function","function":{"name":"tool_discovery","arguments":"{\\"reason\\":\\"need search\\",\\"desiredCapability\\":\\"search documents\\",\\"path\\":\\"notes\\"}"}}]}}]}\n\n', 'data: [DONE]\n\n'])
+        };
+      }
+      if (requests.length === 3) {
+        return {
+          ok: true,
+          headers: { get: () => "text/event-stream" },
+          body: streamChunks(['data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_discover_search","type":"function","function":{"name":"tool_discovery","arguments":"{\\"reason\\":\\"need search\\",\\"desiredCapability\\":\\"search documents\\",\\"path\\":\\"notes.search\\"}"}}]}}]}\n\n', 'data: [DONE]\n\n'])
         };
       }
       return {
@@ -460,7 +500,7 @@ test("OpenAI-compatible runtime blocks discovered tools disabled by surface mode
   runtime.on("event", (event) => events.push(event));
 
   await runtime.submitPrompt({ sessionId: "blocked-discovery", message: "문서 검색", surface: "chat" });
-  assert.equal(requests[1].tools.some((tool) => tool.function.name === "codmes_search"), false);
+  assert.equal(requests[3].tools.some((tool) => tool.function.name === "codmes_search"), false);
   assert.equal(events.some((event) => event.type === "tool.expansion.blocked"), true);
 });
 
@@ -769,7 +809,63 @@ test("OpenAI-compatible runtime exposes remote MCP tools only on the configured 
   runtime.close();
 });
 
-test("OpenAI-compatible runtime exposes a plugin-declared public name through the common Tool Registry", async () => {
+test("plugin MCP tools cannot self-approve and appear only after Workspace consent", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-openai-runtime-mcp-consent-"));
+  const source = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-openai-runtime-mcp-consent-source-"));
+  await setDefaultModel(root, "openai-api", "gpt-5.5");
+  await setCredentialValue(root, "openai-api", "CODMES_OPENAI_API_KEY", "test-key");
+  await fs.writeFile(path.join(source, "plugin.json"), JSON.stringify({
+    schemaVersion: 1,
+    id: "com.example.consent",
+    version: "1.0.0",
+    name: "Consent Test",
+    platforms: ["macos"],
+    surface: {
+      id: "consent",
+      type: "declarative",
+      title: "Consent",
+      upstreamUrl: "http://127.0.0.1:8999",
+      entryPath: "/data",
+      navigation: [{ id: "home", title: "Home", path: "/data" }]
+    },
+    mcp: {
+      name: "consent",
+      transport: "streamable_http",
+      url: "http://127.0.0.1:8999/mcp",
+      surfaces: ["consent"],
+      allowUnauthenticated: true,
+      requiresApproval: false
+    }
+  }), "utf8");
+  await installPlugin(root, source);
+  const events = [];
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: root,
+    mcpClientFactory: () => ({
+      status: "stopped",
+      async start() { this.status = "running"; },
+      async listTools() { return [{ name: "server_added_tool", inputSchema: { type: "object" } }]; },
+      stop() {}
+    }),
+    fetchImpl: async () => ({
+      ok: true,
+      headers: { get: () => "text/event-stream" },
+      body: streamChunks(['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', "data: [DONE]\n\n"])
+    })
+  });
+  runtime.on("event", (event) => events.push(event));
+
+  await runtime.submitPrompt({ sessionId: "before-consent", message: "hello", surface: "consent" });
+  assert.equal(runtime.toolRegistry.get("mcp__consent__server_added_tool"), null);
+  assert.equal(events.some((event) => event.type === "mcp.tool.pending_consent"), true);
+
+  await setPluginMcpToolConsent(root, "com.example.consent", ["server_added_tool"]);
+  await runtime.submitPrompt({ sessionId: "after-consent", message: "hello", surface: "consent" });
+  assert.equal(runtime.toolRegistry.get("mcp__consent__server_added_tool").provider.type, "mcp");
+  runtime.close();
+});
+
+test("OpenAI-compatible runtime discovers server-owned MCP tool metadata without a plugin tool copy", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-openai-runtime-plugin-tool-"));
   const source = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-openai-runtime-plugin-source-"));
   await setDefaultModel(root, "openai-api", "gpt-5.5");
@@ -794,22 +890,7 @@ test("OpenAI-compatible runtime exposes a plugin-declared public name through th
       url: "http://127.0.0.1:8000/api/mcp",
       surfaces: ["knu"],
       allowUnauthenticated: true,
-      requiresApproval: true
-    },
-    tools: {
-      schemaVersion: 1,
-      tools: [{
-        name: "knu_search_notices",
-        description: "Search current KNU notices.",
-        inputSchema: {
-          type: "object",
-          properties: { query: { type: "string" } },
-          required: ["query"]
-        },
-        provider: { type: "mcp", server: "knu", tool: "search_knu_notices" },
-        requiresApproval: true,
-        readOnly: true
-      }]
+      requiresApproval: false
     }
   }), "utf8");
   await installPlugin(root, source);
@@ -820,8 +901,14 @@ test("OpenAI-compatible runtime exposes a plugin-declared public name through th
     deniedCommands: [],
     requireApproval: []
   });
+  await reconcilePluginMcpTools(root, {
+    pluginId: "kr.ac.kongju.knu",
+    serverName: "knu",
+    tools: [{ name: "search_knu_notices" }]
+  });
+  await setPluginMcpToolConsent(root, "kr.ac.kongju.knu", ["search_knu_notices"]);
 
-  let sentTools = [];
+  const requests = [];
   const runtime = new OpenAICompatibleRuntime({
     workspaceRoot: root,
     mcpClientFactory: () => ({
@@ -831,11 +918,27 @@ test("OpenAI-compatible runtime exposes a plugin-declared public name through th
         return [{
           name: "search_knu_notices",
           description: "Dynamic description",
+          annotations: { readOnlyHint: true, destructiveHint: false },
+          _meta: {
+            "com.codmes/tool": {
+              publicName: "knu_search_notices",
+              group: "knu.notices",
+              groupDescriptions: {
+                knu: "KNU tools from the live MCP server.",
+                "knu.notices": "KNU notice tools from the live MCP server."
+              }
+            }
+          },
           inputSchema: {
             type: "object",
             properties: { query: { type: "string" } },
             required: ["query"]
           }
+        }, {
+          name: "unexpected_write_tool",
+          description: "A tool added by the remote server after plugin review.",
+          inputSchema: { type: "object", properties: {} },
+          _meta: { "com.codmes/tool": { publicName: "unexpected_write_tool", group: "knu.notices" } }
         }];
       },
       async callTool(name, args) {
@@ -852,25 +955,45 @@ test("OpenAI-compatible runtime exposes a plugin-declared public name through th
       },
       stop() {}
     }),
-    fetchImpl: async (_url, options) => ({
-      ok: true,
-      headers: { get: () => "text/event-stream" },
-      body: (
-        sentTools = JSON.parse(options.body).tools,
-        streamChunks(['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', "data: [DONE]\n\n"])
-      )
-    })
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      const body = requests.length === 1
+        ? ['data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"discover-root","type":"function","function":{"name":"tool_discovery","arguments":"{\\"reason\\":\\"need current university evidence\\",\\"desiredCapability\\":\\"search KNU notices\\"}"}}]}}]}\n\n', "data: [DONE]\n\n"]
+        : requests.length === 2
+          ? ['data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"discover-notices","type":"function","function":{"name":"tool_discovery","arguments":"{\\"reason\\":\\"need current university evidence\\",\\"desiredCapability\\":\\"search KNU notices\\",\\"path\\":\\"knu.notices\\"}"}}]}}]}\n\n', "data: [DONE]\n\n"]
+          : requests.length === 3
+            ? ['data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"search-knu","type":"function","function":{"name":"knu_search_notices","arguments":"{\\"query\\":\\"수강 철회\\"}"}}]}}]}\n\n', "data: [DONE]\n\n"]
+            : ['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', "data: [DONE]\n\n"];
+      return {
+        ok: true,
+        headers: { get: () => "text/event-stream" },
+        body: streamChunks(body)
+      };
+    }
+  });
+  const pendingTools = [];
+  runtime.on("event", (event) => {
+    if (event.type === "mcp.tool.pending_consent") pendingTools.push(event);
   });
 
   await runtime.submitPrompt({
     sessionId: "knu-plugin-tool",
     message: "공지 찾아줘",
-    surface: "knu"
+    surface: "knu",
+    route: "notices",
+    accessMode: "full"
   });
-  assert.equal(sentTools.some((tool) => tool.function.name === "knu_search_notices"), true);
-  assert.equal(sentTools.some((tool) => tool.function.name === "mcp__knu__search_knu_notices"), false);
+  assert.equal(requests[0].tools.some((tool) => tool.function.name === "knu_search_notices"), false);
+  assert.equal(requests[1].tools.some((tool) => tool.function.name === "knu_search_notices"), false);
+  assert.equal(requests[2].tools.some((tool) => tool.function.name === "knu_search_notices"), true);
+  assert.equal(requests[2].tools.some((tool) => tool.function.name === "mcp__knu__search_knu_notices"), false);
+  assert.match(requests[0].messages[0].content, /Current Surface: knu > notices/);
   assert.equal(runtime.toolRegistry.get("knu_search_notices").provider.type, "mcp");
   assert.equal(runtime.toolRegistry.get("knu_search_notices").pluginId, "kr.ac.kongju.knu");
+  assert.equal(runtime.toolRegistry.get("knu_search_notices").description, "Dynamic description");
+  assert.equal(runtime.toolRegistry.get("knu_search_notices").readOnly, true);
+  assert.equal(runtime.toolRegistry.get("unexpected_write_tool"), null);
+  assert.equal(pendingTools.some((event) => event.toolName === "unexpected_write_tool"), true);
   const result = await runtime.executeToolCall({
     id: "knu-search-call",
     name: "knu_search_notices",
@@ -953,6 +1076,246 @@ test("Planner calendar writes require approval in Safe mode and execute immediat
     surface: "planner"
   });
   assert.equal(created.created, true);
+  runtime.close();
+});
+
+test("Chat can discover a Planner write tool and then request execution approval", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-cross-surface-planner-"));
+  await setDefaultModel(root, "custom", "demo-model");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_BASE_URL", "http://model.test/v1");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_API_KEY", "test-key");
+  const requests = [];
+  const toolCall = (id, name, args) => [
+    `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: JSON.stringify(args) } }] } }] })}\n\n`,
+    "data: [DONE]\n\n"
+  ];
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: root,
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      const chunks = requests.length === 1
+        ? toolCall("root", "tool_discovery", { reason: "copy tasks", desiredCapability: "create Planner tasks" })
+        : requests.length === 2
+          ? toolCall("planner", "tool_discovery", { reason: "copy tasks", desiredCapability: "create Planner tasks", path: "planner" })
+          : requests.length === 3
+            ? toolCall("tasks", "tool_discovery", { reason: "copy tasks", desiredCapability: "create Planner tasks", path: "planner.tasks" })
+            : requests.length === 4
+              ? toolCall("create", "planner_create", { item: { title: "LMS 과제", dueAt: "2026-09-07", completed: false } })
+              : ['data: {"choices":[{"delta":{"content":"Planner에 추가했습니다."}}]}\n\n', "data: [DONE]\n\n"];
+      return { ok: true, headers: { get: () => "text/event-stream" }, body: streamChunks(chunks) };
+    }
+  });
+
+  let approvalError;
+  try {
+    await runtime.submitPrompt({ sessionId: "cross-surface", message: "LMS 과제를 Planner에 추가해줘", surface: "chat", accessMode: "confirm" });
+  } catch (error) {
+    approvalError = error;
+  }
+  assert.equal(approvalError?.approvalRequired, true);
+  assert.equal(approvalError?.pendingState?.toolName, "planner_create");
+  assert.equal(approvalError?.pendingState?.preview?.operation, "create");
+  assert.equal(requests[2].tools.some((tool) => tool.function.name === "planner_create"), false);
+  assert.equal(requests[3].tools.some((tool) => tool.function.name === "planner_create"), true);
+  const resumed = await runtime.resumePendingState(approvalError.pendingState, { sessionId: "cross-surface" });
+  assert.equal(resumed.status, "completed");
+  assert.equal(resumed.reply, "Planner에 추가했습니다.");
+  assert.equal(requests[4].tools.some((tool) => tool.function.name === "planner_create"), true);
+  runtime.close();
+});
+
+test("Chat promotes to the Code execution profile and continues beyond eight tool rounds", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-dynamic-code-budget-"));
+  await fs.mkdir(path.join(root, "Code"), { recursive: true });
+  await setDefaultModel(root, "custom", "demo-model");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_BASE_URL", "http://model.test/v1");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_API_KEY", "test-key");
+  const requests = [];
+  const toolCall = (id, name, args) => [
+    `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: JSON.stringify(args) } }] } }] })}\n\n`,
+    "data: [DONE]\n\n"
+  ];
+  let lazyTaskCreations = 0;
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: root,
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      const index = requests.length;
+      const chunks = index === 1
+        ? toolCall("root", "tool_discovery", { reason: "inspect code", desiredCapability: "inspect a code project" })
+        : index === 2
+          ? toolCall("code", "tool_discovery", { reason: "inspect code", desiredCapability: "inspect a code project", path: "code" })
+          : index === 3
+            ? toolCall("edit", "tool_discovery", { reason: "inspect code", desiredCapability: "inspect a code project", path: "code.edit" })
+            : index <= 12
+              ? toolCall(`search-${index}`, "search_project", { query: `step ${index}`, scopePath: "Code" })
+              : ['data: {"choices":[{"delta":{"content":"코드 조사를 완료했습니다."}}]}\n\n', "data: [DONE]\n\n"];
+      return { ok: true, headers: { get: () => "text/event-stream" }, body: streamChunks(chunks) };
+    }
+  });
+  const codeRuntime = {
+    resolveCodeScope(scopePath) {
+      return { relativePath: scopePath, absolutePath: path.join(root, scopePath) };
+    },
+    async searchProject(_scope, query) {
+      return { ok: true, query, resultCount: 0, results: [] };
+    }
+  };
+
+  const result = await runtime.submitPrompt({
+    sessionId: "chat-code-budget",
+    message: "프로젝트를 깊게 조사해줘",
+    surface: "chat",
+    accessMode: "full",
+    codeRuntime,
+    ensureCodeTask: async () => {
+      lazyTaskCreations += 1;
+      return { taskId: "task-lazy-code", scopePath: "Code" };
+    }
+  });
+
+  assert.equal(result.reply, "코드 조사를 완료했습니다.");
+  assert.equal(result.toolRounds, 12);
+  assert.equal(result.executionProfile, "code");
+  assert.equal(result.maxToolRounds, 32);
+  assert.equal(lazyTaskCreations, 1);
+  assert.equal(requests[3].tools.some((tool) => tool.function.name === "search_project"), true);
+  runtime.close();
+});
+
+test("Chat promotes mixed Notes and Planner work to the cross-surface execution profile", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-cross-surface-budget-"));
+  await fs.mkdir(path.join(root, "Notes"), { recursive: true });
+  await fs.writeFile(path.join(root, "Notes", "a.md"), "과제 메모", "utf8");
+  await setDefaultModel(root, "custom", "demo-model");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_BASE_URL", "http://model.test/v1");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_API_KEY", "test-key");
+  const toolCall = (id, name, args) => [
+    `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: JSON.stringify(args) } }] } }] })}\n\n`,
+    "data: [DONE]\n\n"
+  ];
+  let requestIndex = 0;
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: root,
+    fetchImpl: async () => {
+      requestIndex += 1;
+      const steps = [
+        ["root", "tool_discovery", { reason: "read and plan", desiredCapability: "read notes and list Planner tasks" }],
+        ["notes", "tool_discovery", { reason: "read and plan", desiredCapability: "search notes", path: "notes" }],
+        ["notes-search", "tool_discovery", { reason: "read and plan", desiredCapability: "search notes", path: "notes.search" }],
+        ["search-1", "workspace_search", { query: "과제" }],
+        ["planner", "tool_discovery", { reason: "read and plan", desiredCapability: "list Planner tasks", path: "planner" }],
+        ["planner-tasks", "tool_discovery", { reason: "read and plan", desiredCapability: "list Planner tasks", path: "planner.tasks" }],
+        ["list-1", "planner_list", {}],
+        ["search-2", "workspace_search", { query: "마감" }],
+        ["list-2", "planner_list", {}],
+        ["search-3", "workspace_search", { query: "일정" }]
+      ];
+      const step = steps[requestIndex - 1];
+      const chunks = step
+        ? toolCall(step[0], step[1], step[2])
+        : ['data: {"choices":[{"delta":{"content":"교차 작업 완료"}}]}\n\n', "data: [DONE]\n\n"];
+      return { ok: true, headers: { get: () => "text/event-stream" }, body: streamChunks(chunks) };
+    }
+  });
+
+  const result = await runtime.submitPrompt({
+    sessionId: "cross-surface-budget",
+    message: "노트와 Planner를 함께 확인해줘",
+    surface: "chat",
+    accessMode: "full"
+  });
+  assert.equal(result.reply, "교차 작업 완료");
+  assert.equal(result.toolRounds, 10);
+  assert.equal(result.executionProfile, "cross-surface");
+  assert.equal(result.maxToolRounds, 16);
+  runtime.close();
+});
+
+test("a failed approved Code check resumes the model with the code-deep budget", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-code-deep-budget-"));
+  await setDefaultModel(root, "custom", "demo-model");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_BASE_URL", "http://model.test/v1");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_API_KEY", "test-key");
+  let requestIndex = 0;
+  const toolCall = (id, name, args) => [
+    `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: JSON.stringify(args) } }] } }] })}\n\n`,
+    "data: [DONE]\n\n"
+  ];
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: root,
+    fetchImpl: async () => {
+      requestIndex += 1;
+      const steps = [
+        ["root", "tool_discovery", { reason: "verify code", desiredCapability: "run code checks" }],
+        ["code", "tool_discovery", { reason: "verify code", desiredCapability: "run code checks", path: "code" }],
+        ["checks", "tool_discovery", { reason: "verify code", desiredCapability: "run code checks", path: "code.checks" }],
+        ["run", "run_checks", { commands: ["npm test"] }]
+      ];
+      const step = steps[requestIndex - 1];
+      const chunks = step
+        ? toolCall(step[0], step[1], step[2])
+        : ['data: {"choices":[{"delta":{"content":"실패 원인을 계속 분석하겠습니다."}}]}\n\n', "data: [DONE]\n\n"];
+      return { ok: true, headers: { get: () => "text/event-stream" }, body: streamChunks(chunks) };
+    }
+  });
+  const codeRuntime = {
+    async runChecks(taskId) {
+      assert.equal(taskId, "task-check");
+      return { ok: false, status: "check_failed", results: [{ exitCode: 1 }] };
+    }
+  };
+  let approvalError;
+  try {
+    await runtime.submitPrompt({
+      sessionId: "code-deep",
+      message: "테스트하고 실패하면 계속 고쳐줘",
+      surface: "chat",
+      codeRuntime,
+      ensureCodeTask: async () => ({ taskId: "task-check", scopePath: "Code" })
+    });
+  } catch (error) {
+    approvalError = error;
+  }
+  assert.equal(approvalError?.approvalRequired, true);
+  assert.equal(approvalError?.pendingState?.toolName, "run_checks");
+  const resumed = await runtime.resumePendingState(approvalError.pendingState, {
+    sessionId: "code-deep",
+    codeRuntime
+  });
+  assert.equal(resumed.status, "completed");
+  assert.equal(resumed.executionProfile, "code-deep");
+  assert.equal(resumed.maxToolRounds, 64);
+  assert.equal(resumed.reply, "실패 원인을 계속 분석하겠습니다.");
+  runtime.close();
+});
+
+test("dynamic execution budgets stop three identical tool calls", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-repeated-tool-guard-"));
+  await setDefaultModel(root, "custom", "demo-model");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_BASE_URL", "http://model.test/v1");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_API_KEY", "test-key");
+  let requests = 0;
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: root,
+    fetchImpl: async () => {
+      requests += 1;
+      return {
+        ok: true,
+        headers: { get: () => "text/event-stream" },
+        body: streamChunks([
+          `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: `memory-${requests}`, type: "function", function: { name: "memory_search", arguments: "{\"query\":\"same query\"}" } }] } }] })}\n\n`,
+          "data: [DONE]\n\n"
+        ])
+      };
+    }
+  });
+
+  await assert.rejects(
+    () => runtime.submitPrompt({ sessionId: "repeat-guard", message: "반복 테스트", surface: "chat" }),
+    (error) => error.repeatedToolCall === true && error.toolName === "memory_search"
+  );
+  assert.equal(requests, 3);
   runtime.close();
 });
 

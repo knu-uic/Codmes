@@ -3,6 +3,7 @@
   "tools": [
     {
       "name": "planner_list",
+      "group": "planner.tasks",
       "description": "Planner의 할 일을 조회합니다.",
       "inputSchema": {"type": "object", "additionalProperties": false, "properties": {}},
       "provider": {"type": "plugin", "id": "com.codmes.planner", "tool": "collection.tasks.list"},
@@ -10,6 +11,7 @@
     },
     {
       "name": "planner_get",
+      "group": "planner.tasks",
       "description": "ID로 Planner 할 일을 조회합니다.",
       "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"id": {"type": "string"}}, "required": ["id"]},
       "provider": {"type": "plugin", "id": "com.codmes.planner", "tool": "collection.tasks.get"},
@@ -17,6 +19,7 @@
     },
     {
       "name": "planner_create",
+      "group": "planner.tasks",
       "description": "Planner에 새 할 일을 생성합니다.",
       "inputSchema": {
         "type": "object",
@@ -42,6 +45,7 @@
     },
     {
       "name": "planner_update",
+      "group": "planner.tasks",
       "description": "Planner의 기존 할 일을 수정하거나 완료 처리합니다.",
       "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"id": {"type": "string"}, "item": {"type": "object"}}, "required": ["id", "item"]},
       "provider": {"type": "plugin", "id": "com.codmes.planner", "tool": "collection.tasks.update"},
@@ -49,6 +53,7 @@
     },
     {
       "name": "planner_delete",
+      "group": "planner.tasks",
       "description": "Planner의 할 일을 삭제합니다.",
       "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"id": {"type": "string"}}, "required": ["id"]},
       "provider": {"type": "plugin", "id": "com.codmes.planner", "tool": "collection.tasks.delete"},
@@ -56,6 +61,7 @@
     },
     {
       "name": "calendar_list",
+      "group": "planner.calendar",
       "description": "Planner 달력의 일정을 조회합니다.",
       "inputSchema": {"type": "object", "additionalProperties": false, "properties": {}},
       "provider": {"type": "plugin", "id": "com.codmes.planner", "tool": "collection.events.list"},
@@ -63,6 +69,7 @@
     },
     {
       "name": "calendar_get",
+      "group": "planner.calendar",
       "description": "ID로 Planner 달력 일정을 조회합니다.",
       "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"id": {"type": "string"}}, "required": ["id"]},
       "provider": {"type": "plugin", "id": "com.codmes.planner", "tool": "collection.events.get"},
@@ -70,6 +77,7 @@
     },
     {
       "name": "calendar_create",
+      "group": "planner.calendar",
       "description": "Planner 달력에 새 일정을 생성합니다.",
       "inputSchema": {
         "type": "object",
@@ -95,6 +103,7 @@
     },
     {
       "name": "calendar_update",
+      "group": "planner.calendar",
       "description": "Planner 달력의 기존 일정을 수정합니다.",
       "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"id": {"type": "string"}, "item": {"type": "object"}}, "required": ["id", "item"]},
       "provider": {"type": "plugin", "id": "com.codmes.planner", "tool": "collection.events.update"},
@@ -102,6 +111,7 @@
     },
     {
       "name": "calendar_delete",
+      "group": "planner.calendar",
       "description": "Planner 달력의 일정을 삭제합니다.",
       "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"id": {"type": "string"}}, "required": ["id"]},
       "provider": {"type": "plugin", "id": "com.codmes.planner", "tool": "collection.events.delete"},
@@ -109,6 +119,7 @@
     },
     {
       "name": "memo_list",
+      "group": "planner.memos",
       "description": "Planner 메모 목록을 조회합니다.",
       "inputSchema": {"type": "object", "additionalProperties": false, "properties": {}},
       "provider": {"type": "plugin", "id": "com.codmes.planner", "tool": "collection.memos.list"},
@@ -116,6 +127,7 @@
     },
     {
       "name": "memo_get",
+      "group": "planner.memos",
       "description": "ID로 Planner 메모의 전체 텍스트를 조회합니다.",
       "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"id": {"type": "string"}}, "required": ["id"]},
       "provider": {"type": "plugin", "id": "com.codmes.planner", "tool": "collection.memos.get"},
@@ -123,6 +135,7 @@
     },
     {
       "name": "memo_create",
+      "group": "planner.memos",
       "description": "Planner에 새 텍스트 메모를 생성합니다.",
       "inputSchema": {
         "type": "object",
@@ -146,6 +159,7 @@
     },
     {
       "name": "memo_update",
+      "group": "planner.memos",
       "description": "Planner의 기존 텍스트 메모를 수정하거나 고정 상태를 변경합니다.",
       "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"id": {"type": "string"}, "item": {"type": "object"}}, "required": ["id", "item"]},
       "provider": {"type": "plugin", "id": "com.codmes.planner", "tool": "collection.memos.update"},
@@ -153,6 +167,7 @@
     },
     {
       "name": "memo_delete",
+      "group": "planner.memos",
       "description": "Planner의 텍스트 메모를 삭제합니다.",
       "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"id": {"type": "string"}}, "required": ["id"]},
       "provider": {"type": "plugin", "id": "com.codmes.planner", "tool": "collection.memos.delete"},

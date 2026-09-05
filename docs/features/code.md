@@ -27,6 +27,15 @@ Apple Code UI
 Code 작업은 Workspace의 `Code` 범위 안에서 실행하며 path traversal을 허용하지
 않는다. patch 적용과 위험한 Git/shell 작업은 security policy와 approval을 따른다.
 
+Code 작업은 Code Surface에서만 시작할 필요가 없다. Chat이나 plugin Surface에서
+대화를 시작했더라도 모델이 최초 Code 도구를 선택하면 Code task를 지연 생성하고
+현재 대화에 연결한다. 이때 원래 UI Surface는 `uiSurface`로 보존하고 실제 실행
+문맥은 `executionSurface`와 발견한 tool group으로 관리한다.
+
+Code 도구가 선택되면 일반 8라운드 예산을 32라운드로 확장한다. 검사 실패로
+추가 분석과 재수정이 필요해지면 최대 64라운드의 `code-deep` 프로필로 승격한다.
+쓰기·명령 실행에 대한 기존 승인 정책은 실행 예산과 별도로 계속 적용된다.
+
 ## 현재 경계
 
 - 완전한 LSP, debugger, extension host는 없다.

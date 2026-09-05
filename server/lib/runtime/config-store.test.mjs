@@ -105,6 +105,11 @@ custom_providers:
   assert.match(updated, /base_url: http:\/\/127\.0\.0\.1:11434\/v1/);
   assert.match(updated, /api_mode: chat_completions/);
   assert.match(updated, /model: gemma4:e2b-mlx/);
+
+  await setDefaultModel(root, "openai-codex", "gpt-5.4");
+  const switched = await readRuntimeConfig(root);
+  assert.equal(switched.defaultModel.baseUrl, null);
+  assert.equal(switched.defaultModel.apiMode, null);
 });
 
 test("OAuth providers count token-only credentials as configured", async () => {

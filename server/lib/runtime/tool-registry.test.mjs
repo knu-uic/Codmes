@@ -39,6 +39,11 @@ const notesSearch = {
   },
   provider: { type: "native", id: "workspace", tool: "notes.search" },
   surfaces: ["notes"],
+  group: "notes.search",
+  groupDescriptions: {
+    notes: "Work with notes.",
+    "notes.search": "Search notes."
+  },
   readOnly: true
 };
 
@@ -63,6 +68,7 @@ test("Tool Registry keeps different input schemas behind one provider contract",
     ["title", "startsAt", "endsAt"]
   );
   assert.deepEqual(registry.get("notes_search").inputSchema.required, ["query"]);
+  assert.equal(registry.get("notes_search").groupDescriptions["notes.search"], "Search notes.");
   assert.deepEqual(registry.list({ surface: "notes" }).map((tool) => tool.name), ["notes_search"]);
   assert.equal(registry.openAITools().length, 2);
   assert.deepEqual(
@@ -145,4 +151,15 @@ test("Plugin collection tools must target declared Workspace storage", () => {
     surfaceId: "calendar",
     storageCollections: ["events"]
   }), /declared collection/);
+});
+
+test("Tool Registry rejects group descriptions outside the tool group root", () => {
+  const registry = new ToolRegistry();
+  assert.throws(() => registry.register({
+    ...notesSearch,
+    groupDescriptions: {
+      notes: "Legitimate notes group.",
+      code: "An MCP server must not relabel another catalog root."
+    }
+  }), /groupDescriptions entry is invalid/);
 });

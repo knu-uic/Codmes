@@ -1,292 +1,31 @@
 import { invoke } from "@tauri-apps/api/core";
 import "./styles.css";
 
-type ServerSettings = {
-  workspaceRoot: string;
-  host: string;
-  port: number;
-  token: string;
-  startOnLaunch: boolean;
-  launchAtLogin: boolean;
-  showDockIcon: boolean;
-};
+type ServerSettings={workspaceRoot:string;host:string;port:number;token:string;startOnLaunch:boolean;launchAtLogin:boolean;showDockIcon:boolean};
+type ServerStatus={running:boolean;managed:boolean;pid:number|null;url:string;workspaceRoot:string;startedAt:number|null;message:string};
+type Snapshot={settings:ServerSettings;status:ServerStatus;logs:string[];runtimeReady:boolean;runtimeMessage:string};
+type Plugin={id:string;name:string;version:string;distribution:string;enabled:boolean;toolNames:string[]};
+type Tool={name:string;description:string;group:string|null;readOnly:boolean;destructive:boolean;approved:boolean};
+type Consent={pluginId:string;serverName:string|null;approvedTools:string[];discoveredTools:Tool[];pendingTools:string[];updatedAt:string|null};
 
-type ServerStatus = {
-  running: boolean;
-  managed: boolean;
-  pid: number | null;
-  url: string;
-  workspaceRoot: string;
-  startedAt: number | null;
-  message: string;
-};
+let snapshot:Snapshot; let active="dashboard"; let busy=false;
+const app=document.querySelector<HTMLDivElement>("#app")!;
+const h=(value:unknown)=>String(value??"").replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]!));
+const err=(error:unknown)=>error instanceof Error?error.message:String(error);
+function toast(message:string,error=false){const el=document.createElement("div");el.className=`toast ${error?"bad":""}`;el.textContent=message;document.body.append(el);setTimeout(()=>el.remove(),3200)}
 
-type ManagerSnapshot = {
-  settings: ServerSettings;
-  status: ServerStatus;
-  logs: string[];
-  runtimeReady: boolean;
-  runtimeMessage: string;
-};
+function shell(){app.innerHTML=`<aside><div class="brand"><span class="mark">C</span><div><strong>Codmes Server</strong><small>Workspace Manager</small></div></div><nav>${[["dashboard","대시보드"],["tools","Tool"],["settings","서버 설정"],["logs","서버 로그"]].map(([id,label],i)=>`<button data-tab="${id}" class="${i?'':'active'}">${label}</button>`).join('')}</nav><div class="aside-foot"><span id="dot" class="dot"></span><span id="aside-state">확인 중</span></div></aside><main><header><div><h1 id="title">대시보드</h1><p id="subtitle">Workspace 서버 상태를 관리합니다.</p></div><button id="refresh" class="ghost">새로고침</button></header><section id="view"></section></main>`;document.querySelectorAll<HTMLButtonElement>("nav button").forEach(button=>button.onclick=()=>openTab(button.dataset.tab!));document.querySelector<HTMLButtonElement>("#refresh")!.onclick=()=>openTab(active)}
+const titles:Record<string,[string,string]>={dashboard:["대시보드","Workspace 서버를 시작하고 모든 Codmes 클라이언트의 연결 상태를 확인합니다."],tools:["Tool","플러그인 도구를 확인하고 이 Workspace에서 사용할 도구만 승인합니다."],settings:["서버 설정","네트워크 연결, 실행 방식과 macOS 표시 방식을 설정합니다."],logs:["서버 로그","Workspace 서버의 최근 출력을 확인합니다."]};
+async function getSnapshot(){snapshot=await invoke<Snapshot>("manager_snapshot");document.querySelector("#dot")?.classList.toggle("on",snapshot.status.running);const state=document.querySelector("#aside-state");if(state)state.textContent=snapshot.status.running?"서버 실행 중":"서버 중지됨"}
+async function openTab(id:string){active=id;document.querySelectorAll("nav button").forEach(button=>button.classList.toggle("active",(button as HTMLButtonElement).dataset.tab===id));const [title,subtitle]=titles[id];document.querySelector("#title")!.textContent=title;document.querySelector("#subtitle")!.textContent=subtitle;document.querySelector("#view")!.innerHTML='<div class="loading">불러오는 중…</div>';try{await getSnapshot();await ({dashboard,tools,settings,logs} as Record<string,()=>Promise<void>>)[id]()}catch(error){document.querySelector("#view")!.innerHTML=`<div class="empty error">${h(err(error))}</div>`}}
+async function operation(command:string,message:string){if(busy)return;busy=true;try{await invoke(command);await new Promise(resolve=>setTimeout(resolve,350));toast(message);await openTab(active)}catch(error){toast(err(error),true)}finally{busy=false}}
+async function serverApi(path:string,init:RequestInit={}){if(!snapshot.status.running)throw new Error("먼저 Workspace 서버를 실행하세요.");const headers:Record<string,string>={"Content-Type":"application/json"};if(snapshot.settings.token)headers.Authorization=`Bearer ${snapshot.settings.token}`;const response=await fetch(`${snapshot.status.url}${path}`,{...init,headers:{...headers,...(init.headers||{})}});const body=await response.json().catch(()=>({error:response.statusText}));if(!response.ok)throw new Error(body.error||body.message||response.statusText);return body}
 
-const app = document.querySelector<HTMLElement>("#app");
-if (!app) throw new Error("Missing app root");
+async function dashboard(){const s=snapshot;document.querySelector("#view")!.innerHTML=`<div class="hero ${s.status.running?'healthy':''}"><div><span class="eyebrow">SYSTEM STATUS</span><h2>${s.status.running?'정상 실행 중':'서버가 중지되어 있습니다'}</h2><p>${h(s.status.running?s.status.url:s.status.message)}</p></div><button id="power" class="power ${s.status.running?'stop':''}">${s.status.running?'서버 종료':'서버 실행'}</button></div><div class="stats"><article><span>프로세스</span><strong>${s.status.running?'ON':'OFF'}</strong></article><article><span>관리 상태</span><strong>${s.status.managed?'Managed':'External'}</strong></article><article><span>PID</span><strong>${s.status.pid??'—'}</strong></article></div><article class="panel"><div class="list-head"><h3>연결 정보</h3><button id="copy-url" class="ghost">주소 복사</button></div><dl><dt>서버 주소</dt><dd>${h(s.status.url)}</dd><dt>데이터 저장소</dt><dd>${h(s.settings.workspaceRoot)}</dd><dt>Runtime</dt><dd>${h(s.runtimeMessage)}</dd></dl><div class="actions"><button id="restart" class="ghost" ${!s.status.managed?'disabled':''}>재시작</button></div></article>`;document.querySelector<HTMLButtonElement>("#power")!.onclick=()=>operation(s.status.running?"stop_server":"start_server",s.status.running?"서버를 종료했습니다.":"서버를 실행했습니다.");document.querySelector<HTMLButtonElement>("#restart")!.onclick=()=>operation("restart_server","서버를 재시작했습니다.");document.querySelector<HTMLButtonElement>("#copy-url")!.onclick=async()=>{await navigator.clipboard.writeText(s.status.url);toast("서버 주소를 복사했습니다.")}}
 
-app.innerHTML = `
-  <section class="shell">
-    <header class="hero">
-      <div class="brand-mark" aria-hidden="true"><span>C</span></div>
-      <div>
-        <p class="eyebrow">CODMES WORKSPACE</p>
-        <h1>Server Manager</h1>
-        <p class="lede">Keep your workspace available to every Codmes client.</p>
-      </div>
-      <div id="status-pill" class="status-pill"><i></i><span>Checking</span></div>
-    </header>
+async function tools(){const data=await serverApi("/api/plugins");const plugins:Plugin[]=data.plugins||[];const catalogs=await Promise.all(plugins.map(async plugin=>plugin.distribution==="builtin"?{plugin,consent:null as Consent|null}:{plugin,consent:await serverApi(`/api/plugins/${encodeURIComponent(plugin.id)}/mcp-tools`).catch(()=>null) as Consent|null}));const total=catalogs.reduce((sum,item)=>sum+(item.consent?.discoveredTools.length??item.plugin.toolNames.length),0);document.querySelector("#view")!.innerHTML=`<article class="panel tool-summary"><div><span class="eyebrow">WORKSPACE TOOL POLICY</span><h2>설치된 플러그인 도구</h2><p class="muted">외부 MCP 도구는 발견된 뒤 이 Workspace에서 명시적으로 승인해야 모델에 제공됩니다.</p></div><strong>${total}개</strong></article><div class="tool-groups">${catalogs.map(({plugin,consent})=>`<section class="panel plugin-tools"><div class="tool-group-head"><div><h3>${h(plugin.name)}</h3><p>${h(plugin.id)} · ${h(plugin.version)} · ${plugin.distribution==='builtin'?'Codmes 기본':'외부 플러그인'}</p></div>${plugin.distribution!=='builtin'?`<button class="ghost" data-refresh="${h(plugin.id)}">서버에서 다시 검색</button>`:''}</div>${plugin.distribution==='builtin'?`<div class="builtin-tools">${plugin.toolNames.map(name=>`<span>${h(name)}</span>`).join('')||'<span>등록된 도구 없음</span>'}</div><p class="muted">기본 도구는 Codmes 릴리스와 함께 검증되며 별도 Workspace 승인이 필요하지 않습니다.</p>`:consent?.discoveredTools.length?`<div class="tool-list">${consent.discoveredTools.map((tool:Tool)=>`<label><input type="checkbox" data-plugin="${h(plugin.id)}" data-tool="${h(tool.name)}" ${tool.approved?'checked':''}/><span><strong>${h(tool.name)}</strong><small>${h(tool.description||'설명 없음')}</small><i>${tool.group?h(tool.group)+' · ':''}${tool.readOnly?'읽기 전용':'쓰기 가능'}${tool.destructive?' · 파괴적':''}</i></span></label>`).join('')}</div><div class="actions"><button data-save="${h(plugin.id)}">승인 상태 저장</button></div>`:`<div class="empty compact">아직 MCP 도구를 발견하지 못했습니다. 서버가 실행 중인지 확인한 뒤 다시 검색하세요.</div>`}</section>`).join('')}</div>`;document.querySelectorAll<HTMLButtonElement>("[data-refresh]").forEach(button=>button.onclick=async()=>{try{await serverApi(`/api/plugins/${encodeURIComponent(button.dataset.refresh!)}/mcp-tools/refresh`,{method:"POST",body:"{}"});toast("도구 목록을 다시 가져왔습니다.");await tools()}catch(error){toast(err(error),true)}});document.querySelectorAll<HTMLButtonElement>("[data-save]").forEach(button=>button.onclick=async()=>{const pluginId=button.dataset.save!;const approvedTools=[...document.querySelectorAll<HTMLInputElement>(`[data-plugin="${CSS.escape(pluginId)}"]:checked`)].map(input=>input.dataset.tool!);try{await serverApi(`/api/plugins/${encodeURIComponent(pluginId)}/mcp-tools/consent`,{method:"POST",body:JSON.stringify({approvedTools})});toast("Workspace 도구 승인을 저장했습니다.");await tools()}catch(error){toast(err(error),true)}})}
 
-    <section class="status-card">
-      <div>
-        <p class="label">Server address</p>
-        <div class="address-row">
-          <code id="server-url">http://127.0.0.1:8787</code>
-          <button id="copy-url" class="icon-button" title="Copy server address">Copy</button>
-        </div>
-        <p id="status-message" class="muted">Checking server status…</p>
-      </div>
-      <div class="server-actions">
-        <button id="start" class="primary">Start server</button>
-        <button id="restart">Restart</button>
-        <button id="stop" class="danger">Stop</button>
-      </div>
-    </section>
+async function settings(){const s=snapshot.settings;document.querySelector("#view")!.innerHTML=`<form id="settings-form" class="panel form"><h3>서버 설정</h3><div class="managed-storage"><span>데이터 저장소</span><code>${h(s.workspaceRoot)}</code><small>Notes, Code, 대화와 플러그인 상태를 Server가 자동 관리합니다.</small></div><div class="field-row"><label>접속 범위<select id="host"><option value="127.0.0.1">이 컴퓨터만</option><option value="0.0.0.0">같은 네트워크</option></select></label><label>포트<input id="port" type="number" min="1024" max="65535" value="${s.port}"/></label></div><label>서버 토큰<div class="token-row"><input id="token" type="password" value="${h(s.token)}" autocomplete="new-password"/><button id="reveal" type="button" class="ghost">보기</button><button id="generate" type="button" class="ghost">생성</button></div><small>iPhone, iPad, Android 또는 다른 PC에서 접속할 때 필요합니다.</small></label><div class="toggles"><label><input id="start-on-launch" type="checkbox" ${s.startOnLaunch?'checked':''}/> Manager 실행 시 서버 자동 시작</label><label><input id="launch-at-login" type="checkbox" ${s.launchAtLogin?'checked':''}/> 로그인 시 Manager 자동 실행</label><label><input id="show-dock-icon" type="checkbox" ${s.showDockIcon?'checked':''}/> macOS Dock에도 아이콘 표시</label></div><div class="actions"><button type="submit">설정 저장</button></div></form>`;const host=document.querySelector<HTMLSelectElement>("#host")!;host.value=s.host;const token=document.querySelector<HTMLInputElement>("#token")!;document.querySelector<HTMLButtonElement>("#reveal")!.onclick=()=>{token.type=token.type==="password"?"text":"password"};document.querySelector<HTMLButtonElement>("#generate")!.onclick=async()=>{token.value=await invoke<string>("generate_server_token");token.type="text"};host.onchange=async()=>{if(host.value==="0.0.0.0"&&token.value.trim().length<24)token.value=await invoke<string>("generate_server_token")};document.querySelector<HTMLFormElement>("#settings-form")!.onsubmit=async event=>{event.preventDefault();const settings:ServerSettings={workspaceRoot:s.workspaceRoot,host:host.value,port:Number((document.querySelector("#port") as HTMLInputElement).value),token:token.value.trim(),startOnLaunch:(document.querySelector("#start-on-launch") as HTMLInputElement).checked,launchAtLogin:(document.querySelector("#launch-at-login") as HTMLInputElement).checked,showDockIcon:(document.querySelector("#show-dock-icon") as HTMLInputElement).checked};try{await invoke("save_server_settings",{settings});toast(snapshot.status.running?"저장했습니다. 네트워크 변경은 재시작 후 적용됩니다.":"설정을 저장했습니다.");await getSnapshot()}catch(error){toast(err(error),true)}}}
+async function logs(){document.querySelector("#view")!.innerHTML=`<article class="panel"><div class="list-head"><h3>최근 로그</h3><button id="refresh-logs" class="ghost">새로고침</button></div><div class="runtime-state ${snapshot.runtimeReady?'ready':'warning'}">${h(snapshot.runtimeMessage)}</div><pre class="logs">${h(snapshot.logs.join('\n')||'아직 로그가 없습니다.')}</pre></article>`;document.querySelector<HTMLButtonElement>("#refresh-logs")!.onclick=()=>openTab("logs")}
 
-    <section class="grid">
-      <form id="settings-form" class="panel settings-panel">
-        <div class="panel-heading">
-          <div>
-            <p class="eyebrow">CONFIGURATION</p>
-            <h2>Server settings</h2>
-          </div>
-          <button type="submit" class="secondary">Save</button>
-        </div>
-
-        <div class="managed-storage">
-          <span>Data storage</span>
-          <code id="workspace-root">Managed automatically</code>
-          <small>Codmes Server safely manages Notes, Code, conversations and plugin state.</small>
-        </div>
-
-        <div class="field-row">
-          <label>
-            <span>Access</span>
-            <select id="host">
-              <option value="127.0.0.1">This computer only</option>
-              <option value="0.0.0.0">Local network</option>
-            </select>
-          </label>
-          <label>
-            <span>Port</span>
-            <input id="port" type="number" min="1024" max="65535" />
-          </label>
-        </div>
-
-        <label>
-          <span>Connection password (server token)</span>
-          <div class="token-row">
-            <input id="token" type="password" autocomplete="new-password" />
-            <button id="reveal-token" type="button" class="icon-button">Show</button>
-            <button id="generate-token" type="button" class="icon-button">Generate</button>
-          </div>
-          <small>Not needed on this computer only. Required when iPhone, iPad, Android or another PC connects.</small>
-        </label>
-
-        <div class="toggles">
-          <label class="toggle"><input id="start-on-launch" type="checkbox" /><span>Start server when Manager opens</span></label>
-          <label class="toggle"><input id="launch-at-login" type="checkbox" /><span>Open Manager at login</span></label>
-          <label class="toggle platform-mac"><input id="show-dock-icon" type="checkbox" /><span>Show Dock icon on macOS</span></label>
-        </div>
-      </form>
-
-      <section class="panel diagnostics-panel">
-        <div class="panel-heading">
-          <div>
-            <p class="eyebrow">DIAGNOSTICS</p>
-            <h2>Recent activity</h2>
-          </div>
-          <button id="refresh" class="icon-button">Refresh</button>
-        </div>
-        <div id="runtime-state" class="runtime-state"></div>
-        <pre id="logs">No server output yet.</pre>
-      </section>
-    </section>
-
-    <footer>
-      <span>Closing this window keeps Codmes Server running in the menu bar or system tray.</span>
-      <span id="operation-message"></span>
-    </footer>
-  </section>
-`;
-
-const elements = {
-  statusPill: byId("status-pill"),
-  serverUrl: byId("server-url"),
-  statusMessage: byId("status-message"),
-  start: button("start"),
-  restart: button("restart"),
-  stop: button("stop"),
-  copyUrl: button("copy-url"),
-  form: document.querySelector<HTMLFormElement>("#settings-form")!,
-  workspaceRoot: byId("workspace-root"),
-  host: document.querySelector<HTMLSelectElement>("#host")!,
-  port: input("port"),
-  token: input("token"),
-  revealToken: button("reveal-token"),
-  generateToken: button("generate-token"),
-  startOnLaunch: input("start-on-launch"),
-  launchAtLogin: input("launch-at-login"),
-  showDockIcon: input("show-dock-icon"),
-  refresh: button("refresh"),
-  runtimeState: byId("runtime-state"),
-  logs: byId("logs"),
-  operationMessage: byId("operation-message")
-};
-
-let lastSnapshot: ManagerSnapshot | null = null;
-let busy = false;
-
-async function refresh(): Promise<void> {
-  try {
-    const snapshot = await invoke<ManagerSnapshot>("manager_snapshot");
-    lastSnapshot = snapshot;
-    render(snapshot);
-  } catch (error) {
-    showOperation(errorMessage(error), true);
-  }
-}
-
-function render(snapshot: ManagerSnapshot): void {
-  const { settings, status } = snapshot;
-  elements.statusPill.className = `status-pill ${status.running ? "running" : "stopped"}`;
-  elements.statusPill.innerHTML = `<i></i><span>${status.running ? "Running" : "Stopped"}</span>`;
-  elements.serverUrl.textContent = status.url;
-  elements.statusMessage.textContent = status.message;
-  elements.start.disabled = busy || status.running || !snapshot.runtimeReady;
-  elements.restart.disabled = busy || !status.running || !status.managed;
-  elements.stop.disabled = busy || !status.running || !status.managed;
-
-  if (document.activeElement?.closest("#settings-form") == null) {
-    elements.workspaceRoot.textContent = settings.workspaceRoot;
-    elements.host.value = settings.host;
-    elements.port.value = String(settings.port);
-    elements.token.value = settings.token;
-    elements.startOnLaunch.checked = settings.startOnLaunch;
-    elements.launchAtLogin.checked = settings.launchAtLogin;
-    elements.showDockIcon.checked = settings.showDockIcon;
-  }
-
-  elements.runtimeState.className = `runtime-state ${snapshot.runtimeReady ? "ready" : "warning"}`;
-  elements.runtimeState.textContent = snapshot.runtimeMessage;
-  elements.logs.textContent = snapshot.logs.length ? snapshot.logs.join("\n") : "No server output yet.";
-  elements.logs.scrollTop = elements.logs.scrollHeight;
-}
-
-async function runOperation(command: string, success: string): Promise<void> {
-  if (busy) return;
-  busy = true;
-  if (lastSnapshot) render(lastSnapshot);
-  showOperation("Working…");
-  try {
-    await invoke(command);
-    showOperation(success);
-  } catch (error) {
-    showOperation(errorMessage(error), true);
-  } finally {
-    busy = false;
-    await refresh();
-  }
-}
-
-elements.start.addEventListener("click", () => runOperation("start_server", "Server started."));
-elements.stop.addEventListener("click", () => runOperation("stop_server", "Server stopped."));
-elements.restart.addEventListener("click", () => runOperation("restart_server", "Server restarted."));
-elements.refresh.addEventListener("click", refresh);
-
-elements.copyUrl.addEventListener("click", async () => {
-  const value = lastSnapshot?.status.url ?? elements.serverUrl.textContent ?? "";
-  try {
-    await navigator.clipboard.writeText(value);
-    showOperation("Server address copied.");
-  } catch {
-    showOperation("Select the address and copy it manually.", true);
-  }
-});
-
-elements.revealToken.addEventListener("click", () => {
-  const reveal = elements.token.type === "password";
-  elements.token.type = reveal ? "text" : "password";
-  elements.revealToken.textContent = reveal ? "Hide" : "Show";
-});
-
-elements.generateToken.addEventListener("click", async () => {
-  elements.token.value = await invoke<string>("generate_server_token");
-  elements.token.type = "text";
-  elements.revealToken.textContent = "Hide";
-});
-
-elements.host.addEventListener("change", async () => {
-  if (elements.host.value === "0.0.0.0" && elements.token.value.trim().length < 24) {
-    elements.token.value = await invoke<string>("generate_server_token");
-    showOperation("A secure connection password was generated for other devices.");
-  }
-});
-
-elements.form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (busy) return;
-  busy = true;
-  showOperation("Saving…");
-  const settings: ServerSettings = {
-    workspaceRoot: lastSnapshot?.settings.workspaceRoot ?? "",
-    host: elements.host.value,
-    port: Number(elements.port.value),
-    token: elements.token.value.trim(),
-    startOnLaunch: elements.startOnLaunch.checked,
-    launchAtLogin: elements.launchAtLogin.checked,
-    showDockIcon: elements.showDockIcon.checked
-  };
-  try {
-    await invoke("save_server_settings", { settings });
-    showOperation(lastSnapshot?.status.running ? "Saved. Restart the server to apply changes." : "Settings saved.");
-  } catch (error) {
-    showOperation(errorMessage(error), true);
-  } finally {
-    busy = false;
-    await refresh();
-  }
-});
-
-function byId(id: string): HTMLElement {
-  const element = document.getElementById(id);
-  if (!element) throw new Error(`Missing #${id}`);
-  return element;
-}
-
-function button(id: string): HTMLButtonElement {
-  return byId(id) as HTMLButtonElement;
-}
-
-function input(id: string): HTMLInputElement {
-  return byId(id) as HTMLInputElement;
-}
-
-function showOperation(message: string, isError = false): void {
-  elements.operationMessage.textContent = message;
-  elements.operationMessage.className = isError ? "error" : "";
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-void refresh();
-window.setInterval(() => void refresh(), 2_000);
+shell();void openTab("dashboard");window.setInterval(()=>getSnapshot().catch(()=>{}),3000);

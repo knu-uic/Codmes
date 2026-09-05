@@ -33,6 +33,7 @@ struct LiveResult: Codable, Sendable {
     let sessionId: String?
     let runtimeSessionId: String?
     let source: String?
+    let reply: String?
 }
 
 struct LiveCommand<Params: Encodable>: Encodable {
@@ -62,6 +63,7 @@ struct PromptSubmitParams: Encodable {
     let message: String
     let contextRequest: ContextRequest?
     let surface: String?
+    let route: String?
 }
 
 struct ApprovalRespondParams: Encodable {
@@ -143,11 +145,12 @@ actor LiveChatClient {
         )
     }
 
-    func submit(sessionId: String, message: String, contextRequest: ContextRequest? = nil, surface: String? = nil) async throws {
-        _ = try await send(
+    func submit(sessionId: String, message: String, contextRequest: ContextRequest? = nil, surface: String? = nil, route: String? = nil) async throws -> String? {
+        let response = try await send(
             command: "prompt.submit",
-            params: PromptSubmitParams(sessionId: sessionId, message: message, contextRequest: contextRequest, surface: surface)
+            params: PromptSubmitParams(sessionId: sessionId, message: message, contextRequest: contextRequest, surface: surface, route: route)
         )
+        return response.result?.reply
     }
 
     func respondToApproval(approvalId: String, approved: Bool) async throws {

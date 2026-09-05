@@ -6,12 +6,20 @@ import os from "node:os";
 import path from "node:path";
 import {
   approveMemoryCandidate,
+  MEMORY_SEARCH_DEFINITION,
   listMemoryCandidates,
   readMemoryById,
   recordDeletedMemoryTombstone,
   searchMemory,
   updateMemoryFromSession
 } from "./memory-retrieval.mjs";
+
+test("Memory Retrieval: tool contract excludes current external-service state", () => {
+  assert.match(
+    MEMORY_SEARCH_DEFINITION.function.description,
+    /Never use this for current external-service state/
+  );
+});
 
 test("Memory Retrieval: search across memory pools", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-memory-retrieval-"));

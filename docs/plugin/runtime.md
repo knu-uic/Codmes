@@ -55,6 +55,7 @@ bundled plugin 또는 설치된 community package
 - `GET /api/plugins/:id/view-document`: declarative view 문서 조회
 - `/api/plugins/:id/collections/...`: Workspace collection 조회·변경
 - `/api/plugins/:id/auth/...`: plugin service 로그인 상태·로그인·로그아웃
+- `/api/plugins/:id/mcp-tools/...`: MCP catalog 발견과 Workspace별 승인 스냅샷 관리
 - `/api/marketplace/plugins/...`: community plugin 설치·업데이트
 - `DELETE /api/plugins/:id`: community plugin 제거
 

@@ -37,6 +37,7 @@ export function parseConfigYaml(content) {
       inDeniedCommands = false;
       inRequireApproval = false;
       inMcpEnv = false;
+      inMcpSurfaces = false;
       if (currentCustomProvider) {
         result.custom_providers.push(currentCustomProvider);
         currentCustomProvider = null;

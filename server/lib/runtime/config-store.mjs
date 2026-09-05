@@ -394,9 +394,12 @@ export async function listRuntimeModels(workspaceRoot) {
 
 export async function setDefaultModel(workspaceRoot, provider, model) {
   const config = await readRuntimeConfig(workspaceRoot);
+  const sameProvider = config.defaultModel?.provider === provider;
   const next = {
     provider,
     model,
+    baseUrl: sameProvider ? config.defaultModel?.baseUrl || null : null,
+    apiMode: sameProvider ? config.defaultModel?.apiMode || null : null,
     id: `${provider}:${model}`,
     updatedAt: new Date().toISOString()
   };

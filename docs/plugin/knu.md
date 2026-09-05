@@ -3,13 +3,17 @@
 KNU는 Codmes의 선택형 plugin PoC다. 한 번 설치하면 다음 두 기능이 함께 등록된다.
 
 - **KNU Surface**: 공지, LMS, 포털, 설정을 Codmes의 Apple/Android/Windows native UI로 표시
-- **KNU MCP**: AI가 공주대 공지를 검색하고 상세 근거를 읽는 도구
+- **KNU MCP**: AI가 공지 근거와 로그인 사용자의 포털·LMS 데이터를 읽는 도구
 
-0.3.2부터 package의 `tools.json`이 Scan, Deep, 원문 조회 도구의 이름·입력
-schema·승인 정책을 선언한다. 실제 검색과 상세 조회는 계속 KNU MCP 서버가 실행하며
-Codmes Tool Registry가 선언과 MCP `tools/list` 결과를 연결한다. 현재 Marketplace
-배포 버전은 `0.4.0`이며 `macos`, `ios`, `android`, `windows`와 `phone`, `tablet`,
-`desktop` 호환성을 선언한다.
+KNU 도구의 이름·설명·입력 schema·계층 그룹은 KNU MCP 서버의 `tools/list`가
+직접 제공한다. Codmes Tool Registry는 이 실시간 catalog를 등록하므로 KNU 서버에
+도구를 추가할 때 plugin package에 같은 정의를 다시 복사할 필요가 없다. Plugin은
+Surface, MCP 주소와 credential, Surface 범위 및 승인 정책만 소유한다. Marketplace
+package는 `macos`, `ios`, `android`, `windows`와 `phone`, `tablet`, `desktop`
+호환성을 선언한다.
+발견된 MCP 도구는 Workspace의 Plugin 설정에서 승인한 것만 AI에게 노출된다.
+KNU 서버가 새 도구를 추가하면 plugin 업데이트는 필요 없지만 사용자의 신규
+승인 전까지는 대기 상태로 남는다.
 
 KNU 웹사이트를 WebView나 iframe으로 여는 구조가 아니다. KNU 서버는 공지·포털·LMS
 도메인 데이터만 JSON으로 제공하고, KNU plugin package의 `surface.json`이 화면
@@ -439,8 +443,8 @@ LMS 오류가 따로 표시된다.
 
 KNU 화면 표시와 포털 로그인에는 LLM이 필요하지 않다. AI의 KNU 공지 검색은
 KNU PostgreSQL에 수집·인덱싱된 공지와 KNU 서버의 embedding/reranker 설정이
-추가로 필요하다. 또한 KNU MCP는 현재 KNU Surface에서만 노출되고 호출 전 사용자
-승인을 요구한다.
+추가로 필요하다. KNU MCP는 현재 KNU Surface 안에서 계층형 discovery를 거친 뒤
+선택된 읽기 도구만 노출된다. 읽기 전용 조회에는 별도 승인을 요구하지 않는다.
 
 ## 선택: Docker로 DB 실행
 
@@ -524,9 +528,8 @@ KNU Surface가 선택된 대화에서 다음 흐름이 일어난다.
 
 ```text
 사용자 질문
-  → Codmes AI runtime이 KNU MCP tool schema를 model에 제공
-  → model이 질문 의미에 따라 knu_list_notices 또는 knu_search_notice_details 결정
-  → Codmes approval inbox에서 사용자 승인
+  → model이 tool_discovery로 knu → knu.notices를 단계적으로 선택
+  → 해당 그룹의 schema만 제공받아 knu_list_notices 또는 knu_search_notice_details 결정
   → Codmes 서버가 포털 로그인 session token을 Bearer로 붙여 KNU /api/mcp 호출
   → KNU MCP가 구조화 필터 또는 공지 DB 검색·rerank 수행
   ← 제목, 날짜, 본문 근거, 원문 URL
@@ -547,7 +550,7 @@ Chat/Notes/Code Surface에서는 KNU 도구가 노출되지 않는다.
 | Codmes 서버 | plugin 설치, raw data 요청, Surface document 조립·검증, AI runtime, MCP 승인·호출 | KNU 사용자 session token, 설치된 plugin/UI manifest | Codmes Workspace의 `.codmes/config/auth.json`, `.codmes/plugins/` |
 | KNU FastAPI 서버 | 포털 로그인 검증, session token 발급·폐기, domain data API, 동기화 시작 | 활성 session id, 실행 중 비밀번호와 임시 browser session | session은 Redis AOF, 비밀번호는 동기화 전달 후 폐기 |
 | KNU PostgreSQL | KNU 서비스의 영속 데이터 저장 | 공지, 학적, 시간표, 성적, LMS 과목·과제·공지·강의 | KNU 서버가 사용하는 PostgreSQL |
-| KNU MCP 서버 | AI용 공지 검색·상세 근거 제공 | 별도 사용자 비밀번호를 저장하지 않음 | KNU FastAPI 안에서 공지 DB를 조회 |
+| KNU MCP 서버 | AI용 공지 검색과 로그인 사용자의 포털·LMS 조회 | 별도 사용자 비밀번호를 저장하지 않음 | KNU FastAPI 안에서 공지·학적·LMS DB를 조회 |
 | 공주대 포털/LMS | 실제 학교 계정 인증과 원천 데이터 제공 | 학교 시스템 정책에 따름 | Codmes 관리 범위 밖 |
 
 KNU FastAPI와 KNU MCP는 현재 같은 프로세스와 포트 `8000`을 사용하지만 역할은
@@ -561,11 +564,17 @@ KNU FastAPI와 KNU MCP는 현재 같은 프로세스와 포트 `8000`을 사용�
 - `knu_list_notices`: 상태·기간·대상·카테고리로 공지 목록과 개수를 조회
 - `knu_search_notice_details`: 구체적인 날짜·자격·절차·첨부 근거를 검색
 - `knu_get_notice_detail`: 검색 결과로 받은 URL의 전체 공지 본문 조회
+- `knu_get_portal_academic_data`: 로그인 사용자의 학적·시간표·성적·졸업학점 중 요청한 항목 조회
+- `knu_list_lms_tasks`: 로그인 사용자의 LMS 작업을 상태·과목으로 조회
+- `knu_list_lms_courses`: 로그인 사용자의 LMS 과목 조회
+- `knu_get_student_profile`: 로그인 계정의 학번·학과·학년 조회
 
-AI가 질문할 때 무조건 MCP를 호출하는 것은 아니다. Codmes는 KNU Surface에서만
-도구 schema를 model에 제공하고, 실제 호출 여부와 인자는 model이 질문 내용에 따라
-결정한다. 호출에는 기본적으로 사용자 승인이 필요하다. KNU MCP는 상위 AI가 정한
-검색어와 category를 바로 검색하며 내부에서 별도의 LLM을 다시 호출하지 않는다.
+AI가 질문할 때 무조건 MCP를 호출하거나 현재 메뉴의 도구를 미리 실행하지 않는다.
+Codmes는 먼저 Surface 그룹만 보여주고 `knu`를 선택하면 `notices`, `lms`, `portal`,
+`account` 하위 그룹을 보여준다. 모델이 leaf 그룹을 고른 뒤에만 해당 schema를 현재
+turn에 제공한다. 읽기 전용 KNU 조회는 별도 승인 없이 실행되며, 사용자 session
+token은 모델에 노출되지 않는다. KNU MCP는 상위 AI가 정한 구조화 인자를 검증·실행할
+뿐 내부에서 별도의 LLM을 다시 호출하지 않는다.
 
 ### 질문 판단과 MCP 인자 예시
 
@@ -604,9 +613,10 @@ Scan 도구를 선택한다.
 ```text
 Codmes AI
 ├─ MCP 호출 필요 여부 판단
+├─ KNU 하위 그룹(notices / lms / portal / account) 선택
 ├─ Scan / Deep / Hybrid 선택
 ├─ 상태·기간·대상 또는 상세 검색어 결정
-└─ 사용자 승인 후 도구 호출
+└─ 선택한 읽기 도구 호출
 
 KNU MCP
 ├─ Scan: SQL 메타데이터 필터·정렬·총 개수 계산

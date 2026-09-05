@@ -21,6 +21,8 @@ import {
   listRuntimeViews
 } from "./plugin-runtime.mjs";
 import { ToolRegistry } from "./tool-registry.mjs";
+import { toolCatalogPromptLines } from "./tool-discovery.mjs";
+import { reconcilePluginMcpTools } from "./mcp-tool-consent.mjs";
 
 const OPENAI_COMPATIBLE_DEFAULTS = {
   "openai-api": "https://api.openai.com/v1",
@@ -36,6 +38,12 @@ const OPENAI_COMPATIBLE_DEFAULTS = {
 const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token";
 const CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
+const EXECUTION_PROFILE_BUDGETS = Object.freeze({
+  standard: 8,
+  "cross-surface": 16,
+  code: 32,
+  "code-deep": 64
+});
 
 export class OpenAICompatibleRuntime extends EventEmitter {
   constructor({ workspaceRoot, env = process.env, fetchImpl = globalThis.fetch, mcpClientFactory = null } = {}) {
@@ -198,7 +206,9 @@ export class OpenAICompatibleRuntime extends EventEmitter {
           reasoning: result.reasoning,
           provider: selection.provider.id,
           model: selection.model,
-          toolRounds: result.toolRounds
+          toolRounds: result.toolRounds,
+          executionProfile: result.executionProfile,
+          maxToolRounds: result.maxToolRounds
         };
       } catch (error) {
         lastError = error;
@@ -233,24 +243,73 @@ export class OpenAICompatibleRuntime extends EventEmitter {
     }
   }
 
-  async runChatLoop(selection, messages, params) {
+  async runChatLoop(selection, messages, params, { preserveDiscoveredTools = false } = {}) {
     let reply = "";
     let reasoning = "";
-    let toolRounds = 0;
+    let toolRounds = clampNumber(params.toolRoundsUsed, 0, 64, 0);
+    const allowedFigureAssets = new Map();
+    const capabilityFamilies = new Set(params.capabilityFamilies || []);
+    let executionProfile = normalizeExecutionProfile(params.executionProfile);
+    let lastToolSignature = String(params.lastToolSignature || "");
+    let identicalToolCallStreak = clampNumber(params.identicalToolCallStreak, 0, 3, 0);
     let activeParams = {
       ...params,
-      expandedToolsForThisTurn: []
+      expandedToolsForThisTurn: preserveDiscoveredTools
+        ? [...(params.expandedToolsForThisTurn || [])]
+        : [],
+      discoveryPathsForThisTurn: preserveDiscoveredTools
+        ? [...(params.discoveryPathsForThisTurn || initialDiscoveryPaths(params))]
+        : initialDiscoveryPaths(params)
     };
-    const maxToolRounds = clampNumber(params.maxToolRounds, 0, 6, 3);
+    let maxToolRounds = Math.max(
+      clampNumber(params.maxToolRounds, 0, 64, EXECUTION_PROFILE_BUDGETS.standard),
+      EXECUTION_PROFILE_BUDGETS[executionProfile]
+    );
 
-    for (let round = 0; round <= maxToolRounds; round += 1) {
+    for (;;) {
       const result = await this.requestChatCompletion(selection, messages, activeParams);
       reply += result.text;
       if (result.reasoning) reasoning += result.reasoning;
       if (!result.toolCalls.length) {
-        return { reply, reasoning, toolRounds };
+        return {
+          reply: renderSelectedFigureTokens(reply, allowedFigureAssets),
+          reasoning,
+          toolRounds,
+          executionProfile,
+          maxToolRounds
+        };
       }
 
+      const promoted = promoteExecutionProfile(executionProfile, capabilityFamilies, result.toolCalls);
+      if (promoted !== executionProfile) {
+        executionProfile = promoted;
+        maxToolRounds = Math.max(maxToolRounds, EXECUTION_PROFILE_BUDGETS[executionProfile]);
+        activeParams = { ...activeParams, executionProfile };
+        this.emit("event", {
+          type: "execution.profile.changed",
+          sessionId: params.sessionId,
+          taskId: params.taskId,
+          executionProfile,
+          maxToolRounds,
+          capabilityFamilies: [...capabilityFamilies],
+          createdAt: new Date().toISOString()
+        });
+      }
+      if (toolRounds >= maxToolRounds) {
+        throw Object.assign(new Error(`Tool call loop exceeded the '${executionProfile}' execution budget of ${maxToolRounds} rounds.`), { status: 502 });
+      }
+      for (const call of result.toolCalls) {
+        const signature = toolCallSignature(call);
+        identicalToolCallStreak = signature === lastToolSignature ? identicalToolCallStreak + 1 : 1;
+        lastToolSignature = signature;
+        if (identicalToolCallStreak >= 3) {
+          throw Object.assign(new Error(`Stopped after the model repeated tool '${call.name}' with identical arguments three times.`), {
+            status: 502,
+            repeatedToolCall: true,
+            toolName: call.name
+          });
+        }
+      }
       toolRounds += 1;
       messages.push({
         role: "assistant",
@@ -266,6 +325,19 @@ export class OpenAICompatibleRuntime extends EventEmitter {
       });
 
       for (const call of result.toolCalls) {
+        if (isCodeWorkflowTool(call.name) && !activeParams.currentCodeTaskId && typeof activeParams.ensureCodeTask === "function") {
+          const codeTask = await activeParams.ensureCodeTask({
+            toolName: call.name,
+            arguments: parseToolArguments(call.arguments)
+          });
+          if (codeTask?.taskId) {
+            activeParams = {
+              ...activeParams,
+              currentCodeTaskId: codeTask.taskId,
+              currentCodeScopePath: codeTask.scopePath || activeParams.currentCodeScopePath || "Code"
+            };
+          }
+        }
         let toolResult;
         try {
           toolResult = await this.executeToolCall(call, activeParams);
@@ -283,14 +355,26 @@ export class OpenAICompatibleRuntime extends EventEmitter {
               provider: selection.provider.id,
               model: selection.model,
               reasoningEffort: params.reasoningEffort,
-              maxToolRounds: Math.max(0, maxToolRounds - round)
+              maxToolRounds,
+              toolRoundsUsed: toolRounds,
+              executionProfile,
+              capabilityFamilies: [...capabilityFamilies],
+              lastToolSignature,
+              identicalToolCallStreak
             };
           }
           throw error;
         }
         if (call.name === "tool_discovery") {
           const expansion = expandToolsForTurn(activeParams, toolResult);
-          activeParams = expansion.params;
+          const revealedPaths = (toolResult.groups || []).map((group) => group.path).filter(Boolean);
+          activeParams = {
+            ...expansion.params,
+            discoveryPathsForThisTurn: [
+              ...(activeParams.discoveryPathsForThisTurn || []),
+              ...revealedPaths
+            ]
+          };
           if (expansion.applied.length) {
             this.emit("event", {
               type: "tool.expansion.applied",
@@ -309,21 +393,27 @@ export class OpenAICompatibleRuntime extends EventEmitter {
               taskId: params.taskId,
               surface: params.surface || "chat",
               blockedTools: expansion.blocked,
-              reason: "Tool discovery suggested tools that are disabled by surface mode or require approval.",
+              reason: "Tool discovery suggested tools that are disabled by the current surface mode.",
               createdAt: new Date().toISOString()
             });
           }
+        }
+        if (call.name === "run_checks" && toolResult?.ok === false && executionProfile !== "code-deep") {
+          executionProfile = "code-deep";
+          maxToolRounds = Math.max(maxToolRounds, EXECUTION_PROFILE_BUDGETS[executionProfile]);
+          activeParams = { ...activeParams, executionProfile };
+        }
+        for (const image of collectRelatedImages(toolResult)) {
+          allowedFigureAssets.set(String(image.asset_id), image);
         }
         messages.push({
           role: "tool",
           tool_call_id: call.id,
           name: call.name,
-          content: JSON.stringify(toolResult)
+          content: JSON.stringify(redactRelatedImageUrlsForModel(toolResult))
         });
       }
     }
-
-    throw Object.assign(new Error("Tool call loop exceeded the maximum number of rounds."), { status: 502 });
   }
 
   async requestChatCompletion(selection, messages, params) {
@@ -411,15 +501,43 @@ export class OpenAICompatibleRuntime extends EventEmitter {
           try {
             const client = await this.getOrStartMcpClient(mcp);
             const mcpTools = await client.listTools();
+            const plugin = installedPlugins.find((item) => item.id === mcp.pluginId);
+            const consent = plugin
+              ? await reconcilePluginMcpTools(this.workspaceRoot, {
+                pluginId: plugin.id,
+                serverName: mcp.name,
+                tools: mcpTools
+              })
+              : null;
+            const approvedMcpTools = new Set(consent?.approvedTools || []);
             for (const tool of mcpTools) {
-              const plugin = installedPlugins.find((item) => item.id === mcp.pluginId);
+              if (plugin && !approvedMcpTools.has(tool.name)) {
+                this.emit("event", {
+                  type: "mcp.tool.pending_consent",
+                  sessionId: params.sessionId,
+                  taskId: params.taskId,
+                  serverName: mcp.name,
+                  toolName: tool.name,
+                  pluginId: plugin.id,
+                  reason: "workspace_approval_required"
+                });
+                continue;
+              }
               const declared = plugin?.tools?.find(
                 (item) => item.provider.id === mcp.name && item.provider.tool === tool.name
               );
-              const publicName = declared?.name || this.publicMcpToolName(mcp.name, tool.name);
+              const catalog = mcpToolCatalogMetadata(tool);
+              const advertisedName = catalog?.publicName;
+              const metadataName = isSafeToolName(advertisedName) && !toolRegistry.get(advertisedName)
+                ? advertisedName
+                : null;
+              const publicName = declared?.name || metadataName || this.publicMcpToolName(mcp.name, tool.name);
+              const catalogGroup = allowedMcpCatalogGroup(catalog?.group, mcp, plugin);
               toolRegistry.register({
                 name: publicName,
-                description: declared?.description || tool.description || `Call ${tool.name} on ${mcp.name}.`,
+                description: catalog
+                  ? tool.description || declared?.description || `Call ${tool.name} on ${mcp.name}.`
+                  : declared?.description || tool.description || `Call ${tool.name} on ${mcp.name}.`,
                 inputSchema: tool.inputSchema || declared?.inputSchema || { type: "object", properties: {} },
                 provider: {
                   type: "mcp",
@@ -427,9 +545,12 @@ export class OpenAICompatibleRuntime extends EventEmitter {
                   tool: tool.name
                 },
                 surfaces: declared?.surfaces || mcp.surfaces || [],
-                group: declared?.group || `mcp:${mcp.name}`,
+                group: catalogGroup || declared?.group || `mcp:${mcp.name}`,
+                groupDescriptions: catalogGroup
+                  ? safeMcpGroupDescriptions(catalog?.groupDescriptions, catalogGroup)
+                  : declared?.groupDescriptions,
                 requiresApproval: declared?.requiresApproval === true || mcp.requiresApproval !== false,
-                readOnly: declared?.readOnly === true,
+                readOnly: tool.annotations?.readOnlyHint === true || declared?.readOnly === true,
                 pluginId: plugin?.id || null
               });
               this.mcpToolNameMap.set(publicName, {
@@ -459,13 +580,19 @@ export class OpenAICompatibleRuntime extends EventEmitter {
         return false;
       }
       const mappedMcpTool = this.mcpToolNameMap.get(name);
+      const descriptor = toolRegistry.get(name);
       if (mappedMcpTool) {
         const mcp = config.mcpServers?.find((server) => server.name === mappedMcpTool.serverName);
-        if (mcp?.transport === "streamable_http" && mcp.surfaces?.includes(params.surface || "chat")) return true;
+        if (mcp?.transport === "streamable_http" && mcp.surfaces?.includes(params.surface || "chat")) {
+          const hierarchicalPluginTool = descriptor?.pluginId && descriptor.group.includes(".");
+          return hierarchicalPluginTool ? enabledTools.has(name) || expandedTools.has(name) : true;
+        }
       }
-      const descriptor = toolRegistry.get(name);
       if (descriptor?.provider.type === "plugin"
-          && (!descriptor.surfaces.length || descriptor.surfaces.includes(params.surface || "chat"))) return true;
+          && (!descriptor.surfaces.length || descriptor.surfaces.includes(params.surface || "chat"))) {
+        const hierarchicalPluginTool = descriptor.pluginId && descriptor.group.includes(".");
+        return hierarchicalPluginTool ? enabledTools.has(name) || expandedTools.has(name) : true;
+      }
       if (coreRecallTools.has(name)) return true;
       if (modeDisabledTools.has(name)) return false;
       if (params.surface) {
@@ -730,7 +857,10 @@ export class OpenAICompatibleRuntime extends EventEmitter {
     const requiresApprovalList = new Set(effectiveMode.requiresApproval || []);
     const accessMode = params.accessMode || this.sessions.get(params.sessionId)?.accessMode || "confirm";
     const pluginApprovalRequired = mappedPlugin?.requiresApproval && accessMode !== "full";
-    const modeApprovalRequired = !mappedPlugin && requiresApprovalList.has(call.name);
+    const modeApprovalRequired = !mappedPlugin && (
+      requiresApprovalList.has(call.name)
+      || ["apply_patch", "run_checks", "run_git_command"].includes(call.name)
+    );
     if (params.surface && (modeApprovalRequired || pluginApprovalRequired) && params.approved !== true && !mappedMcp) {
       let preview = null;
       if (mappedPlugin) {
@@ -743,9 +873,11 @@ export class OpenAICompatibleRuntime extends EventEmitter {
         sessionId: params.sessionId,
         taskId: params.taskId,
         surface: params.surface || null,
+        route: params.route || null,
         folderId: params.folderId || null,
         projectId: params.projectId || null,
         expandedToolsForThisTurn: params.expandedToolsForThisTurn || [],
+        discoveryPathsForThisTurn: params.discoveryPathsForThisTurn || [""],
         currentCodeTaskId: params.currentCodeTaskId || null,
         currentCodeScopePath: params.currentCodeScopePath || null,
         toolCall: call,
@@ -825,9 +957,11 @@ export class OpenAICompatibleRuntime extends EventEmitter {
           sessionId: params.sessionId,
           taskId: params.taskId,
           surface: params.surface || null,
+          route: params.route || null,
           folderId: params.folderId || null,
           projectId: params.projectId || null,
           expandedToolsForThisTurn: params.expandedToolsForThisTurn || [],
+          discoveryPathsForThisTurn: params.discoveryPathsForThisTurn || [""],
           currentCodeTaskId: params.currentCodeTaskId || null,
           currentCodeScopePath: params.currentCodeScopePath || null,
           toolCall: call,
@@ -898,9 +1032,11 @@ export class OpenAICompatibleRuntime extends EventEmitter {
             sessionId: params.sessionId,
             taskId: params.taskId,
             surface: params.surface || null,
+            route: params.route || null,
             folderId: params.folderId || null,
             projectId: params.projectId || null,
             expandedToolsForThisTurn: params.expandedToolsForThisTurn || [],
+            discoveryPathsForThisTurn: params.discoveryPathsForThisTurn || [""],
             currentCodeTaskId: params.currentCodeTaskId || null,
             currentCodeScopePath: params.currentCodeScopePath || null,
             toolCall: call,
@@ -936,12 +1072,13 @@ export class OpenAICompatibleRuntime extends EventEmitter {
         const structuredContent = mcpResult.structuredContent
           ?? mcpResult.structured_content
           ?? null;
-        const output = structuredContent === null
+        let output = structuredContent === null
           ? (mcpResult.content || mcpResult)
           : {
               content: mcpResult.content || [],
               structuredContent
             };
+        output = normalizeRelatedImageUrls(output, mcp.url);
 
         this.emit("event", {
           type: "tool.complete",
@@ -1009,13 +1146,17 @@ export class OpenAICompatibleRuntime extends EventEmitter {
           surface: params.surface || "chat",
           reason: args.reason || "",
           desiredCapability: args.desiredCapability || "",
+          path: args.path || "",
           createdAt: new Date().toISOString()
         });
         result = await executeToolDiscovery(this.workspaceRoot, params.surface || "chat", {
           ...args,
           taskId: params.taskId
         }, {
-          disabledTools: effectiveMode.disabledTools || []
+          disabledTools: effectiveMode.disabledTools || [],
+          route: params.route || "",
+          allowedPaths: params.discoveryPathsForThisTurn || [""],
+          runtimeTools: this.toolRegistry.list({ provider: "mcp" })
         });
         this.emit("event", {
           type: "tool.discovery.result",
@@ -1024,6 +1165,10 @@ export class OpenAICompatibleRuntime extends EventEmitter {
           surface: params.surface || "chat",
           expandedTools: result.expandedToolsForThisTurn || [],
           blockedTools: result.blockedTools || [],
+          path: result.path || "",
+          navigationError: result.navigationError || "",
+          requestedPathDeferred: result.requestedPathDeferred || "",
+          nextSuggestedPath: result.nextSuggestedPath || "",
           reason: result.reason || "",
           createdAt: new Date().toISOString()
         });
@@ -1113,27 +1258,42 @@ export class OpenAICompatibleRuntime extends EventEmitter {
       sessionId: pendingState.sessionId || params.sessionId,
       taskId: pendingState.taskId || params.taskId,
       surface: pendingState.surface || params.surface,
+      route: pendingState.route || params.route,
       folderId: pendingState.folderId || params.folderId,
       projectId: pendingState.projectId || params.projectId,
       expandedToolsForThisTurn: pendingState.expandedToolsForThisTurn || params.expandedToolsForThisTurn || [],
+      discoveryPathsForThisTurn: pendingState.discoveryPathsForThisTurn || params.discoveryPathsForThisTurn || [""],
       codeRuntime: params.codeRuntime,
       currentCodeTaskId: pendingState.currentCodeTaskId || params.currentCodeTaskId,
       currentCodeScopePath: pendingState.currentCodeScopePath || params.currentCodeScopePath,
       approved: true
     });
     const continuation = pendingState.continuation;
-    if (result?.ok !== false && continuation?.messages?.length) {
+    if (continuation?.messages?.length) {
+      const resumedExecutionProfile = pendingState.toolCall?.name === "run_checks" && result?.ok === false
+        ? "code-deep"
+        : normalizeExecutionProfile(continuation.executionProfile);
       const continuationParams = {
         sessionId: pendingState.sessionId || params.sessionId,
         taskId: pendingState.taskId || params.taskId,
         surface: pendingState.surface || params.surface,
+        route: pendingState.route || params.route,
         folderId: pendingState.folderId || params.folderId,
         projectId: pendingState.projectId || params.projectId,
         expandedToolsForThisTurn: pendingState.expandedToolsForThisTurn || params.expandedToolsForThisTurn || [],
+        discoveryPathsForThisTurn: pendingState.discoveryPathsForThisTurn || params.discoveryPathsForThisTurn || [""],
         reasoningEffort: continuation.reasoningEffort,
         provider: continuation.provider,
         model: continuation.model,
-        maxToolRounds: continuation.maxToolRounds
+        maxToolRounds: Math.max(
+          clampNumber(continuation.maxToolRounds, 0, 64, EXECUTION_PROFILE_BUDGETS.standard),
+          EXECUTION_PROFILE_BUDGETS[resumedExecutionProfile]
+        ),
+        toolRoundsUsed: continuation.toolRoundsUsed,
+        executionProfile: resumedExecutionProfile,
+        capabilityFamilies: continuation.capabilityFamilies || [],
+        lastToolSignature: continuation.lastToolSignature || "",
+        identicalToolCallStreak: continuation.identicalToolCallStreak || 0
       };
       const selection = await this.resolveModelSelection(continuationParams);
       const messages = [
@@ -1142,10 +1302,16 @@ export class OpenAICompatibleRuntime extends EventEmitter {
           role: "tool",
           tool_call_id: pendingState.toolCall.id,
           name: pendingState.toolCall.name,
-          content: JSON.stringify(result)
+          content: JSON.stringify(redactRelatedImageUrlsForModel(result))
         }
       ];
-      const completed = await this.runChatLoop(selection, messages, continuationParams);
+      const completed = await this.runChatLoop(selection, messages, continuationParams, {
+        preserveDiscoveredTools: true
+      });
+      completed.reply = renderSelectedFigureTokens(
+        completed.reply,
+        new Map(collectRelatedImages(result).map((image) => [String(image.asset_id), image]))
+      );
       this.emit("event", {
         type: "turn.complete",
         sessionId: continuationParams.sessionId,
@@ -1159,7 +1325,9 @@ export class OpenAICompatibleRuntime extends EventEmitter {
         result,
         reply: completed.reply,
         reasoning: completed.reasoning,
-        toolRounds: completed.toolRounds
+        toolRounds: completed.toolRounds,
+        executionProfile: completed.executionProfile,
+        maxToolRounds: completed.maxToolRounds
       };
     }
     return {
@@ -1265,8 +1433,13 @@ export class OpenAICompatibleRuntime extends EventEmitter {
       "You are Codmes's built-in assistant.",
       "Answer in the same language as the user's latest message.",
       "Use provided workspace context when relevant, but do not expose it as raw metadata.",
+      ...relatedImagePolicyLines(),
       ...surfacePolicyLines(surface?.id || params.surface || "chat"),
-      ...recallToolPolicyLines()
+      ...recallToolPolicyLines(),
+      ...(await toolCatalogPromptLines(this.workspaceRoot, {
+        surface: surface?.id || params.surface || "chat",
+        route: params.route || ""
+      }))
     ];
     if (surface?.prompt) {
       parts.push(`Surface prompt: ${surface.prompt}`);
@@ -1542,6 +1715,7 @@ function buildSystemMessage(params) {
     "You are Codmes's built-in assistant.",
     "Answer in the same language as the user's latest message.",
     "Use provided workspace context when relevant, but do not expose it as raw metadata.",
+    ...relatedImagePolicyLines(),
     ...recallToolPolicyLines()
   ];
 
@@ -2006,6 +2180,73 @@ function normalizeToolCalls(toolCalls) {
     .filter((call) => call.name);
 }
 
+function parseToolArguments(value) {
+  if (value && typeof value === "object") return value;
+  try {
+    return JSON.parse(String(value || "{}"));
+  } catch {
+    return {};
+  }
+}
+
+function toolCallSignature(call = {}) {
+  return `${String(call.name || "").trim().toLowerCase()}:${stableJson(parseToolArguments(call.arguments))}`;
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function normalizeExecutionProfile(value) {
+  const profile = String(value || "standard").trim().toLowerCase();
+  return Object.hasOwn(EXECUTION_PROFILE_BUDGETS, profile) ? profile : "standard";
+}
+
+function promoteExecutionProfile(currentProfile, capabilityFamilies, calls = []) {
+  for (const call of calls) {
+    const family = capabilityFamilyForCall(call);
+    if (family) capabilityFamilies.add(family);
+  }
+  if (capabilityFamilies.has("code")) return higherExecutionProfile(currentProfile, "code");
+  if (capabilityFamilies.size >= 2) return higherExecutionProfile(currentProfile, "cross-surface");
+  return currentProfile;
+}
+
+function capabilityFamilyForCall(call = {}) {
+  const name = String(call.name || "").trim().toLowerCase();
+  if (name === "tool_discovery") {
+    const path = String(parseToolArguments(call.arguments).path || "").trim().toLowerCase();
+    return path ? path.split(".")[0] : "";
+  }
+  if (isCodeWorkflowTool(name)) return "code";
+  if (name.startsWith("knu_") || name.startsWith("mcp__knu__")) return "knu";
+  if (name.startsWith("planner_") || name.startsWith("calendar_") || name.startsWith("memo_")) return "planner";
+  if (["workspace_search", "codmes_search", "read_note_file", "read_file_metadata"].includes(name)) return "notes";
+  return "";
+}
+
+function higherExecutionProfile(left, right) {
+  const order = ["standard", "cross-surface", "code", "code-deep"];
+  return order.indexOf(right) > order.indexOf(left) ? right : left;
+}
+
+function isCodeWorkflowTool(name) {
+  return [
+    "search_project",
+    "read_project_file",
+    "inspect_git",
+    "get_git_diff",
+    "propose_patch",
+    "apply_patch",
+    "run_checks",
+    "run_git_command"
+  ].includes(String(name || "").trim().toLowerCase());
+}
+
 function clampNumber(value, min, max, fallback) {
   const number = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(number)) return fallback;
@@ -2038,6 +2279,38 @@ function isMcpPublicToolName(name) {
   return String(name || "").startsWith("mcp_");
 }
 
+function mcpToolCatalogMetadata(tool) {
+  const envelope = tool?._meta || tool?.meta;
+  const value = envelope?.["com.codmes/tool"];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value;
+}
+
+function isSafeToolName(value) {
+  return /^[A-Za-z0-9_-]{1,64}$/.test(String(value || ""));
+}
+
+function allowedMcpCatalogGroup(value, mcp, plugin) {
+  const group = String(value || "").trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_.-]{0,127}$/.test(group)) return null;
+  if (!plugin) return group;
+  const root = group.split(".")[0];
+  return (mcp.surfaces || []).includes(root) ? group : null;
+}
+
+function safeMcpGroupDescriptions(value, group) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const root = group.split(".")[0];
+  return Object.fromEntries(Object.entries(value).filter(([path, description]) => {
+    const normalizedPath = String(path || "").trim().toLowerCase();
+    return /^[a-z0-9][a-z0-9_.-]{0,127}$/.test(normalizedPath)
+      && (normalizedPath === root || normalizedPath.startsWith(`${root}.`))
+      && typeof description === "string"
+      && description.trim().length > 0
+      && description.trim().length <= 500;
+  }).map(([path, description]) => [String(path).trim().toLowerCase(), description.trim()]));
+}
+
 function safeToolSegment(value) {
   const safe = String(value || "")
     .replace(/[^a-zA-Z0-9_]/g, "_")
@@ -2049,14 +2322,26 @@ function safeToolSegment(value) {
 function recallToolPolicyLines() {
   return [
     "Recall policy: use memory_search for compact long-term facts, preferences, project memories, folder memories, and session summaries.",
-    "Recall policy: if relevant long-term memory directly answers the latest user question, use it directly and do not search again.",
+    "Recall policy: use relevant long-term memory directly only for stable personal preferences or prior decisions.",
+    "Recall policy: for external facts, notices, user-specific service data, or current state, memory is only a routing hint; discover and call an authoritative tool before answering.",
+    "Recall policy: image reference tokens found only in memory are not current evidence; retrieve the source again before selecting an image.",
     "Recall policy: use conversation_search to find past sessions/messages and conversation_read only after conversation_search returns concrete sessionId/messageIds.",
     "Recall policy: do not treat memory_search results as exact transcripts; use conversation_read for exact wording and surrounding context."
   ];
 }
 
+export function relatedImagePolicyLines() {
+  return [
+    "Some tool evidence may include related_images with a figure number, document context, description, and an exact reference token such as [그림:49]. Treat these as optional visual evidence, not as an automatic gallery.",
+    "Decide from each figure's context and description whether it materially helps the specific answer. You may select zero, one, or multiple images and may place selected images before or after their explanation, or consecutively, wherever the answer flows naturally.",
+    "To render a selected image, copy only its exact [그림:assetId] token into the chosen answer position. Image URLs are intentionally hidden from you; never invent one. Codmes resolves an allowed token after generation.",
+    "Do not include images that are unrelated, redundant, or unnecessary. Do not append every available image merely because the tool returned it."
+  ];
+}
+
 function surfacePolicyLines(surface) {
-  switch (String(surface || "chat").toLowerCase()) {
+  const normalizedSurface = String(surface || "chat").toLowerCase();
+  switch (normalizedSurface) {
     case "code":
       return [
         "Surface mode: Code.",
@@ -2070,10 +2355,15 @@ function surfacePolicyLines(surface) {
         "For broad folder or document questions, search before answering instead of guessing from filenames alone."
       ];
     case "chat":
-    default:
       return [
         "Surface mode: Chat.",
         "Use recall and tool discovery when the latest request appears to need a more specialized surface capability such as notes search or code tools."
+      ];
+    default:
+      return [
+        `Surface mode: ${normalizedSurface}.`,
+        "This is a plugin-owned Surface. Treat its current route as context, but discover another group when the request belongs to a different route or capability.",
+        "Do not assume that the visible route is the only allowed tool group."
       ];
   }
 }
@@ -2095,6 +2385,113 @@ function jwtExpiresSoon(token, skewSeconds = 120) {
   const exp = Number(claims?.exp || 0);
   if (!Number.isFinite(exp) || exp <= 0) return false;
   return exp <= Math.floor(Date.now() / 1000) + skewSeconds;
+}
+
+export function normalizeRelatedImageUrls(value, serverUrl) {
+  const origin = (() => {
+    try { return new URL(serverUrl).origin; } catch { return ""; }
+  })();
+  if (!origin) return value;
+  const visit = (item, key = "") => {
+    if (Array.isArray(item)) return item.map((entry) => visit(entry, key));
+    if (!item || typeof item !== "object") return item;
+    const copy = {};
+    for (const [childKey, childValue] of Object.entries(item)) {
+      if (
+        childKey === "url"
+        && typeof childValue === "string"
+        && childValue.startsWith("/")
+        && (key === "related_images" || key === "relatedImages")
+      ) {
+        copy[childKey] = `${origin}${childValue}`;
+      } else {
+        copy[childKey] = visit(childValue, childKey);
+      }
+    }
+    return copy;
+  };
+  return visit(value);
+}
+
+export function collectRelatedImages(value) {
+  const found = [];
+  const visit = (item, key = "") => {
+    if (typeof item === "string") {
+      if (key === "text" && item.trim().startsWith("{")) {
+        try { visit(JSON.parse(item), key); } catch {}
+      }
+      return;
+    }
+    if (Array.isArray(item)) {
+      if (key === "related_images" || key === "relatedImages") {
+        for (const image of item) {
+          if (
+            image && typeof image === "object"
+            && Number.isSafeInteger(Number(image.asset_id))
+            && Number(image.asset_id) > 0
+            && /^https?:\/\//i.test(String(image.url || ""))
+          ) found.push(image);
+        }
+      }
+      for (const child of item) visit(child, key);
+      return;
+    }
+    if (!item || typeof item !== "object") return;
+    for (const [childKey, childValue] of Object.entries(item)) visit(childValue, childKey);
+  };
+  visit(value);
+  const seen = new Set();
+  return found.filter((image) => {
+    const id = String(image.asset_id);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
+export function redactRelatedImageUrlsForModel(value) {
+  const visit = (item, key = "") => {
+    if (typeof item === "string") {
+      if (key === "text" && item.trim().startsWith("{")) {
+        try { return JSON.stringify(visit(JSON.parse(item), key)); } catch {}
+      }
+      return item;
+    }
+    if (Array.isArray(item)) {
+      if (key === "related_images" || key === "relatedImages") {
+        return item.map((image) => {
+          if (!image || typeof image !== "object") return image;
+          const copy = visit(image, key);
+          delete copy.url;
+          return copy;
+        });
+      }
+      return item.map((child) => visit(child, key));
+    }
+    if (!item || typeof item !== "object") return item;
+    const copy = {};
+    for (const [childKey, childValue] of Object.entries(item)) {
+      copy[childKey] = visit(childValue, childKey);
+    }
+    return copy;
+  };
+  return visit(value);
+}
+
+export function renderSelectedFigureTokens(reply, allowedAssets) {
+  const assets = allowedAssets instanceof Map
+    ? allowedAssets
+    : new Map(collectRelatedImages(allowedAssets).map((image) => [String(image.asset_id), image]));
+  return String(reply || "").replace(/\[그림\s*:\s*(\d+)\]/g, (token, assetId) => {
+    const image = assets.get(String(assetId));
+    if (!image) return token;
+    const number = Number.isFinite(Number(image.number)) ? `그림 ${Number(image.number)}` : "관련 그림";
+    const description = String(image.description || image.label || "")
+      .replace(/[\[\]\n\r]/g, " ")
+      .trim();
+    const alt = description ? `${number} · ${description}` : number;
+    return `![${alt}](${image.url})`;
+  });
 }
 
 function decodeJwtPayload(token) {
@@ -2123,6 +2520,18 @@ function codexBackendHeaders(accessToken) {
 
 function trimTrailingSlash(value) {
   return String(value || "").replace(/\/+$/, "");
+}
+
+export function initialDiscoveryPaths({ surface = "chat", route = "" } = {}) {
+  const paths = [""];
+  const normalizedSurface = String(surface || "").trim().toLowerCase();
+  const normalizedRoute = String(route || "").trim().toLowerCase() === "settings"
+    ? "account"
+    : String(route || "").trim().toLowerCase();
+  if (!normalizedSurface || normalizedSurface === "chat") return paths;
+  paths.push(normalizedSurface);
+  if (normalizedRoute) paths.push(`${normalizedSurface}.${normalizedRoute}`);
+  return paths;
 }
 
 export function classifyError(error) {

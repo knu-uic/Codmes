@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import crypto from "node:crypto";
 
 function parseThinkTags(str) {
   let text = "";
@@ -79,6 +80,7 @@ export class SessionRuntime {
 
         merged.push({
           ...s,
+          storageBytes: await this.sessionStorageBytes(s.id),
           source: "workspace",
           runtime: "chat-runtime"
         });
@@ -95,6 +97,8 @@ export class SessionRuntime {
       try {
         const session = await this.stateStore.readSession(sessionId);
         if (session && Array.isArray(session.messages)) {
+          await this.reconcileFinalizedAssistantMessages(session);
+          await this.localizeStoredSessionImages(session);
           return {
             sessionId,
             messages: session.messages.map((m, idx) => {
@@ -127,6 +131,7 @@ export class SessionRuntime {
       try {
         const filePath = path.join(this.stateStore.root, "sessions", `${sessionId}.json`);
         await fs.unlink(filePath).catch(() => {});
+        await fs.rm(this.sessionAssetsDirectory(sessionId), { recursive: true, force: true });
       } catch {}
     }
     return { ok: true };
@@ -233,6 +238,131 @@ export class SessionRuntime {
     }
   }
 
+  async finalizeAssistantMessage(sessionId, message) {
+    if (!this.stateStore) return;
+    try {
+      const session = await this.stateStore.readSession(sessionId);
+      if (!session) return;
+      session.messages = Array.isArray(session.messages) ? session.messages : [];
+      const matchingIndex = session.messages.findLastIndex((item) =>
+        item.role === "assistant" && item.taskId === message.taskId
+      );
+      const finalized = {
+        role: "assistant",
+        content: message.content,
+        createdAt: matchingIndex >= 0
+          ? session.messages[matchingIndex].createdAt
+          : new Date().toISOString(),
+        ...definedFields({
+          taskId: message.taskId,
+          source: "result",
+          reasoning: message.reasoning
+        })
+      };
+      if (matchingIndex >= 0) session.messages[matchingIndex] = finalized;
+      else session.messages.push(finalized);
+      await this.persistUpdatedSession(session, message.content);
+    } catch {}
+  }
+
+  async localizeSessionImages(sessionId, markdown) {
+    if (!this.stateStore || !markdown) return markdown;
+    const matches = [...String(markdown).matchAll(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g)];
+    if (matches.length === 0) return markdown;
+    let localized = String(markdown);
+    const assetsDirectory = this.sessionAssetsDirectory(sessionId);
+    await fs.mkdir(assetsDirectory, { recursive: true });
+
+    for (const match of matches) {
+      const remoteUrl = match[2];
+      if (!isCacheableNoticeImageUrl(remoteUrl)) continue;
+      try {
+        const response = await fetch(remoteUrl, { signal: AbortSignal.timeout(15000) });
+        if (!response.ok) continue;
+        const contentType = String(response.headers.get("content-type") || "").split(";")[0].toLowerCase();
+        const extension = imageExtension(contentType);
+        if (!extension) continue;
+        const bytes = Buffer.from(await response.arrayBuffer());
+        if (bytes.length === 0 || bytes.length > 25 * 1024 * 1024) continue;
+        const fileName = `${crypto.createHash("sha256").update(remoteUrl).digest("hex").slice(0, 24)}.${extension}`;
+        await fs.writeFile(path.join(assetsDirectory, fileName), bytes);
+        localized = localized.split(remoteUrl).join(`/api/sessions/${encodeURIComponent(sessionId)}/assets/${fileName}`);
+      } catch {}
+    }
+    return localized;
+  }
+
+  async storageUsage() {
+    if (!this.stateStore) return { bytes: 0, sessionCount: 0, assetCount: 0 };
+    const sessionsDirectory = path.join(this.stateStore.root, "sessions");
+    const totals = { bytes: 0, sessionCount: 0, assetCount: 0 };
+    await accumulateStorage(sessionsDirectory, totals);
+    return totals;
+  }
+
+  async sessionStorageBytes(sessionId) {
+    if (!this.stateStore) return 0;
+    let bytes = 0;
+    try {
+      bytes += (await fs.stat(path.join(this.stateStore.root, "sessions", `${safeSessionSegment(sessionId)}.json`))).size;
+    } catch {}
+    bytes += await directorySize(this.sessionAssetsDirectory(sessionId));
+    return bytes;
+  }
+
+  sessionAssetsDirectory(sessionId) {
+    return path.join(this.stateStore.root, "sessions", "assets", safeSessionSegment(sessionId));
+  }
+
+  async reconcileFinalizedAssistantMessages(session) {
+    let changed = false;
+    for (let index = 0; index < session.messages.length; index += 1) {
+      const message = session.messages[index];
+      if (message.role !== "assistant" || !message.taskId || message.source === "result") continue;
+      try {
+        const task = await this.stateStore.readTask(message.taskId);
+        const reply = task?.result?.reply;
+        if (!reply || reply === message.content) continue;
+        session.messages[index] = {
+          ...message,
+          content: reply,
+          reasoning: task.result?.reasoning || message.reasoning,
+          source: "result"
+        };
+        changed = true;
+      } catch {}
+    }
+    if (changed) await this.persistUpdatedSession(session, session.messages.at(-1)?.content || "");
+  }
+
+  async localizeStoredSessionImages(session) {
+    let changed = false;
+    for (let index = 0; index < session.messages.length; index += 1) {
+      const message = session.messages[index];
+      if (message.role !== "assistant" || !message.content) continue;
+      const localized = await this.localizeSessionImages(session.id, message.content);
+      if (localized === message.content) continue;
+      session.messages[index] = { ...message, content: localized };
+      changed = true;
+    }
+    if (changed) await this.persistUpdatedSession(session, session.messages.at(-1)?.content || "");
+  }
+
+  async persistUpdatedSession(session, previewContent = "") {
+    session.updatedAt = new Date().toISOString();
+    if (previewContent) session.preview = previewContent.slice(0, 60);
+    session.summary = buildSessionSummary(session);
+    await this.stateStore.writeSession(session);
+    try {
+      const { indexSession } = await import("./runtime/conversation-index.mjs");
+      await indexSession(this.stateStore.workspaceRoot, session);
+    } catch {}
+    try {
+      const { updateMemoryFromSession } = await import("./runtime/memory-retrieval.mjs");
+      await updateMemoryFromSession(this.stateStore.workspaceRoot, session);
+    } catch {}
+  }
+
   promptHistory(session, options = {}) {
     if (!session || !Array.isArray(session.messages)) return [];
     const limit = clampNumber(options.recentLimit, 2, 30, 12);
@@ -288,6 +418,59 @@ export function titleFromFirstUserMessage(content = "") {
   const maxLength = 34;
   if (Array.from(withoutTrailing).length <= maxLength) return withoutTrailing;
   return `${Array.from(withoutTrailing).slice(0, maxLength).join("").trimEnd()}...`;
+}
+
+function safeSessionSegment(value) {
+  return String(value || "").replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function isCacheableNoticeImageUrl(value) {
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:")
+      && /^\/api\/notice-assets\/\d+\/content$/.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function imageExtension(contentType) {
+  return ({
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "image/bmp": "bmp"
+  })[contentType] || "";
+}
+
+async function accumulateStorage(directory, totals) {
+  let entries;
+  try { entries = await fs.readdir(directory, { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) {
+    const absolutePath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      await accumulateStorage(absolutePath, totals);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const stat = await fs.stat(absolutePath);
+    totals.bytes += stat.size;
+    if (entry.name.endsWith(".json")) totals.sessionCount += 1;
+    else if (absolutePath.includes(`${path.sep}assets${path.sep}`)) totals.assetCount += 1;
+  }
+}
+
+async function directorySize(directory) {
+  let bytes = 0;
+  let entries;
+  try { entries = await fs.readdir(directory, { withFileTypes: true }); } catch { return 0; }
+  for (const entry of entries) {
+    const absolutePath = path.join(directory, entry.name);
+    if (entry.isDirectory()) bytes += await directorySize(absolutePath);
+    else if (entry.isFile()) bytes += (await fs.stat(absolutePath)).size;
+  }
+  return bytes;
 }
 
 export function buildSessionSummary(session = {}) {

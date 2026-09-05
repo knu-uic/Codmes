@@ -20,6 +20,15 @@ test("drops unsafe link protocols", async () => {
   assert.match(html, /bad/);
 });
 
+test("renders safe remote images and blocks unsafe image URLs", async () => {
+  const safe = await renderMarkdownBody("![그림 1](http://127.0.0.1:8000/api/notice-assets/1/content)");
+  const unsafe = await renderMarkdownBody("![bad](javascript:alert(1))");
+
+  assert.match(safe, /<img src="http:\/\/127\.0\.0\.1:8000\/api\/notice-assets\/1\/content"/);
+  assert.doesNotMatch(unsafe, /<img/);
+  assert.doesNotMatch(unsafe, /javascript:/);
+});
+
 test("returns complete html document", async () => {
   const html = await renderMarkdownDocument("# Title");
   assert.match(html, /<!doctype html>/);

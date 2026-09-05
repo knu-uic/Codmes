@@ -922,6 +922,25 @@ struct RuntimePlugin: Codable, Identifiable, Hashable {
     }
 }
 
+struct PluginMCPToolConsent: Codable, Hashable {
+    let pluginId: String
+    let serverName: String?
+    let approvedTools: [String]
+    let discoveredTools: [PluginMCPTool]
+    let pendingTools: [String]
+    let updatedAt: String?
+}
+
+struct PluginMCPTool: Codable, Identifiable, Hashable {
+    var id: String { name }
+    let name: String
+    let description: String
+    let group: String?
+    let readOnly: Bool
+    let destructive: Bool
+    let approved: Bool
+}
+
 struct MarketplacePluginsResponse: Codable {
     let schemaVersion: Int
     let source: String
@@ -1674,6 +1693,13 @@ struct HermesSessionSummary: Identifiable, Hashable {
     let projectId: String?
     let projectTitle: String?
     let pinned: Bool
+    let storageBytes: Int64
+}
+
+struct ChatHistoryStorage: Codable, Hashable {
+    let bytes: Int64
+    let sessionCount: Int
+    let assetCount: Int
 }
 
 struct HermesSessionProject: Identifiable, Hashable {
