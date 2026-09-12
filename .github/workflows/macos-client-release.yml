@@ -1,0 +1,164 @@
+name: macOS client release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "codmes-client-macos-v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-client-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release metadata
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/codmes-client-macos-v* ]]; then
+            version="${GITHUB_REF_NAME#codmes-client-macos-v}"
+            [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+              echo "Invalid client release tag: $GITHUB_REF_NAME" >&2
+              exit 1
+            }
+            echo "tagged=true" >> "$GITHUB_OUTPUT"
+          else
+            version="0.0.0"
+            echo "tagged=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build=$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Require Apple release credentials
+        if: steps.release.outputs.tagged == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in MACOS_CERTIFICATE MACOS_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            [[ -n "${!name:-}" ]] || missing+=("$name")
+          done
+          if (( ${#missing[@]} )); then
+            echo "Missing GitHub Actions secrets: ${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Import Developer ID certificate
+        if: steps.release.outputs.tagged == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          certificate="$RUNNER_TEMP/developer-id.p12"
+          keychain="$RUNNER_TEMP/codmes-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          printf '%s' "$MACOS_CERTIFICATE" | base64 --decode > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security list-keychains -d user -s "$keychain"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+          security find-identity -v -p codesigning "$keychain"
+
+      - name: Test Apple client
+        working-directory: client/apple
+        run: swift test
+
+      - name: Build macOS client
+        shell: bash
+        run: |
+          set -euo pipefail
+          derived_data="$RUNNER_TEMP/CodmesDerivedData"
+          settings=(
+            MARKETING_VERSION="${{ steps.release.outputs.version }}"
+            CURRENT_PROJECT_VERSION="${{ steps.release.outputs.build }}"
+            ARCHS=arm64
+            ONLY_ACTIVE_ARCH=NO
+          )
+          if [[ "${{ steps.release.outputs.tagged }}" == "true" ]]; then
+            settings+=(
+              CODE_SIGN_STYLE=Manual
+              CODE_SIGN_IDENTITY="$APPLE_SIGNING_IDENTITY"
+              DEVELOPMENT_TEAM="$APPLE_TEAM_ID"
+              OTHER_CODE_SIGN_FLAGS="--timestamp --options runtime"
+            )
+          else
+            settings+=(CODE_SIGNING_ALLOWED=NO)
+          fi
+          xcodebuild \
+            -project client/apple/Codmes.xcodeproj \
+            -scheme Codmes \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$derived_data" \
+            clean build \
+            "${settings[@]}"
+          echo "APP_PATH=$derived_data/Build/Products/Release/Codmes.app" >> "$GITHUB_ENV"
+
+      - name: Verify signed application
+        if: steps.release.outputs.tagged == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          codesign -dvvv "$APP_PATH"
+
+      - name: Create disk image
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/CodmesDmg"
+          output="$RUNNER_TEMP/Codmes_${{ steps.release.outputs.version }}_macOS-arm64.dmg"
+          mkdir -p "$stage"
+          ditto "$APP_PATH" "$stage/Codmes.app"
+          ln -s /Applications "$stage/Applications"
+          hdiutil create -volname "Codmes" -srcfolder "$stage" -ov -format UDZO "$output"
+          echo "DMG_PATH=$output" >> "$GITHUB_ENV"
+
+      - name: Notarize disk image
+        if: steps.release.outputs.tagged == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun notarytool submit "$DMG_PATH" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$DMG_PATH"
+          xcrun stapler validate "$DMG_PATH"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_PATH"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codmes-client-macos-arm64
+          path: ${{ env.DMG_PATH }}
+          if-no-files-found: error
+
+      - name: Publish tagged release
+        if: steps.release.outputs.tagged == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "Codmes for macOS ${{ steps.release.outputs.version }}" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" "$DMG_PATH" --clobber

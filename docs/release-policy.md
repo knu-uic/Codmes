@@ -47,7 +47,23 @@ Distribution CLI는 Codmes plugin package, publisher 서명, manifest/Registry v
 Codmes의 새 GitHub Release는 설치 가능한 제품에만 사용한다.
 
 - `codmes-server-vX.Y.Z`: Server Manager와 포함된 Workspace Server
-- 향후 client 배포 tag: Apple/Android/Windows 사용자용 설치본이 준비된 후 정의
+- `codmes-client-macos-vX.Y.Z`: macOS Apple Silicon 용 Codmes client
+
+초기 client 배포는 macOS 14 이상과 Apple Silicon을 지원한다. Android,
+Windows, iPhone·iPad 사용자용 설치본은 각 플랫폼의 서명·스토어
+배포 준비가 완료된 후 별도 tag 규칙을 정의한다.
+
+`codmes-client-macos-vX.Y.Z` tag를 push하면 `macOS client release` workflow가
+Apple client를 arm64 Release로 build하고 Developer ID 서명과 Apple 공증을
+거친 DMG를 GitHub Release에 게시한다. workflow를 수동 실행하면
+서명하지 않은 개발 검증용 DMG만 artifact로 만든다.
+
+정식 배포에는 다음 GitHub Actions secret이 필요하다.
+
+- `MACOS_CERTIFICATE`: Developer ID Application `.p12`의 base64 문자열
+- `MACOS_CERTIFICATE_PASSWORD`: `.p12` 비밀번호
+- `APPLE_SIGNING_IDENTITY`: 인증서의 완전한 Developer ID Application 이름
+- `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`: `notarytool` 공증 자격 증명
 
 `com.codmes.planner-v0.2.0`과 `codmes-distribution-cli-v1.0.0` GitHub Release는 이
 정책 이전에 생성된 legacy 기록이다. 기존 다운로드와 링크를 깨지 않기
