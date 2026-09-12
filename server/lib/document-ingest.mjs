@@ -39,7 +39,7 @@ const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const WORKER_PATH = path.resolve(__dirname, "..", "workers", "document-ingest", "extract_document.py");
 const VISION_OCR_PATH = path.resolve(__dirname, "..", "workers", "document-ingest", "ocr_vision.swift");
 const PDF_NORMALIZER_PATH = path.resolve(__dirname, "..", "workers", "document-ingest", "normalize_pdf.py");
-const DOCUMENT_INGEST_CACHE_VERSION = 3;
+const DOCUMENT_INGEST_CACHE_VERSION = 15;
 
 export function isDocumentIngestFile(relativePath) {
   return DOCUMENT_EXTENSIONS.has(path.extname(String(relativePath || "")).toLowerCase());
@@ -220,13 +220,23 @@ export async function extractAndCacheDocument(workspaceRoot, absolutePath, relat
   } catch {}
   await fs.rm(path.dirname(cachePath), { recursive: true, force: true });
 
-  const result = await runDocumentWorker({ absolutePath, relativePath });
-  const extracted = await maybeEnhanceWithOcr(
+  let result = await runDocumentWorker({
+    absolutePath,
+    relativePath,
+    assetsDirectory: path.join(documentIngestCacheDirectory(workspaceRoot, relativePath), "images")
+  });
+  result = await restoreOriginalPdfFigures(workspaceRoot, relativePath, result);
+  const ocrEnhanced = await maybeEnhanceWithOcr(
     workspaceRoot,
     absolutePath,
     relativePath,
     normalizeWorkerResult(result, relativePath),
     options
+  );
+  const extracted = await maybeEnhanceFigures(
+    workspaceRoot,
+    relativePath,
+    ocrEnhanced
   );
   const normalized = {
     ...extracted,
@@ -236,6 +246,26 @@ export async function extractAndCacheDocument(workspaceRoot, absolutePath, relat
   await fs.writeFile(cachePath, JSON.stringify(normalized, null, 2) + "\n", "utf8");
   await fs.writeFile(markdownPath, documentMarkdown(normalized), "utf8");
   return normalized;
+}
+
+async function restoreOriginalPdfFigures(workspaceRoot, relativePath, result) {
+  if (path.extname(String(relativePath || "")).toLowerCase() !== ".pdf") return result;
+  if (Array.isArray(result?.figures) && result.figures.length) return result;
+  const originalPath = documentOriginalBackupPath(workspaceRoot, relativePath);
+  try {
+    await fs.access(originalPath);
+  } catch {
+    return result;
+  }
+  const original = await runDocumentWorker({
+    absolutePath: originalPath,
+    relativePath,
+    assetsDirectory: path.join(documentIngestCacheDirectory(workspaceRoot, relativePath), "images")
+  });
+  return {
+    ...result,
+    figures: Array.isArray(original?.figures) ? original.figures : []
+  };
 }
 
 export async function normalizePdfBinaryTextLayer(workspaceRoot, absolutePath, relativePath, options = {}) {
@@ -472,7 +502,7 @@ function annotationImageContentHash(object, dataBase64) {
   return `sha256-${crypto.createHash("sha256").update(String(dataBase64 || "")).digest("hex")}`;
 }
 
-async function runDocumentWorker({ absolutePath, relativePath }) {
+async function runDocumentWorker({ absolutePath, relativePath, assetsDirectory }) {
   const python = await documentWorkerPython();
   const stdout = [];
   const stderr = [];
@@ -481,7 +511,9 @@ async function runDocumentWorker({ absolutePath, relativePath }) {
     "--input",
     absolutePath,
     "--relative",
-    relativePath
+    relativePath,
+    "--assets-dir",
+    assetsDirectory
   ], {
     stdio: ["ignore", "pipe", "pipe"],
     env: process.env
@@ -501,6 +533,193 @@ async function runDocumentWorker({ absolutePath, relativePath }) {
     return parseDocumentWorkerOutput(out);
   } catch (error) {
     throw Object.assign(new Error(`Document worker returned invalid JSON: ${error.message}${err ? `; stderr=${err}` : ""}`), { status: 500 });
+  }
+}
+
+async function maybeEnhanceFigures(workspaceRoot, relativePath, document) {
+  const figures = Array.isArray(document.figures) ? document.figures : [];
+  if (!figures.length) return document;
+  const config = await readVlmSearchConfig(workspaceRoot);
+  const documentDirectory = path.basename(documentStateDirectory(workspaceRoot, relativePath));
+  const imagesDirectory = path.join(documentIngestCacheDirectory(workspaceRoot, relativePath), "images");
+  const enhancedFigures = [];
+  const figureBlocks = [];
+  const anchoredFiguresByBlock = new Map();
+  const warnings = [...(document.warnings || [])];
+
+  for (const figure of figures) {
+    const assetFile = path.basename(String(figure.assetFile || ""));
+    if (!/^[a-zA-Z0-9._-]+\.(?:png|jpg|jpeg|webp)$/i.test(assetFile)) continue;
+    const assetPath = path.join(imagesDirectory, assetFile);
+    const nearbyMatch = findFigureNearbyBlock(document.blocks, figure);
+    const nearbyText = [
+      String(figure.nearbyText || "").trim(),
+      nearbyMatch?.text || ""
+    ].filter(Boolean).filter((value, index, values) => values.indexOf(value) === index).join("\n");
+    let analysis = {};
+    if (config.enabled) {
+      try {
+        const image = await fs.readFile(assetPath);
+        const response = await callConfiguredVlm(config, {
+          prompt: pdfFigureAnalysisPrompt(relativePath, { ...figure, nearbyText }),
+          imageBase64: image.toString("base64"),
+          imageUrl: `data:${figure.mime || "image/png"};base64,${image.toString("base64")}`
+        });
+        analysis = parseFigureAnalysis(response);
+      } catch (error) {
+        warnings.push(`PDF figure ${figure.number || "?"} analysis skipped: ${error.message}`);
+      }
+    }
+
+    const visualDescription = String(analysis.description || "").trim();
+    const description = [nearbyText, visualDescription]
+      .filter(Boolean)
+      .filter((value, index, values) => values.indexOf(value) === index)
+      .join(" · ");
+    const ocrText = String(analysis.ocrText || analysis.text || "").trim();
+    const contextMatch = String(analysis.contextMatch || (description ? "supports" : "uncertain"));
+    const assetId = `d${crypto.createHash("sha256")
+      .update(`${normalizeDocumentPath(relativePath)}\0${assetFile}`)
+      .digest("hex")
+      .slice(0, 23)}`;
+    const relatedImage = {
+      asset_id: assetId,
+      reference: `[그림:${assetId}]`,
+      number: Number(figure.number || enhancedFigures.length + 1),
+      label: `그림 ${Number(figure.number || enhancedFigures.length + 1)}`,
+      description: description || `PDF ${Number(figure.page || 1)}페이지의 그림`,
+      context: Array.isArray(figure.pageSpan) && figure.pageSpan.length > 1
+        ? `${relativePath} · ${figure.pageSpan.join("-")}페이지에 이어진 ${figure.continuationKind || "그림"}`
+        : `${relativePath} · ${Number(figure.page || 1)}페이지`,
+      contextMatch,
+      url: `/api/document-assets/${encodeURIComponent(documentDirectory)}/${encodeURIComponent(assetFile)}`
+    };
+    const normalizedFigure = { ...figure, nearbyText, analysis, relatedImage };
+    enhancedFigures.push(normalizedFigure);
+
+    if (nearbyMatch) {
+      const current = anchoredFiguresByBlock.get(nearbyMatch.index) || [];
+      current.push({ relatedImage, description });
+      anchoredFiguresByBlock.set(nearbyMatch.index, current);
+    }
+
+    const searchable = [
+      `[그림 ${relatedImage.number}]`,
+      nearbyText && `[그림 문맥] ${nearbyText}`,
+      description && `[그림 설명] ${description}`,
+      ocrText && `[그림 문자] ${ocrText}`
+    ].filter(Boolean).join("\n");
+    if (searchable && contextMatch !== "unrelated") {
+      figureBlocks.push({
+        id: figure.id || `pdf-figure-${relatedImage.number}`,
+        path: relativePath,
+        kind: "pdf",
+        source: "pdf-figure",
+        page: Number(figure.page || 1),
+        text: searchable,
+        bbox: figure.bbox || null,
+        confidence: Number.isFinite(Number(analysis.confidence)) ? Number(analysis.confidence) : null,
+        metadata: { related_images: [relatedImage], figure: normalizedFigure }
+      });
+    }
+  }
+
+  const figureText = figureBlocks.map((block) => block.text).join("\n\n");
+  const anchoredBlocks = (document.blocks || []).map((block, index) => {
+    const anchored = anchoredFiguresByBlock.get(index) || [];
+    if (!anchored.length) return block;
+    const relatedImages = [
+      ...(Array.isArray(block.metadata?.related_images) ? block.metadata.related_images : []),
+      ...anchored.map((item) => item.relatedImage)
+    ];
+    const markers = anchored.map(({ relatedImage, description }) => [
+      `[그림 ${relatedImage.number}]`,
+      description && `[그림 설명] ${description}`
+    ].filter(Boolean).join("\n")).join("\n");
+    return {
+      ...block,
+      text: [block.text, markers].filter(Boolean).join("\n"),
+      metadata: { ...(block.metadata || {}), related_images: relatedImages }
+    };
+  });
+  return {
+    ...document,
+    text: [document.text, figureText].filter(Boolean).join("\n\n"),
+    markdown: [document.markdown || document.text, figureText].filter(Boolean).join("\n\n"),
+    blocks: [...anchoredBlocks, ...figureBlocks],
+    figures: enhancedFigures,
+    warnings
+  };
+}
+
+export function findFigureNearbyText(blocks, figure) {
+  return findFigureNearbyBlock(blocks, figure)?.text || "";
+}
+
+function findFigureNearbyBlock(blocks, figure) {
+  const figureBox = normalizedDocumentBox(figure?.bbox);
+  const page = Number(figure?.page);
+  if (!figureBox || !Number.isFinite(page)) return null;
+  const candidates = [];
+  for (const [index, block] of (Array.isArray(blocks) ? blocks : []).entries()) {
+    if (Number(block?.page) !== page || String(block?.source || "") === "pdf-figure") continue;
+    const text = String(block?.text || "").replace(/\s+/g, " ").trim();
+    if (!text || text.length > 300) continue;
+    const box = normalizedDocumentBox(block?.bbox);
+    if (!box) continue;
+    const overlap = Math.max(0, Math.min(figureBox.right, box.right) - Math.max(figureBox.left, box.left));
+    const overlapRatio = overlap / Math.max(0.001, Math.min(figureBox.width, box.width));
+    if (overlapRatio < 0.15) continue;
+    const aboveGap = figureBox.top - box.bottom;
+    const belowGap = box.top - figureBox.bottom;
+    const isAbove = aboveGap >= -0.01 && aboveGap <= 0.08;
+    const isBelow = belowGap >= -0.01 && belowGap <= 0.08;
+    if (!isAbove && !isBelow) continue;
+    const verticalGap = Math.max(0, isAbove ? aboveGap : belowGap);
+    const horizontalDistance = Math.abs(
+      (figureBox.left + figureBox.right) / 2 - (box.left + box.right) / 2
+    );
+    const captionBonus = /(?:그림|도표|사진|전경|승차지점|figure|fig\.?|chart|photo|caption)/iu.test(text) ? 0.05 : 0;
+    candidates.push({ index, text, score: verticalGap + horizontalDistance * 0.12 - captionBonus });
+  }
+  candidates.sort((a, b) => a.score - b.score || a.text.localeCompare(b.text));
+  return candidates[0] || null;
+}
+
+function normalizedDocumentBox(bbox) {
+  if (!bbox || typeof bbox !== "object") return null;
+  const normalized = bbox.normalized && typeof bbox.normalized === "object" ? bbox.normalized : null;
+  const pageWidth = Number(bbox.pageWidth || 0);
+  const pageHeight = Number(bbox.pageHeight || 0);
+  const left = Number(normalized?.x ?? (pageWidth > 0 ? Number(bbox.x) / pageWidth : NaN));
+  const top = Number(normalized?.y ?? (pageHeight > 0 ? Number(bbox.y) / pageHeight : NaN));
+  const width = Number(normalized?.width ?? (pageWidth > 0 ? Number(bbox.width) / pageWidth : NaN));
+  const height = Number(normalized?.height ?? (pageHeight > 0 ? Number(bbox.height) / pageHeight : NaN));
+  if (![left, top, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
+  return { left, top, width, height, right: left + width, bottom: top + height };
+}
+
+function pdfFigureAnalysisPrompt(relativePath, figure) {
+  return [
+    "Analyze this cropped figure from a study PDF.",
+    "Return one JSON object only, without Markdown fences or reasoning.",
+    'Schema: {"kind":"diagram|chart|table|code|photo|other","description":"concise Korean description","ocrText":"important visible text","contextMatch":"supports|unrelated|uncertain","confidence":0.0}',
+    `Document: ${relativePath}`,
+    `Page: ${Array.isArray(figure.pageSpan) && figure.pageSpan.length ? figure.pageSpan.join("-") : Number(figure.page || 1)}`,
+    ...(figure.nearbyText ? [`Nearby document text: ${figure.nearbyText}`] : []),
+    ...(figure.continuationKind ? [`This crop joins a ${figure.continuationKind} continued across adjacent pages.`] : []),
+    "Describe relationships and labels needed to answer a study question. Do not invent hidden content."
+  ].join("\n");
+}
+
+function parseFigureAnalysis(value) {
+  const text = String(value || "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  const candidate = text.match(/\{[\s\S]*\}/)?.[0] || text;
+  try {
+    const parsed = JSON.parse(candidate);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return text ? { description: text, contextMatch: "uncertain" } : {};
   }
 }
 
@@ -708,7 +927,7 @@ function annotationBlock(relativePath, object, text, source, metadata = {}) {
   };
 }
 
-function pagesNeedingOcr(relativePath, document, config) {
+export function pagesNeedingOcr(relativePath, document, config) {
   const kind = kindForRelativePath(relativePath);
   if (kind === "image") return [];
   if (kind !== "pdf") return null;
@@ -723,11 +942,27 @@ function pagesNeedingOcr(relativePath, document, config) {
     pageText.set(page, [pageText.get(page), stripPdfLayoutMarkers(block.text)].filter(Boolean).join("\n"));
   }
   if (!pageText.size) return pdfTextNeedsOcr(text) ? [] : null;
+  const pageSignals = new Map((Array.isArray(document.metadata?.pageSignals)
+    ? document.metadata.pageSignals
+    : [])
+    .map((signal) => [Number(signal?.page), signal])
+    .filter(([page]) => Number.isFinite(page) && page > 0));
   const pages = Array.from(pageText)
-    .filter(([, value]) => pdfTextNeedsOcr(value))
+    .filter(([page, value]) => {
+      const signal = pageSignals.get(page);
+      const hasReliableNativeText = signal?.nativeText === true
+        && Number(signal.characterCount || 0) >= Math.max(20, minTextChars)
+        && Number(signal.suspiciousTextRatio || 0) < 0.05;
+      // Digital PDFs can contain a few broken decorative glyphs while their
+      // searchable text and tables remain substantially correct. Replacing the
+      // whole page with generative VLM OCR in that case can hallucinate the
+      // document identity and discard exact table values.
+      if (hasReliableNativeText) return false;
+      return pdfTextNeedsOcr(value);
+    })
     .map(([page]) => page)
     .sort((a, b) => a - b);
-  if (pages.length / pageText.size >= 0.25) {
+  if (document.metadata?.pdfType === "scanned" && pages.length / pageText.size >= 0.25) {
     return Array.from(pageText.keys()).sort((a, b) => a - b);
   }
   return pages.length ? pages : null;
@@ -864,27 +1099,45 @@ async function runNativeVisionOcr({ absolutePath, relativePath, pages, dpi, onPr
   const result = parseDocumentWorkerOutput(Buffer.concat(stdout).toString("utf8") || "{}");
   return {
     blocks: (Array.isArray(result.blocks) ? result.blocks : [])
-      .map((block, index) => ({
-        id: `vision-ocr-page-${Number(block.page) || index + 1}`,
-        path: relativePath,
-        kind,
-        source: "vision-ocr",
-        page: Number(block.page) || null,
-        text: String(block.text || "").normalize("NFC").trim(),
-        bbox: null,
-        confidence: null,
-        metadata: {
-          engine: "apple-vision",
-          deterministic: true,
-          languages: ["ko-KR", "en-US"],
-          lines: (Array.isArray(block.lines) ? block.lines : [])
-            .map((line) => ({
-              text: String(line.text || "").normalize("NFC").trim(),
-              bbox: normalizeOcrBox(line.bbox)
-            }))
-            .filter((line) => line.text && line.bbox)
-        }
-      }))
+      .map((block, index) => {
+        const lines = (Array.isArray(block.lines) ? block.lines : [])
+          .map((line) => ({
+            text: String(line.text || "").normalize("NFC").trim(),
+            bbox: normalizeOcrBox(line.bbox),
+            confidence: Number.isFinite(Number(line.confidence)) ? Number(line.confidence) : null
+          }))
+          .filter((line) => line.text && line.bbox);
+        const scored = lines.filter((line) => line.confidence !== null);
+        const reviewLines = lines
+          .map((line, lineIndex) => ({
+            ...line,
+            line: lineIndex + 1,
+            reason: "low_ocr_confidence"
+          }))
+          // Apple Vision reports many ordinary recognitions at exactly 0.5;
+          // only values below that discrete baseline are targeted for review.
+          .filter((line) => line.confidence !== null && line.confidence < 0.5);
+        return {
+          id: `vision-ocr-page-${Number(block.page) || index + 1}`,
+          path: relativePath,
+          kind,
+          source: "vision-ocr",
+          page: Number(block.page) || null,
+          text: String(block.text || "").normalize("NFC").trim(),
+          bbox: null,
+          confidence: scored.length
+            ? scored.reduce((sum, line) => sum + line.confidence, 0) / scored.length
+            : null,
+          metadata: {
+            engine: "apple-vision",
+            deterministic: true,
+            languages: ["ko-KR", "en-US"],
+            lines,
+            requiresReview: reviewLines.length > 0,
+            reviewLines
+          }
+        };
+      })
       .filter((block) => block.text),
     warnings: (Array.isArray(result.warnings) ? result.warnings : []).map(String)
   };
@@ -1244,6 +1497,60 @@ function normalizeWorkerResult(result = {}, relativePath) {
       metadata: table.metadata && typeof table.metadata === "object" ? table.metadata : {}
     })).filter((table) => table.headers.length > 1 && table.rows.length > 0)
     : [];
+  const figures = Array.isArray(result.figures)
+    ? result.figures.map((figure, index) => ({
+      id: String(figure.id || `figure-${index + 1}`),
+      number: Number.isFinite(Number(figure.number)) ? Number(figure.number) : index + 1,
+      path: String(figure.path || relativePath),
+      page: Number.isFinite(Number(figure.page)) ? Number(figure.page) : null,
+      source: String(figure.source || "document-figure"),
+      assetFile: String(figure.assetFile || ""),
+      mime: String(figure.mime || "image/png"),
+      width: Number(figure.width || 0),
+      height: Number(figure.height || 0),
+      bbox: figure.bbox || null,
+      nearbyText: String(figure.nearbyText || ""),
+      pageSpan: Array.isArray(figure.pageSpan) ? figure.pageSpan.map(Number).filter(Number.isFinite) : [],
+      segments: Array.isArray(figure.segments) ? figure.segments : [],
+      continuationKind: String(figure.continuationKind || ""),
+      continuationEvidence: figure.continuationEvidence && typeof figure.continuationEvidence === "object"
+        ? figure.continuationEvidence
+        : null,
+      confidence: Number.isFinite(Number(figure.confidence)) ? Number(figure.confidence) : null
+    })).filter((figure) => figure.assetFile)
+    : [];
+  const tableContext = String(result.markdown || result.text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^#{1,4}\s+\S/.test(line))
+    .slice(0, 12)
+    .join("\n");
+  const tableBlocks = tables.map((table, index) => ({
+    id: table.id || `table-block-${index + 1}`,
+    path: table.path || relativePath,
+    kind: String(result.kind || "file"),
+    source: table.source || "document-table",
+    page: table.page,
+    text: [tableContext, table.markdown].filter(Boolean).join("\n\n"),
+    bbox: table.bbox || null,
+    confidence: null,
+    metadata: { tableId: table.id, rowCount: table.rows.length }
+  })).filter((block) => block.text.trim());
+  const tableRowBlocks = tables.flatMap((table) => table.rows.map((row, rowIndex) => ({
+    id: `${table.id || "table"}-row-${rowIndex + 1}`,
+    path: table.path || relativePath,
+    kind: String(result.kind || "file"),
+    source: `${table.source || "document-table"}-row`,
+    page: table.page,
+    text: [
+      row.filter(Boolean).join(" | "),
+      table.headers.filter(Boolean).join(" | "),
+      tableContext
+    ].filter(Boolean).join("\n"),
+    bbox: table.bbox || null,
+    confidence: null,
+    metadata: { tableId: table.id, row: rowIndex + 1 }
+  }))).filter((block) => block.text.trim());
   return {
     schemaVersion: DOCUMENT_INGEST_CACHE_VERSION,
     path: String(result.path || relativePath),
@@ -1251,7 +1558,9 @@ function normalizeWorkerResult(result = {}, relativePath) {
     text: String(result.text || blocks.map((block) => block.text).join("\n\n")).trim(),
     markdown: String(result.markdown || result.text || "").trim(),
     tables,
-    blocks,
+    figures,
+    blocks: [...blocks, ...tableBlocks, ...tableRowBlocks],
+    metadata: result.metadata && typeof result.metadata === "object" ? result.metadata : {},
     warnings: Array.isArray(result.warnings) ? result.warnings.map(String) : [],
     extractor: String(result.extractor || "codmes-document-worker")
   };

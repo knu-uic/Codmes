@@ -23,6 +23,10 @@ pub struct ServerSettings {
     pub host: String,
     pub port: u16,
     pub token: String,
+    #[serde(default)]
+    pub multiuser_enabled: bool,
+    #[serde(default)]
+    pub managed_postgres: bool,
     pub start_on_launch: bool,
     pub launch_at_login: bool,
     pub show_dock_icon: bool,
@@ -173,6 +177,19 @@ impl ServerManager {
             .env("CODMES_HOST", &settings.host)
             .env("CODMES_PORT", settings.port.to_string())
             .env("CODMES_SERVER_TOKEN", &settings.token)
+            .env("CODMES_DATA_ROOT", &settings.workspace_root)
+            .env(
+                "CODMES_MULTIUSER_ENABLED",
+                if settings.multiuser_enabled { "true" } else { "false" },
+            )
+            .env(
+                "CODMES_MANAGED_POSTGRES",
+                if settings.multiuser_enabled && settings.managed_postgres { "true" } else { "false" },
+            )
+            .env(
+                "CODMES_SEARCH_BACKEND",
+                if settings.multiuser_enabled { "postgres" } else { "codmes" },
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -267,6 +284,8 @@ impl ServerSettings {
             host: "127.0.0.1".to_string(),
             port: 8787,
             token: String::new(),
+            multiuser_enabled: false,
+            managed_postgres: false,
             start_on_launch: true,
             launch_at_login: false,
             show_dock_icon: false,
@@ -298,8 +317,11 @@ fn validate_settings(settings: &ServerSettings) -> Result<(), String> {
     {
         return Err("Workspace folder must be an absolute path.".to_string());
     }
-    if settings.host == "0.0.0.0" && settings.token.len() < 24 {
+    if settings.host == "0.0.0.0" && !settings.multiuser_enabled && settings.token.len() < 24 {
         return Err("Generate a server token before enabling local-network access.".to_string());
+    }
+    if settings.managed_postgres && !settings.multiuser_enabled {
+        return Err("Managed PostgreSQL requires multi-user mode.".to_string());
     }
     Ok(())
 }
@@ -500,6 +522,8 @@ mod tests {
         assert_eq!(settings.host, "127.0.0.1");
         assert_eq!(settings.port, 8787);
         assert!(settings.token.is_empty());
+        assert!(!settings.multiuser_enabled);
+        assert!(!settings.managed_postgres);
         assert!(validate_settings(&settings).is_ok());
     }
 

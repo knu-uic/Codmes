@@ -54,6 +54,26 @@ test("resolves only model-selected figure tokens from the current tool evidence"
   assert.match(answer, /\[그림:999\]/);
 });
 
+test("resolves document figure tokens whose asset ids are stable strings", () => {
+  const evidence = { related_images: [
+    {
+      asset_id: "d04ea05d8a9342d416ee6f5e",
+      number: 1,
+      description: "DBMS 플랫폼 계층도",
+      url: "http://127.0.0.1:8787/api/document-assets/document--12345678/figure.png"
+    }
+  ] };
+  const allowed = new Map(collectRelatedImages(evidence).map((image) => [String(image.asset_id), image]));
+
+  const answer = renderSelectedFigureTokens(
+    "DBMS 계층을 이 그림으로 보여드립니다.\n[그림:d04ea05d8a9342d416ee6f5e]",
+    allowed
+  );
+
+  assert.match(answer, /!\[그림 1 · DBMS 플랫폼 계층도\]/);
+  assert.match(answer, /\/api\/document-assets\/document--12345678\/figure\.png/);
+});
+
 test("image policy delegates placement to the model and forbids an automatic gallery", () => {
   const policy = relatedImagePolicyLines().join("\n");
 

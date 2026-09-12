@@ -5,45 +5,56 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { buildSessionSummary, SessionRuntime } from "./session-runtime.mjs";
+import { SessionRuntime } from "./session-runtime.mjs";
 
-test("SessionRuntime summary captures topics, decisions, preferences, entities, and covered ids", () => {
-  const summary = buildSessionSummary({
-    id: "session-summary",
-    messages: [
-      { id: "u1", role: "user", content: "Codmes 방향은 Hermes wrapper가 아니라 독립 런타임으로 가기로 결정했어." },
-      { id: "a1", role: "assistant", content: "좋아요. Codmes Search와 RAG를 내부 경로로 정리하겠습니다." },
-      { id: "u2", role: "user", content: "나는 Codex 스타일 UI를 좋아하고 Obsidian처럼 보여주길 원해." }
-    ]
-  });
+test("SessionRuntime token budget can retain more than twelve short same-session messages", () => {
+  const runtime = new SessionRuntime({});
+  const messages = Array.from({ length: 30 }, (_, index) => ({
+    id: `short-${index + 1}`,
+    role: index % 2 === 0 ? "user" : "assistant",
+    content: `short message ${index + 1}`
+  }));
 
-  assert.ok(summary.content);
-  assert.equal(summary.content.includes("Conversation starting with"), false);
-  assert.ok(summary.topics.includes("Codmes"));
-  assert.ok(summary.entities.includes("Codmes"));
-  assert.ok(summary.entities.includes("Obsidian"));
-  assert.ok(summary.decisions.some((item) => /결정/.test(item)));
-  assert.ok(summary.preferences.some((item) => /좋아|원해/.test(item)));
-  assert.deepEqual(summary.coveredMessageIds, ["u1", "a1", "u2"]);
-  assert.deepEqual(summary.sourceMessageIds, ["u1", "a1", "u2"]);
+  const context = runtime.promptContext({ model: "gemma4:12b-mlx", messages });
+
+  assert.equal(context.history.length, 30);
+  assert.equal(context.summary, null);
+  assert.equal(context.stats.compactedMessageCount, 0);
 });
 
-test("SessionRuntime promptHistory returns recent visible user and assistant turns only", () => {
+test("SessionRuntime reuses a persisted model compaction and keeps uncovered messages verbatim", () => {
   const runtime = new SessionRuntime({});
-  const history = runtime.promptHistory({
-    messages: [
-      { role: "system", content: "hidden" },
-      { role: "tool", content: "tool output" },
-      { role: "user", content: "one" },
-      { role: "assistant", content: "two" },
-      { role: "user", content: "three" }
-    ]
-  }, { recentLimit: 2 });
+  const messages = Array.from({ length: 30 }, (_, index) => ({
+      id: `m${index + 1}`,
+      role: index % 2 === 0 ? "assistant" : "user",
+      content: `message-${index + 1}`
+    }));
+  const context = runtime.promptContext({
+    provider: "custom",
+    model: "demo",
+    messages,
+    contextCompaction: {
+      version: 1,
+      mode: "summary",
+      provider: "custom",
+      model: "demo",
+      contextWindow: 4_000,
+      thresholdTokens: 2_048,
+      coveredMessageCount: 10,
+      coveredMessageIds: messages.slice(0, 10).map((message) => message.id),
+      tokenEstimate: 40,
+      compactionCount: 1,
+      summary: "Goal: preserve exact model-produced state.",
+      updatedAt: "2026-09-11T00:00:00.000Z"
+    }
+  }, {
+    provider: "custom", model: "demo", contextWindow: 4_000
+  });
 
-  assert.deepEqual(history, [
-    { role: "assistant", content: "two" },
-    { role: "user", content: "three" }
-  ]);
+  assert.equal(context.history.length, 20);
+  assert.equal(context.history[0].content, "message-11");
+  assert.match(context.summary.content, /model-produced state/);
+  assert.equal(context.stats.compactedMessageCount, 10);
 });
 
 test("SessionRuntime keeps selected notice images with the chat and removes them on delete", async () => {
@@ -78,6 +89,53 @@ test("SessionRuntime keeps selected notice images with the chat and removes them
     assert.equal((await runtime.storageUsage()).assetCount, 0);
   } finally {
     server.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("SessionRuntime localizes selected Notes document images", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-document-session-assets-"));
+  const sessionsDirectory = path.join(root, "sessions");
+  await fs.mkdir(sessionsDirectory, { recursive: true });
+  const sessionId = "session-document-assets-1";
+  await fs.writeFile(path.join(sessionsDirectory, `${sessionId}.json`), JSON.stringify({ id: sessionId }), "utf8");
+  const server = http.createServer((req, res) => {
+    if (req.url !== "/api/document-assets/study--12345678/figure-p0001-test.png") return res.writeHead(404).end();
+    res.writeHead(200, { "content-type": "image/png" });
+    res.end(Buffer.from("notes-figure-png"));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const runtime = new SessionRuntime({ stateStore: { root, workspaceRoot: root } });
+
+  try {
+    const localized = await runtime.localizeSessionImages(
+      sessionId,
+      `계층도입니다.\n![DBMS 계층도](http://127.0.0.1:${port}/api/document-assets/study--12345678/figure-p0001-test.png)`
+    );
+    assert.match(localized, new RegExp(`/api/sessions/${sessionId}/assets/[a-f0-9]{24}\\.png`));
+    assert.equal((await runtime.storageUsage()).assetCount, 1);
+  } finally {
+    server.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("SessionRuntime copies authenticated document assets directly from its workspace", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-local-document-assets-"));
+  const sessionId = "session-local-assets-1";
+  const source = path.join(root, ".codmes", "documents", "study--12345678", "index", "images", "figure.png");
+  await fs.mkdir(path.dirname(source), { recursive: true });
+  await fs.writeFile(source, Buffer.from("private-workspace-image"));
+  const runtime = new SessionRuntime({ stateStore: { root, workspaceRoot: root } });
+  try {
+    const localized = await runtime.localizeSessionImages(
+      sessionId,
+      "![그림](http://127.0.0.1:8787/api/document-assets/study--12345678/figure.png)"
+    );
+    assert.match(localized, new RegExp(`/api/sessions/${sessionId}/assets/[a-f0-9]{24}\\.png`));
+    assert.equal((await runtime.storageUsage()).assetCount, 1);
+  } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
 });

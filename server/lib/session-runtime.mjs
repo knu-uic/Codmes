@@ -1,6 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { estimateContextWindow } from "./runtime/context-budget.mjs";
+import {
+  planConversationCompaction,
+  promptContextFromPlan
+} from "./runtime/conversation-compaction.mjs";
 
 function parseThinkTags(str) {
   let text = "";
@@ -132,6 +137,8 @@ export class SessionRuntime {
         const filePath = path.join(this.stateStore.root, "sessions", `${sessionId}.json`);
         await fs.unlink(filePath).catch(() => {});
         await fs.rm(this.sessionAssetsDirectory(sessionId), { recursive: true, force: true });
+        const { removeSessionFromConversationIndex } = await import("./runtime/conversation-index.mjs");
+        await removeSessionFromConversationIndex(this.stateStore.workspaceRoot, sessionId);
       } catch {}
     }
     return { ok: true };
@@ -220,7 +227,7 @@ export class SessionRuntime {
             session.preview = message.content.slice(0, 60);
           }
 
-          session.summary = buildSessionSummary(session);
+          session.summary = searchableSummaryFromCompaction(session);
 
           await this.stateStore.writeSession(session);
 
@@ -277,12 +284,14 @@ export class SessionRuntime {
       const remoteUrl = match[2];
       if (!isCacheableNoticeImageUrl(remoteUrl)) continue;
       try {
-        const response = await fetch(remoteUrl, { signal: AbortSignal.timeout(15000) });
-        if (!response.ok) continue;
-        const contentType = String(response.headers.get("content-type") || "").split(";")[0].toLowerCase();
+        const localImage = await readLocalWorkspaceImage(this.stateStore.workspaceRoot, remoteUrl);
+        const response = localImage ? null : await fetch(remoteUrl, { signal: AbortSignal.timeout(15000) });
+        if (response && !response.ok) continue;
+        const contentType = localImage?.contentType
+          || String(response.headers.get("content-type") || "").split(";")[0].toLowerCase();
         const extension = imageExtension(contentType);
         if (!extension) continue;
-        const bytes = Buffer.from(await response.arrayBuffer());
+        const bytes = localImage?.bytes || Buffer.from(await response.arrayBuffer());
         if (bytes.length === 0 || bytes.length > 25 * 1024 * 1024) continue;
         const fileName = `${crypto.createHash("sha256").update(remoteUrl).digest("hex").slice(0, 24)}.${extension}`;
         await fs.writeFile(path.join(assetsDirectory, fileName), bytes);
@@ -351,7 +360,7 @@ export class SessionRuntime {
   async persistUpdatedSession(session, previewContent = "") {
     session.updatedAt = new Date().toISOString();
     if (previewContent) session.preview = previewContent.slice(0, 60);
-    session.summary = buildSessionSummary(session);
+    session.summary = searchableSummaryFromCompaction(session);
     await this.stateStore.writeSession(session);
     try {
       const { indexSession } = await import("./runtime/conversation-index.mjs");
@@ -363,16 +372,36 @@ export class SessionRuntime {
     } catch {}
   }
 
-  promptHistory(session, options = {}) {
-    if (!session || !Array.isArray(session.messages)) return [];
-    const limit = clampNumber(options.recentLimit, 2, 30, 12);
-    return session.messages
-      .filter((message) => message.role === "user" || message.role === "assistant")
-      .slice(-limit)
-      .map((message) => ({
-        role: message.role,
-        content: message.content
-      }));
+  promptContext(session, options = {}) {
+    const model = options.model || session?.model || "";
+    const plan = planConversationCompaction(session || {}, {
+      provider: options.provider || session?.provider || "",
+      model,
+      contextWindow: options.contextWindow || estimateContextWindow(model),
+      thresholdRatio: options.compactionThresholdRatio,
+      targetRatio: options.compactionTargetRatio,
+      protectLastN: options.compactionProtectLastN
+    });
+    return promptContextFromPlan(plan);
+  }
+
+  async persistContextCompaction(sessionId, contextCompaction) {
+    if (!this.stateStore || !sessionId || !contextCompaction) return false;
+    const session = await this.stateStore.readSession(sessionId);
+    if (!session) return false;
+    session.contextCompaction = contextCompaction;
+    session.summary = searchableSummaryFromCompaction(session);
+    session.updatedAt = new Date().toISOString();
+    await this.stateStore.writeSession(session);
+    try {
+      const { indexSession } = await import("./runtime/conversation-index.mjs");
+      await indexSession(this.stateStore.workspaceRoot, session);
+    } catch {}
+    try {
+      const { updateMemoryFromSession } = await import("./runtime/memory-retrieval.mjs");
+      await updateMemoryFromSession(this.stateStore.workspaceRoot, session);
+    } catch {}
+    return true;
   }
 }
 
@@ -428,9 +457,32 @@ function isCacheableNoticeImageUrl(value) {
   try {
     const url = new URL(value);
     return (url.protocol === "http:" || url.protocol === "https:")
-      && /^\/api\/notice-assets\/\d+\/content$/.test(url.pathname);
+      && (
+        /^\/api\/notice-assets\/\d+\/content$/.test(url.pathname)
+        || /^\/api\/document-assets\/[^/]+\/[a-zA-Z0-9._-]+\.(?:png|jpg|jpeg|webp)$/.test(url.pathname)
+      );
   } catch {
     return false;
+  }
+}
+
+async function readLocalWorkspaceImage(workspaceRoot, value) {
+  try {
+    const url = new URL(value);
+    const match = url.pathname.match(/^\/api\/document-assets\/([^/]+)\/([a-zA-Z0-9._-]+\.(?:png|jpg|jpeg|webp))$/i);
+    if (!match) return null;
+    const directory = decodeURIComponent(match[1]);
+    const fileName = match[2];
+    if (path.basename(directory) !== directory || !/--[a-f0-9]{8}$/.test(directory)) return null;
+    const absolutePath = path.join(workspaceRoot, ".codmes", "documents", directory, "index", "images", fileName);
+    const bytes = await fs.readFile(absolutePath);
+    const extension = path.extname(fileName).toLowerCase();
+    return {
+      bytes,
+      contentType: extension === ".png" ? "image/png" : extension === ".webp" ? "image/webp" : "image/jpeg"
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -473,90 +525,20 @@ async function directorySize(directory) {
   return bytes;
 }
 
-export function buildSessionSummary(session = {}) {
-  const messages = Array.isArray(session.messages) ? session.messages : [];
-  const visibleMessages = messages.filter((message) => message.role === "user" || message.role === "assistant");
-  const coveredMessageIds = visibleMessages.map((message, index) => String(message.id || index + 1));
-  const combined = visibleMessages
-    .map((message) => `${message.role}: ${message.content || ""}`)
-    .join("\n")
-    .slice(0, 8000);
-  const topics = extractTopics(combined);
-  const entities = extractEntities(combined);
-  const decisions = extractSentences(combined, /(결정|하기로|방향|목표|원칙|사용하지 않는다|사용한다|decided|decision|will use|will not)/i, 8);
-  const preferences = extractSentences(combined, /(선호|원해|원한다|좋아|싫어|prefer|want|like|dislike)/i, 8);
-  const content = summarizeContent(combined, { topics, decisions, preferences });
+function searchableSummaryFromCompaction(session = {}) {
+  const state = session.contextCompaction;
+  if (state?.mode !== "summary" && session.summary?.generator === "auxiliary_model" && session.summary.content) {
+    return session.summary;
+  }
+  const coveredMessageIds = Array.isArray(state?.coveredMessageIds) ? state.coveredMessageIds : [];
   return {
-    content,
-    topics,
-    entities,
-    decisions,
-    preferences,
+    content: state?.mode === "summary" ? String(state.summary || "") : "",
+    generator: state?.mode === "summary"
+      ? "auxiliary_model_compaction"
+      : state?.mode === "native" ? "native_compaction_opaque" : "none",
     sourceMessageIds: coveredMessageIds,
     coveredMessageIds,
     lastSummarizedMessageId: coveredMessageIds.at(-1) || null,
-    recentMessageIds: coveredMessageIds.slice(-12),
-    updatedAt: new Date().toISOString()
+    updatedAt: state?.updatedAt || new Date().toISOString()
   };
-}
-
-function summarizeContent(text, { topics, decisions, preferences }) {
-  const parts = [];
-  if (topics.length) parts.push(`주제: ${topics.slice(0, 6).join(", ")}`);
-  if (decisions.length) parts.push(`결정: ${decisions.slice(0, 3).join(" / ")}`);
-  if (preferences.length) parts.push(`선호: ${preferences.slice(0, 2).join(" / ")}`);
-  if (!parts.length) {
-    const compact = text.replace(/\s+/g, " ").trim();
-    return compact ? `대화 요약: ${compact.slice(0, 500)}` : "";
-  }
-  return parts.join("\n");
-}
-
-function extractTopics(text) {
-  const topics = [];
-  const lower = String(text || "").toLowerCase();
-  const pairs = [
-    ["codmes", "Codmes"],
-    ["ai workspace", "Codmes"],
-    ["hermes", "Hermes"],
-    ["codex", "Codex-style UX"],
-    ["codmes search", "Codmes Search"],
-    ["rag", "RAG"],
-    ["pdf", "PDF"],
-    ["codeagentruntime", "CodeAgentRuntime"],
-    ["tool", "tool mode"],
-    ["memory", "memory"],
-    ["session", "session"],
-    ["음악", "음악"],
-    ["옵시디언", "Obsidian"]
-  ];
-  for (const [needle, topic] of pairs) {
-    if (lower.includes(needle)) topics.push(topic);
-  }
-  return Array.from(new Set(topics)).slice(0, 12);
-}
-
-function extractEntities(text) {
-  const entities = new Set();
-  const matches = String(text || "").match(/\b[A-Z][A-Za-z0-9_-]{2,}\b/g) || [];
-  for (const match of matches) entities.add(match);
-  for (const keyword of ["Codmes", "Hermes", "CodeAgentRuntime", "Codmes Search", "Obsidian"]) {
-    if (String(text || "").includes(keyword)) entities.add(keyword);
-  }
-  return Array.from(entities).slice(0, 20);
-}
-
-function extractSentences(text, pattern, limit) {
-  return String(text || "")
-    .split(/(?:\n|[.!?。]|다\.|요\.|음\.|함\.)+/)
-    .map((sentence) => sentence.replace(/^(user|assistant):\s*/i, "").trim())
-    .filter((sentence) => sentence && pattern.test(sentence))
-    .map((sentence) => sentence.slice(0, 240))
-    .slice(0, limit);
-}
-
-function clampNumber(value, min, max, fallback) {
-  const number = Number.parseInt(String(value ?? ""), 10);
-  if (!Number.isFinite(number)) return fallback;
-  return Math.min(max, Math.max(min, number));
 }

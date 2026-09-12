@@ -23,7 +23,14 @@ import {
 import { buildWorkspaceContext } from "./lib/context-router.mjs";
 import { buildIndex, readFileMetadata, readIndex } from "./lib/file-index.mjs";
 import { renderCodeDocument, renderMarkdownDocument } from "./lib/render-service.mjs";
-import { buildSearchIndex, globalSearch, searchStatus, searchWorkspace, updateSearchIndex } from "./lib/search-service.mjs";
+import {
+  buildSearchIndex,
+  closePostgresSearchStores,
+  globalSearch,
+  searchStatus,
+  searchWorkspace,
+  updateSearchIndex
+} from "./lib/search-service.mjs";
 import {
   annotationsPathForDocument,
   contentScopedAnnotationsPathForDocument,
@@ -63,6 +70,17 @@ import {
   writeRuntimeConfig
 } from "./lib/runtime/config-store.mjs";
 import { discoverOllamaModels } from "./lib/runtime/provider-model-discovery.mjs";
+import { createCodmesDatabase, postgresConfigured } from "./lib/database.mjs";
+import { LocalAccountStore } from "./lib/local-accounts.mjs";
+import { createManagedBackup, startManagedPostgres, stopManagedPostgres } from "./lib/managed-postgres.mjs";
+import {
+  activeWorkspaceRoot as requestWorkspaceRoot,
+  currentRequestContext,
+  updateRequestContext,
+  withRequestContext
+} from "./lib/request-context.mjs";
+import { WorkspaceTenancyStore } from "./lib/workspace-tenancy.mjs";
+import { PostgresIngestQueue } from "./lib/postgres-ingest-queue.mjs";
 import { readSecurityConfig, writeSecurityConfig } from "./lib/runtime/security-policy.mjs";
 import { enableSkill, listSkills, readSkill } from "./lib/runtime/skill-registry.mjs";
 import {
@@ -76,8 +94,11 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const DEFAULT_PORT = Number.parseInt(process.env.CODMES_PORT || process.env.PORT || "8787", 10);
 const WORKSPACE_HOST = process.env.CODMES_HOST || process.env.WORKSPACE_HOST || process.env.HOST || "127.0.0.1";
 const DEFAULT_WORKSPACE_ROOT = path.join(process.env.HOME || process.cwd(), "CodmesWorkspace");
-const WORKSPACE_ROOT = path.resolve(process.env.CODMES_WORKSPACE_ROOT || DEFAULT_WORKSPACE_ROOT);
+const LEGACY_WORKSPACE_ROOT = path.resolve(process.env.CODMES_WORKSPACE_ROOT || DEFAULT_WORKSPACE_ROOT);
+const CODMES_DATA_ROOT = path.resolve(process.env.CODMES_DATA_ROOT || path.dirname(LEGACY_WORKSPACE_ROOT));
 const SERVER_TOKEN = process.env.CODMES_SERVER_TOKEN || "";
+const MULTIUSER_ENABLED = /^(1|true|yes)$/i.test(String(process.env.CODMES_MULTIUSER_ENABLED || ""));
+const MANAGED_POSTGRES_ENABLED = /^(1|true|yes)$/i.test(String(process.env.CODMES_MANAGED_POSTGRES || ""));
 const PDF_STREAM_CACHE_LIMIT_BYTES = Math.max(
   256 * 1024 * 1024,
   Number.parseInt(process.env.CODMES_PDF_STREAM_CACHE_BYTES || String(8 * 1024 * 1024 * 1024), 10)
@@ -87,37 +108,90 @@ const pendingSearchUpdates = new Set();
 let searchUpdateTimer = null;
 let searchIndexUpdateChain = Promise.resolve();
 const pdfStreamArtifactTasks = new Map();
+let codmesDatabase = null;
+let localAccounts = null;
+let workspaceTenancy = null;
+let managedPostgres = null;
+let postgresIngestQueue = null;
+const INGEST_WORKER_ID = `codmes-${process.pid}-${randomUUID()}`;
+
+function activeWorkspaceRoot() {
+  return requestWorkspaceRoot(LEGACY_WORKSPACE_ROOT);
+}
 
 const TEXT_FILE_LIMIT = 5 * 1024 * 1024;
 
 async function main() {
-  await ensureWorkspace();
-  const server = http.createServer(handleRequest);
-  server.on("upgrade", handleUpgrade);
+  if (MULTIUSER_ENABLED) {
+    let connectionString = process.env.CODMES_DATABASE_URL || process.env.DATABASE_URL || "";
+    if (MANAGED_POSTGRES_ENABLED) {
+      managedPostgres = await startManagedPostgres({ dataRoot: CODMES_DATA_ROOT });
+      connectionString = managedPostgres.connectionString;
+      process.env.CODMES_DATABASE_URL = connectionString;
+    }
+    if (!postgresConfigured({ CODMES_DATABASE_URL: connectionString })) {
+      throw new Error("CODMES_MULTIUSER_ENABLED requires CODMES_DATABASE_URL.");
+    }
+    codmesDatabase = createCodmesDatabase({ connectionString });
+    await codmesDatabase.migrate();
+    localAccounts = new LocalAccountStore(codmesDatabase);
+    workspaceTenancy = new WorkspaceTenancyStore(codmesDatabase, CODMES_DATA_ROOT, {
+      legacyWorkspaceRoot: LEGACY_WORKSPACE_ROOT
+    });
+    postgresIngestQueue = new PostgresIngestQueue(codmesDatabase);
+    await postgresIngestQueue.recoverStale(1);
+    await fs.mkdir(CODMES_DATA_ROOT, { recursive: true });
+  } else {
+    await ensureWorkspace();
+  }
+  const server = http.createServer((req, res) => withRequestContext(
+    { workspaceRoot: LEGACY_WORKSPACE_ROOT, user: null, workspace: null },
+    () => handleRequest(req, res)
+  ));
+  server.on("upgrade", (req, socket) => withRequestContext(
+    { workspaceRoot: LEGACY_WORKSPACE_ROOT, user: null, workspace: null },
+    () => handleUpgrade(req, socket)
+  ));
   server.listen(DEFAULT_PORT, WORKSPACE_HOST, () => {
     console.log(`[codmes] listening on http://${WORKSPACE_HOST}:${DEFAULT_PORT}`);
-    console.log(`[codmes] root ${WORKSPACE_ROOT}`);
+    console.log(`[codmes] root ${activeWorkspaceRoot()}`);
+    if (postgresIngestQueue) setImmediate(() => resumePendingIngestJobs().catch((error) => {
+      console.warn(`[codmes] ingest recovery failed: ${error?.message || error}`);
+    }));
   });
-  await startSearchWatchers();
+  let stopping = false;
+  const shutdown = async () => {
+    if (stopping) return;
+    stopping = true;
+    await new Promise((resolve) => server.close(resolve));
+    await closePostgresSearchStores();
+    await codmesDatabase?.close().catch(() => {});
+    await stopManagedPostgres(managedPostgres).catch(() => {});
+  };
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.once(signal, () => shutdown().finally(() => process.exit(0)));
+  }
+  if (!MULTIUSER_ENABLED) await startSearchWatchers();
 }
 
-function handleUpgrade(req, socket) {
-  const url = new URL(req.url || "/", "http://localhost");
-  if (url.pathname !== "/api/live") {
-    socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
-    socket.destroy();
-    return;
-  }
-  if (!isAuthorized(req, url)) {
-    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-    socket.destroy();
-    return;
-  }
+async function handleUpgrade(req, socket) {
   try {
+    const url = new URL(req.url || "/", "http://localhost");
+    if (url.pathname !== "/api/live") {
+      socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    if (!await authorizeRequest(req, url)) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
+    }
     acceptWebSocket(req, socket);
     startLiveBridge(socket);
   } catch (error) {
-    socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+    const status = Number.isInteger(error?.status) ? error.status : 400;
+    socket.write(`HTTP/1.1 ${status} ${status === 401 ? "Unauthorized" : status === 404 ? "Not Found" : "Bad Request"}\r\n\r\n`);
     socket.destroy(error);
   }
 }
@@ -162,12 +236,17 @@ function startLiveBridge(socket) {
 
 function createAgentEngine() {
   return createWorkspaceAgentEngine({
-    workspaceRoot: WORKSPACE_ROOT
+    workspaceRoot: activeWorkspaceRoot(),
+    workspaceId: currentRequestContext().workspace?.id || null
   });
 }
 
 function isPublicRequest(req, url) {
-  return req.method === "GET" && url.pathname === "/api/health";
+  if (req.method === "GET" && url.pathname === "/api/health") return true;
+  if (!MULTIUSER_ENABLED) return false;
+  return (req.method === "GET" && url.pathname === "/api/local-auth/bootstrap")
+    || (req.method === "POST" && url.pathname === "/api/local-auth/bootstrap")
+    || (req.method === "POST" && url.pathname === "/api/local-auth/login");
 }
 
 function isAuthorized(req, url) {
@@ -177,6 +256,55 @@ function isAuthorized(req, url) {
   const queryToken = url.searchParams.get("token") || "";
   const headerToken = String(req.headers["x-codmes-token"] || "").trim();
   return bearer === SERVER_TOKEN || queryToken === SERVER_TOKEN || headerToken === SERVER_TOKEN;
+}
+
+async function authorizeRequest(req, url) {
+  if (!MULTIUSER_ENABLED) return isAuthorized(req, url);
+  const user = await localAccounts.resolveToken(requestAuthToken(req));
+  if (!user) return false;
+  updateRequestContext({ user });
+  if (requestDoesNotRequireWorkspace(url)) return true;
+  let workspaceId = String(req.headers["x-codmes-workspace-id"] || url.searchParams.get("workspaceId") || "").trim();
+  if (!workspaceId) {
+    const workspaces = await workspaceTenancy.listForUser(user.id);
+    if (workspaces.length === 1) workspaceId = workspaces[0].id;
+  }
+  if (!workspaceId) {
+    throw Object.assign(new Error("Select a Codmes workspace."), { status: 400 });
+  }
+  const requiredRole = new Set(["GET", "HEAD"]).has(req.method) ? "viewer" : "editor";
+  const workspace = await workspaceTenancy.resolveForUser(user.id, workspaceId, requiredRole);
+  await ensureWorkspaceAtRoot(workspace.root);
+  updateRequestContext({ workspaceRoot: workspace.root, workspace });
+  return true;
+}
+
+function requestAuthToken(req) {
+  const authorization = String(req.headers.authorization || "");
+  const bearer = authorization.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  if (bearer) return bearer;
+  const headerToken = String(req.headers["x-codmes-token"] || "").trim();
+  if (headerToken) return headerToken;
+  const protocol = String(req.headers["sec-websocket-protocol"] || "");
+  const protocolToken = protocol.split(",").map((item) => item.trim())
+    .find((item) => item.startsWith("codmes.bearer."));
+  if (protocolToken) return protocolToken.slice("codmes.bearer.".length);
+  return "";
+}
+
+function requestDoesNotRequireWorkspace(url) {
+  return url.pathname === "/api/local-auth/logout"
+    || url.pathname === "/api/local-auth/me"
+    || url.pathname === "/api/local-users"
+    || url.pathname === "/api/workspaces";
+}
+
+function publicWorkspace(workspace) {
+  return {
+    id: workspace.id,
+    name: workspace.name,
+    role: workspace.role
+  };
 }
 
 async function handleLiveCommand(engine, message) {
@@ -241,24 +369,28 @@ async function handleLiveCommand(engine, message) {
 }
 
 async function ensureWorkspace() {
-  await fs.mkdir(WORKSPACE_ROOT, { recursive: true });
-  await ensureAgentWorkspaceState(WORKSPACE_ROOT);
+  return await ensureWorkspaceAtRoot(activeWorkspaceRoot());
+}
+
+async function ensureWorkspaceAtRoot(workspaceRoot) {
+  await fs.mkdir(workspaceRoot, { recursive: true });
+  await ensureAgentWorkspaceState(workspaceRoot);
   const { ensurePluginRuntime } = await import("./lib/runtime/plugin-runtime.mjs");
-  await ensurePluginRuntime(WORKSPACE_ROOT);
-  await fs.mkdir(path.join(WORKSPACE_ROOT, WORKSPACE_DIRS.notes), { recursive: true });
-  await fs.mkdir(path.join(WORKSPACE_ROOT, WORKSPACE_DIRS.code), { recursive: true });
-  await fs.mkdir(path.join(WORKSPACE_ROOT, WORKSPACE_DIRS.documents), { recursive: true });
-  await fs.mkdir(path.join(WORKSPACE_ROOT, WORKSPACE_DIRS.attachments), { recursive: true });
-  await writeJsonIfMissing(path.join(WORKSPACE_ROOT, ".codmes", "metadata.json"), {
+  await ensurePluginRuntime(workspaceRoot);
+  await fs.mkdir(path.join(workspaceRoot, WORKSPACE_DIRS.notes), { recursive: true });
+  await fs.mkdir(path.join(workspaceRoot, WORKSPACE_DIRS.code), { recursive: true });
+  await fs.mkdir(path.join(workspaceRoot, WORKSPACE_DIRS.documents), { recursive: true });
+  await fs.mkdir(path.join(workspaceRoot, WORKSPACE_DIRS.attachments), { recursive: true });
+  await writeJsonIfMissing(path.join(workspaceRoot, ".codmes", "metadata.json"), {
     schemaVersion: 1,
-    workspaceRoot: WORKSPACE_ROOT,
+    workspaceRoot,
     createdAt: new Date().toISOString(),
     files: {},
     indexes: {}
   });
   try {
     const { archiveOverflowGeneralSessions } = await import("./lib/runtime/session-archive.mjs");
-    await archiveOverflowGeneralSessions(WORKSPACE_ROOT, { limit: 30 });
+    await archiveOverflowGeneralSessions(workspaceRoot, { limit: 30 });
   } catch {}
 }
 
@@ -275,7 +407,27 @@ async function handleRequest(req, res) {
     const url = new URL(req.url || "/", "http://localhost");
     if (req.method === "OPTIONS") return sendNoContent(res);
     setCors(res);
-    if (!isPublicRequest(req, url) && !isAuthorized(req, url)) {
+    if (MULTIUSER_ENABLED && req.method === "GET" && url.pathname === "/api/local-auth/bootstrap") {
+      return sendJson(res, { required: !await localAccounts.hasUsers() });
+    }
+    if (MULTIUSER_ENABLED && req.method === "POST" && url.pathname === "/api/local-auth/bootstrap") {
+      const body = await readJsonBody(req);
+      const user = await localAccounts.bootstrapAdmin(body);
+      const workspace = await workspaceTenancy.createWorkspace(user, {
+        name: body.workspaceName || "My Workspace",
+        adoptLegacy: body.adoptLegacy !== false
+      });
+      const login = await localAccounts.login({
+        username: body.username,
+        password: body.password,
+        deviceName: body.deviceName || "First device"
+      });
+      return sendJson(res, { ...login, workspace: publicWorkspace(workspace) }, 201);
+    }
+    if (MULTIUSER_ENABLED && req.method === "POST" && url.pathname === "/api/local-auth/login") {
+      return sendJson(res, await localAccounts.login(await readJsonBody(req)));
+    }
+    if (!isPublicRequest(req, url) && !await authorizeRequest(req, url)) {
       return sendJson(res, { ok: false, error: "Unauthorized." }, 401);
     }
 
@@ -283,20 +435,55 @@ async function handleRequest(req, res) {
       return sendJson(res, {
         ok: true,
         service: "codmes",
-        authRequired: Boolean(SERVER_TOKEN)
+        authRequired: MULTIUSER_ENABLED || Boolean(SERVER_TOKEN),
+        multiuser: MULTIUSER_ENABLED
       });
+    }
+    if (MULTIUSER_ENABLED && req.method === "GET" && url.pathname === "/api/local-auth/me") {
+      return sendJson(res, { user: currentRequestContext().user });
+    }
+    if (MULTIUSER_ENABLED && req.method === "POST" && url.pathname === "/api/local-auth/logout") {
+      return sendJson(res, await localAccounts.logout(requestAuthToken(req)));
+    }
+    if (MULTIUSER_ENABLED && req.method === "GET" && url.pathname === "/api/local-users") {
+      return sendJson(res, { users: await localAccounts.listUsers(currentRequestContext().user) });
+    }
+    if (MULTIUSER_ENABLED && req.method === "POST" && url.pathname === "/api/local-users") {
+      const user = await localAccounts.createUser(currentRequestContext().user, await readJsonBody(req));
+      return sendJson(res, { user }, 201);
+    }
+    if (MULTIUSER_ENABLED && req.method === "GET" && url.pathname === "/api/workspaces") {
+      const workspaces = await workspaceTenancy.listForUser(currentRequestContext().user.id);
+      return sendJson(res, { workspaces: workspaces.map(publicWorkspace) });
+    }
+    if (MULTIUSER_ENABLED && req.method === "POST" && url.pathname === "/api/workspaces") {
+      const body = await readJsonBody(req);
+      const workspace = await workspaceTenancy.createWorkspace(
+        currentRequestContext().user,
+        { name: body.name }
+      );
+      return sendJson(res, { workspace: publicWorkspace(workspace) }, 201);
+    }
+    if (MULTIUSER_ENABLED && req.method === "POST" && url.pathname === "/api/system/backups") {
+      if (currentRequestContext().user.role !== "admin") {
+        throw Object.assign(new Error("Administrator access is required."), { status: 403 });
+      }
+      if (!managedPostgres) {
+        throw Object.assign(new Error("Backups are available when managed PostgreSQL is enabled."), { status: 409 });
+      }
+      return sendJson(res, await createManagedBackup(managedPostgres, { dataRoot: CODMES_DATA_ROOT }), 201);
     }
     if (req.method === "GET" && url.pathname === "/api/workspace") {
       return sendJson(res, await workspaceInfo());
     }
     if (req.method === "GET" && url.pathname === "/api/plugins") {
       const { listPublicRuntimePlugins } = await import("./lib/runtime/plugin-runtime.mjs");
-      return sendJson(res, { plugins: await listPublicRuntimePlugins(WORKSPACE_ROOT) });
+      return sendJson(res, { plugins: await listPublicRuntimePlugins(activeWorkspaceRoot()) });
     }
     if (req.method === "POST" && url.pathname === "/api/plugins/install") {
       const body = await readJsonBody(req);
       const { installPlugin } = await import("./lib/runtime/plugin-registry.mjs");
-      return sendJson(res, await installPlugin(WORKSPACE_ROOT, body.path), 201);
+      return sendJson(res, await installPlugin(activeWorkspaceRoot(), body.path), 201);
     }
     const pluginConfigurationMatch = url.pathname.match(
       /^\/api\/plugins\/([^/]+)\/configuration$/
@@ -304,7 +491,7 @@ async function handleRequest(req, res) {
     if (req.method === "POST" && pluginConfigurationMatch) {
       const { savePluginConfiguration } = await import("./lib/runtime/plugin-runtime.mjs");
       return sendJson(res, await savePluginConfiguration(
-        WORKSPACE_ROOT,
+        activeWorkspaceRoot(),
         decodeURIComponent(pluginConfigurationMatch[1]),
         await readJsonBody(req)
       ));
@@ -315,7 +502,7 @@ async function handleRequest(req, res) {
     if (pluginMcpToolsMatch && req.method === "GET") {
       const { getPluginMcpToolConsent } = await import("./lib/runtime/mcp-tool-consent.mjs");
       return sendJson(res, await getPluginMcpToolConsent(
-        WORKSPACE_ROOT,
+        activeWorkspaceRoot(),
         decodeURIComponent(pluginMcpToolsMatch[1])
       ));
     }
@@ -334,14 +521,14 @@ async function handleRequest(req, res) {
       const { setPluginMcpToolConsent } = await import("./lib/runtime/mcp-tool-consent.mjs");
       const body = await readJsonBody(req);
       return sendJson(res, await setPluginMcpToolConsent(
-        WORKSPACE_ROOT,
+        activeWorkspaceRoot(),
         decodeURIComponent(pluginMcpToolsConsentMatch[1]),
         body.approvedTools
       ));
     }
     if (req.method === "GET" && url.pathname === "/api/marketplace/plugins") {
       const { listMarketplacePlugins } = await import("./lib/runtime/plugin-marketplace.mjs");
-      return sendJson(res, await listMarketplacePlugins(WORKSPACE_ROOT));
+      return sendJson(res, await listMarketplacePlugins(activeWorkspaceRoot()));
     }
     const marketplaceInstallMatch = url.pathname.match(
       /^\/api\/marketplace\/plugins\/([^/]+)\/(install|update)$/
@@ -350,7 +537,7 @@ async function handleRequest(req, res) {
       const body = await readJsonBody(req);
       const { installMarketplacePlugin } = await import("./lib/runtime/plugin-marketplace.mjs");
       return sendJson(res, await installMarketplacePlugin(
-        WORKSPACE_ROOT,
+        activeWorkspaceRoot(),
         decodeURIComponent(marketplaceInstallMatch[1]),
         {
           version: body.version || null,
@@ -365,14 +552,14 @@ async function handleRequest(req, res) {
       const body = await readJsonBody(req);
       const { getPluginInstallState, rollbackPlugin } = await import("./lib/runtime/plugin-registry.mjs");
       const pluginId = decodeURIComponent(pluginRollbackMatch[1]);
-      const state = await getPluginInstallState(WORKSPACE_ROOT, pluginId);
+      const state = await getPluginInstallState(activeWorkspaceRoot(), pluginId);
       const version = body.version || state?.previousVersion || null;
       if (state?.source?.type === "marketplace" && version) {
         const { assertMarketplaceVersionAllowed } = await import("./lib/runtime/plugin-marketplace.mjs");
         await assertMarketplaceVersionAllowed(pluginId, version);
       }
       return sendJson(res, await rollbackPlugin(
-        WORKSPACE_ROOT,
+        activeWorkspaceRoot(),
         pluginId,
         version
       ));
@@ -384,7 +571,7 @@ async function handleRequest(req, res) {
         decodeURIComponent(pluginCollectionMatch[1])
       );
       return sendJson(res, await readPluginCollection(
-        WORKSPACE_ROOT,
+        activeWorkspaceRoot(),
         manifest,
         decodeURIComponent(pluginCollectionMatch[2])
       ));
@@ -416,7 +603,7 @@ async function handleRequest(req, res) {
     const pluginRemoveMatch = url.pathname.match(/^\/api\/plugins\/([^/]+)$/);
     if (req.method === "DELETE" && pluginRemoveMatch) {
       const { removePlugin } = await import("./lib/runtime/plugin-registry.mjs");
-      return sendJson(res, await removePlugin(WORKSPACE_ROOT, decodeURIComponent(pluginRemoveMatch[1])));
+      return sendJson(res, await removePlugin(activeWorkspaceRoot(), decodeURIComponent(pluginRemoveMatch[1])));
     }
     const pluginViewDocumentMatch = url.pathname.match(/^\/api\/plugins\/([^/]+)\/view-document$/);
     if (req.method === "GET" && pluginViewDocumentMatch) {
@@ -527,10 +714,17 @@ async function handleRequest(req, res) {
       return sendJson(res, await rebuildIndex());
     }
     if (req.method === "GET" && url.pathname === "/api/search/status") {
-      return sendJson(res, searchStatus(WORKSPACE_ROOT));
+      return sendJson(res, searchStatus(activeWorkspaceRoot()));
     }
     if (req.method === "GET" && url.pathname === "/api/document-jobs") {
-      return sendJson(res, { jobs: listDocumentJobs({ includeCompleted: true }) });
+      const memoryJobs = listDocumentJobs({ includeCompleted: true });
+      const jobs = postgresIngestQueue && currentRequestContext().workspace?.id
+        ? (await postgresIngestQueue.list(currentRequestContext().workspace.id)).map((job) => ({
+            ...job,
+            ...(memoryJobs.find((candidate) => candidate.id === job.id) || {})
+          }))
+        : memoryJobs;
+      return sendJson(res, { jobs });
     }
     if (req.method === "GET" && url.pathname === "/api/global-search") {
       return sendJson(res, await runGlobalSearch(url));
@@ -560,7 +754,7 @@ async function handleRequest(req, res) {
       return sendJson(res, await setSkillEnabled(skillDisableMatch[1], false));
     }
     if (req.method === "GET" && url.pathname === "/api/security") {
-      return sendJson(res, await readSecurityConfig(WORKSPACE_ROOT));
+      return sendJson(res, await readSecurityConfig(activeWorkspaceRoot()));
     }
     if (req.method === "POST" && url.pathname === "/api/security") {
       return sendJson(res, await updateSecurity(req));
@@ -708,14 +902,14 @@ async function handleRequest(req, res) {
     // --- Tool Mode Routes ---
     if (req.method === "GET" && url.pathname === "/api/tool-modes") {
       const { loadToolModes } = await import("./lib/runtime/tool-mode-registry.mjs");
-      return sendJson(res, await loadToolModes(WORKSPACE_ROOT));
+      return sendJson(res, await loadToolModes(activeWorkspaceRoot()));
     }
     const toolModeSurfaceMatch = url.pathname.match(/^\/api\/tool-modes\/([^/]+)$/);
     if (req.method === "POST" && toolModeSurfaceMatch) {
       const surface = decodeURIComponent(toolModeSurfaceMatch[1]);
       const body = await readJsonBody(req);
       const { saveToolModeOverride } = await import("./lib/runtime/tool-mode-registry.mjs");
-      return sendJson(res, await saveToolModeOverride(WORKSPACE_ROOT, surface, body));
+      return sendJson(res, await saveToolModeOverride(activeWorkspaceRoot(), surface, body));
     }
 
     // --- Tool Discovery Routes ---
@@ -726,13 +920,13 @@ async function handleRequest(req, res) {
     if (req.method === "POST" && url.pathname === "/api/tools/discover") {
       const body = await readJsonBody(req);
       const { executeToolDiscovery } = await import("./lib/runtime/tool-discovery.mjs");
-      return sendJson(res, await executeToolDiscovery(WORKSPACE_ROOT, body.surface || "chat", body));
+      return sendJson(res, await executeToolDiscovery(activeWorkspaceRoot(), body.surface || "chat", body));
     }
 
     // --- Conversation Search & Read Routes ---
     if (req.method === "GET" && url.pathname === "/api/conversations/search") {
       const { executeConversationSearch } = await import("./lib/runtime/conversation-tools.mjs");
-      return sendJson(res, await executeConversationSearch(WORKSPACE_ROOT, {
+      return sendJson(res, await executeConversationSearch(activeWorkspaceRoot(), {
         query: url.searchParams.get("query") || "",
         timeRange: url.searchParams.get("timeRange") || "",
         scope: url.searchParams.get("scope") || "",
@@ -745,12 +939,12 @@ async function handleRequest(req, res) {
     if (req.method === "POST" && url.pathname === "/api/conversations/search") {
       const body = await readJsonBody(req);
       const { executeConversationSearch } = await import("./lib/runtime/conversation-tools.mjs");
-      return sendJson(res, await executeConversationSearch(WORKSPACE_ROOT, body));
+      return sendJson(res, await executeConversationSearch(activeWorkspaceRoot(), body));
     }
     if (req.method === "POST" && url.pathname === "/api/conversations/read") {
       const body = await readJsonBody(req);
       const { executeConversationRead } = await import("./lib/runtime/conversation-tools.mjs");
-      return sendJson(res, await executeConversationRead(WORKSPACE_ROOT, body));
+      return sendJson(res, await executeConversationRead(activeWorkspaceRoot(), body));
     }
     const convMsgMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
     if (req.method === "GET" && convMsgMatch) {
@@ -766,12 +960,12 @@ async function handleRequest(req, res) {
     // --- Conversation Folders Routes ---
     if (req.method === "GET" && url.pathname === "/api/conversation-folders") {
       const { listFolders } = await import("./lib/runtime/conversation-folders.mjs");
-      return sendJson(res, await listFolders(WORKSPACE_ROOT));
+      return sendJson(res, await listFolders(activeWorkspaceRoot()));
     }
     if (req.method === "POST" && url.pathname === "/api/conversation-folders") {
       const body = await readJsonBody(req);
       const { createFolder } = await import("./lib/runtime/conversation-folders.mjs");
-      return sendJson(res, await createFolder(WORKSPACE_ROOT, body), 201);
+      return sendJson(res, await createFolder(activeWorkspaceRoot(), body), 201);
     }
     const folderMatch = url.pathname.match(/^\/api\/conversation-folders\/([^/]+)$/);
     if (folderMatch) {
@@ -779,11 +973,11 @@ async function handleRequest(req, res) {
       if (req.method === "PATCH") {
         const body = await readJsonBody(req);
         const { updateFolder } = await import("./lib/runtime/conversation-folders.mjs");
-        return sendJson(res, await updateFolder(WORKSPACE_ROOT, folderId, body));
+        return sendJson(res, await updateFolder(activeWorkspaceRoot(), folderId, body));
       }
       if (req.method === "DELETE") {
         const { deleteFolder } = await import("./lib/runtime/conversation-folders.mjs");
-        return sendJson(res, await deleteFolder(WORKSPACE_ROOT, folderId));
+        return sendJson(res, await deleteFolder(activeWorkspaceRoot(), folderId));
       }
     }
 
@@ -796,7 +990,7 @@ async function handleRequest(req, res) {
       return sendJson(
         res,
         await moveSessionToFolder(
-          WORKSPACE_ROOT,
+          activeWorkspaceRoot(),
           sessionId,
           body.folderId,
           body.projectId,
@@ -809,28 +1003,28 @@ async function handleRequest(req, res) {
       const sessionId = decodeURIComponent(sessionPinMatch[1]);
       const body = await readJsonBody(req);
       const { setSessionPinned } = await import("./lib/runtime/conversation-folders.mjs");
-      return sendJson(res, await setSessionPinned(WORKSPACE_ROOT, sessionId, body.pinned));
+      return sendJson(res, await setSessionPinned(activeWorkspaceRoot(), sessionId, body.pinned));
     }
     const sessionArchiveMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/archive$/);
     if (req.method === "POST" && sessionArchiveMatch) {
       const sessionId = decodeURIComponent(sessionArchiveMatch[1]);
       const { archiveSession } = await import("./lib/runtime/session-archive.mjs");
-      return sendJson(res, await archiveSession(WORKSPACE_ROOT, sessionId));
+      return sendJson(res, await archiveSession(activeWorkspaceRoot(), sessionId));
     }
     const sessionUnarchiveMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/unarchive$/);
     if (req.method === "POST" && sessionUnarchiveMatch) {
       const sessionId = decodeURIComponent(sessionUnarchiveMatch[1]);
       const { unarchiveSession } = await import("./lib/runtime/session-archive.mjs");
-      return sendJson(res, await unarchiveSession(WORKSPACE_ROOT, sessionId));
+      return sendJson(res, await unarchiveSession(activeWorkspaceRoot(), sessionId));
     }
     if (req.method === "GET" && url.pathname === "/api/conversation-archive") {
       const { listArchivedSessions } = await import("./lib/runtime/session-archive.mjs");
-      return sendJson(res, await listArchivedSessions(WORKSPACE_ROOT));
+      return sendJson(res, await listArchivedSessions(activeWorkspaceRoot()));
     }
     if (req.method === "POST" && url.pathname === "/api/sessions/archive-expired") {
       const body = await readJsonBody(req).catch(() => ({}));
       const { archiveOverflowGeneralSessions } = await import("./lib/runtime/session-archive.mjs");
-      return sendJson(res, await archiveOverflowGeneralSessions(WORKSPACE_ROOT, {
+      return sendJson(res, await archiveOverflowGeneralSessions(activeWorkspaceRoot(), {
         limit: body.limit || 30
       }));
     }
@@ -847,32 +1041,32 @@ async function handleRequest(req, res) {
       const timeRange = url.searchParams.get("timeRange") || "";
       const maxResults = parseInt(url.searchParams.get("maxResults") || "10", 10);
       const { searchMemory } = await import("./lib/runtime/memory-retrieval.mjs");
-      return sendJson(res, await searchMemory(WORKSPACE_ROOT, query, { currentFolderId, currentProjectId, timeRange, maxResults }));
+      return sendJson(res, await searchMemory(activeWorkspaceRoot(), query, { currentFolderId, currentProjectId, timeRange, maxResults }));
     }
     if (req.method === "GET" && url.pathname === "/api/memory/settings") {
       const { readMemorySettings } = await import("./lib/runtime/memory-retrieval.mjs");
-      return sendJson(res, await readMemorySettings(WORKSPACE_ROOT));
+      return sendJson(res, await readMemorySettings(activeWorkspaceRoot()));
     }
     if (req.method === "POST" && url.pathname === "/api/memory/settings") {
       const body = await readJsonBody(req);
       const { writeMemorySettings } = await import("./lib/runtime/memory-retrieval.mjs");
-      return sendJson(res, await writeMemorySettings(WORKSPACE_ROOT, body));
+      return sendJson(res, await writeMemorySettings(activeWorkspaceRoot(), body));
     }
     if (req.method === "GET" && url.pathname === "/api/memory/candidates") {
       const { listMemoryCandidates } = await import("./lib/runtime/memory-retrieval.mjs");
-      return sendJson(res, { candidates: await listMemoryCandidates(WORKSPACE_ROOT) });
+      return sendJson(res, { candidates: await listMemoryCandidates(activeWorkspaceRoot()) });
     }
     const memoryCandidateApproveMatch = url.pathname.match(/^\/api\/memory\/candidates\/([^/]+)\/approve$/);
     if (memoryCandidateApproveMatch && req.method === "POST") {
       const body = await readJsonBody(req).catch(() => ({}));
       const { approveMemoryCandidate } = await import("./lib/runtime/memory-retrieval.mjs");
-      return sendJson(res, await approveMemoryCandidate(WORKSPACE_ROOT, decodeURIComponent(memoryCandidateApproveMatch[1]), body));
+      return sendJson(res, await approveMemoryCandidate(activeWorkspaceRoot(), decodeURIComponent(memoryCandidateApproveMatch[1]), body));
     }
     const memoryCandidateRejectMatch = url.pathname.match(/^\/api\/memory\/candidates\/([^/]+)\/reject$/);
     if (memoryCandidateRejectMatch && req.method === "POST") {
       const body = await readJsonBody(req).catch(() => ({}));
       const { rejectMemoryCandidate } = await import("./lib/runtime/memory-retrieval.mjs");
-      return sendJson(res, await rejectMemoryCandidate(WORKSPACE_ROOT, decodeURIComponent(memoryCandidateRejectMatch[1]), body.reason || "Rejected by user."));
+      return sendJson(res, await rejectMemoryCandidate(activeWorkspaceRoot(), decodeURIComponent(memoryCandidateRejectMatch[1]), body.reason || "Rejected by user."));
     }
     if (req.method === "POST" && url.pathname === "/api/memory") {
       const body = await readJsonBody(req);
@@ -897,7 +1091,7 @@ async function handleRequest(req, res) {
       const memoryId = decodeURIComponent(memoryMatch[1]);
       if (req.method === "GET") {
         const { readMemoryById } = await import("./lib/runtime/memory-retrieval.mjs");
-        const memory = await readMemoryById(WORKSPACE_ROOT, memoryId);
+        const memory = await readMemoryById(activeWorkspaceRoot(), memoryId);
         if (!memory) return sendJson(res, { ok: false, error: "Memory not found." }, 404);
         return sendJson(res, memory);
       }
@@ -923,7 +1117,7 @@ async function handleRequest(req, res) {
         await saveUserMemories(filtered);
         if (deletedMemory) {
           const { recordDeletedMemoryTombstone } = await import("./lib/runtime/memory-retrieval.mjs");
-          await recordDeletedMemoryTombstone(WORKSPACE_ROOT, deletedMemory, "user_deleted");
+          await recordDeletedMemoryTombstone(activeWorkspaceRoot(), deletedMemory, "user_deleted");
         }
         return sendJson(res, { ok: true });
       }
@@ -947,7 +1141,15 @@ async function handleRequest(req, res) {
     }
     const sessionAssetMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/assets\/([a-f0-9]{24}\.(?:png|jpg|gif|webp|bmp))$/);
     if (req.method === "GET" && sessionAssetMatch) {
-      return streamSessionAsset(res, decodeURIComponent(sessionAssetMatch[1]), sessionAssetMatch[2]);
+      return await streamSessionAsset(res, decodeURIComponent(sessionAssetMatch[1]), sessionAssetMatch[2]);
+    }
+    const workspaceAssetMatch = url.pathname.match(/^\/api\/workspace-assets\/([a-f0-9-]{36})\/content$/i);
+    if (req.method === "GET" && workspaceAssetMatch) {
+      return await streamWorkspaceAsset(res, workspaceAssetMatch[1]);
+    }
+    const documentAssetMatch = url.pathname.match(/^\/api\/document-assets\/([^/]+)\/([a-zA-Z0-9._-]+\.(?:png|jpg|jpeg|webp))$/i);
+    if (req.method === "GET" && documentAssetMatch) {
+      return await streamDocumentAsset(res, decodeURIComponent(documentAssetMatch[1]), documentAssetMatch[2]);
     }
     const wsSessionMsgMatch = url.pathname.match(/^\/api\/workspace\/sessions\/([^/]+)\/messages$/);
     if (wsSessionMsgMatch) {
@@ -994,8 +1196,8 @@ async function handleRequest(req, res) {
 
 async function workspaceInfo() {
   return {
-    rootName: path.basename(WORKSPACE_ROOT),
-    workspaceRoot: WORKSPACE_ROOT,
+    rootName: path.basename(activeWorkspaceRoot()),
+    workspaceRoot: activeWorkspaceRoot(),
     roots: Object.entries(WORKSPACE_DIRS).map(([id, folder]) => ({
       id,
       name: folder,
@@ -1022,7 +1224,7 @@ async function workspaceInfo() {
       codeChecksEndpoint: "/api/agent/code-task/:id/checks",
       codeGitEndpoint: "/api/agent/code-task/:id/git"
     },
-    search: searchStatus(WORKSPACE_ROOT)
+    search: searchStatus(activeWorkspaceRoot())
   };
 }
 
@@ -1031,7 +1233,7 @@ async function readTree(url) {
   const nestedPath = url.searchParams.get("path") || "";
   const recursive = url.searchParams.get("recursive") === "true";
   const relativePath = joinWorkspacePath(rootPath, nestedPath);
-  const { absolutePath } = resolveWorkspacePath(WORKSPACE_ROOT, relativePath);
+  const { absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), relativePath);
   const children = await readTreeChildren(relativePath, absolutePath, recursive);
   return { path: relativePath, children };
 }
@@ -1069,7 +1271,7 @@ async function readTreeChildren(relativePath, absolutePath, recursive) {
 
 async function readTextFile(url) {
   const filePath = requireQuery(url, "path");
-  const { relativePath, absolutePath } = resolveWorkspacePath(WORKSPACE_ROOT, filePath);
+  const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), filePath);
   const stat = await fs.stat(absolutePath);
   if (stat.isDirectory()) throw Object.assign(new Error("Cannot read a folder as a file."), { status: 400 });
   if (stat.size > TEXT_FILE_LIMIT) {
@@ -1088,7 +1290,7 @@ async function readTextFile(url) {
 
 async function streamRawFile(req, res, url) {
   const filePath = requireQuery(url, "path");
-  const { absolutePath } = resolveWorkspacePath(WORKSPACE_ROOT, filePath);
+  const { absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), filePath);
   const stat = await fs.stat(absolutePath);
   if (stat.isDirectory()) throw Object.assign(new Error("Cannot stream a folder."), { status: 400 });
   const range = parseByteRange(req.headers.range, stat.size);
@@ -1150,7 +1352,7 @@ async function streamPdfThumbnail(res, url) {
   const crop = pdfThumbnailCrop(url);
   const scale = pdfThumbnailScale(url);
   const highlightQuery = String(url.searchParams.get("highlight") || "").trim().slice(0, 120);
-  const { relativePath, absolutePath } = resolveWorkspacePath(WORKSPACE_ROOT, filePath);
+  const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), filePath);
   if (path.extname(relativePath).toLowerCase() !== ".pdf") {
     throw Object.assign(new Error("PDF thumbnail source must be a PDF file."), { status: 400 });
   }
@@ -1188,7 +1390,7 @@ async function streamPdfThumbnail(res, url) {
 
 async function readPdfMetadata(url) {
   const filePath = requireQuery(url, "path");
-  const { relativePath, absolutePath } = resolveWorkspacePath(WORKSPACE_ROOT, filePath);
+  const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), filePath);
   if (path.extname(relativePath).toLowerCase() !== ".pdf") {
     throw Object.assign(new Error("PDF metadata source must be a PDF file."), { status: 400 });
   }
@@ -1265,7 +1467,7 @@ source.close()
 
 async function resolvePdfStreamSource(url) {
   const filePath = requireQuery(url, "path");
-  const { relativePath, absolutePath } = resolveWorkspacePath(WORKSPACE_ROOT, filePath);
+  const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), filePath);
   if (path.extname(relativePath).toLowerCase() !== ".pdf") {
     throw Object.assign(new Error("PDF stream source must be a PDF file."), { status: 400 });
   }
@@ -1276,7 +1478,7 @@ async function resolvePdfStreamSource(url) {
 
 async function cachedPdfStreamArtifact(cacheIdentity, suffix, produce) {
   const key = createHash("sha256").update(cacheIdentity).digest("hex");
-  const directory = path.join(WORKSPACE_ROOT, ".codmes", "index", "pdf-stream");
+  const directory = path.join(activeWorkspaceRoot(), ".codmes", "index", "pdf-stream");
   const outputPath = path.join(directory, `${key}-${suffix}`);
   try {
     await fs.access(outputPath);
@@ -1347,7 +1549,7 @@ async function renderPdfThumbnail(absolutePath, relativePath, stat, page, crop, 
     highlightQuery,
     scale
   });
-  const outputPath = path.join(WORKSPACE_ROOT, ".codmes", "index", "thumbnails", fileName);
+  const outputPath = path.join(activeWorkspaceRoot(), ".codmes", "index", "thumbnails", fileName);
   try {
     await fs.access(outputPath);
     return outputPath;
@@ -1491,7 +1693,7 @@ async function writeTextFile(req, url) {
   const filePath = requireQuery(url, "path");
   const body = await readJsonBody(req);
   const content = typeof body.content === "string" ? body.content : "";
-  const { relativePath, absolutePath } = resolveWorkspacePath(WORKSPACE_ROOT, filePath);
+  const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), filePath);
   await fs.mkdir(path.dirname(absolutePath), { recursive: true });
   await fs.writeFile(absolutePath, content, "utf8");
   await refreshSearchIndexPaths([relativePath]);
@@ -1508,7 +1710,7 @@ async function createFile(req) {
   const body = await readJsonBody(req);
   const filePath = body.path;
   if (!filePath) throw Object.assign(new Error("Missing file path."), { status: 400 });
-  const { relativePath, absolutePath } = resolveWorkspacePath(WORKSPACE_ROOT, filePath);
+  const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), filePath);
   await fs.mkdir(path.dirname(absolutePath), { recursive: true });
   await fs.writeFile(absolutePath, typeof body.content === "string" ? body.content : "", { flag: "wx" });
   await refreshSearchIndexPaths([relativePath]);
@@ -1518,7 +1720,7 @@ async function createFile(req) {
 async function createFolder(req) {
   const body = await readJsonBody(req);
   if (!body.path) throw Object.assign(new Error("Missing folder path."), { status: 400 });
-  const { relativePath, absolutePath } = resolveWorkspacePath(WORKSPACE_ROOT, body.path);
+  const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), body.path);
   await fs.mkdir(absolutePath, { recursive: true });
   await refreshSearchIndexPaths([relativePath]);
   return { ok: true, path: relativePath };
@@ -1527,15 +1729,15 @@ async function createFolder(req) {
 async function movePath(req) {
   const body = await readJsonBody(req);
   if (!body.from || !body.to) throw Object.assign(new Error("Missing from or to path."), { status: 400 });
-  const from = resolveWorkspacePath(WORKSPACE_ROOT, body.from);
-  const to = resolveWorkspacePath(WORKSPACE_ROOT, body.to);
+  const from = resolveWorkspacePath(activeWorkspaceRoot(), body.from);
+  const to = resolveWorkspacePath(activeWorkspaceRoot(), body.to);
   const movedDocuments = await collectDocumentStateTransitions(from.relativePath, to.relativePath);
   await fs.mkdir(path.dirname(to.absolutePath), { recursive: true });
   await fs.rename(from.absolutePath, to.absolutePath);
   await transferDocumentStateFiles(movedDocuments, { mode: "move" });
-  await removeDocumentIngestCacheFiles(WORKSPACE_ROOT, movedDocuments.map((transition) => transition.from));
+  await removeDocumentIngestCacheFiles(activeWorkspaceRoot(), movedDocuments.map((transition) => transition.from));
   await Promise.all(movedDocuments.map((transition) => (
-    fs.rm(documentStateDirectory(WORKSPACE_ROOT, transition.from), { recursive: true, force: true })
+    fs.rm(documentStateDirectory(activeWorkspaceRoot(), transition.from), { recursive: true, force: true })
   )));
   await refreshSearchIndexPaths([from.relativePath, to.relativePath]);
   return { ok: true, from: from.relativePath, to: to.relativePath };
@@ -1544,8 +1746,8 @@ async function movePath(req) {
 async function copyPath(req) {
   const body = await readJsonBody(req);
   if (!body.from || !body.to) throw Object.assign(new Error("Missing from or to path."), { status: 400 });
-  const from = resolveWorkspacePath(WORKSPACE_ROOT, body.from);
-  const to = resolveWorkspacePath(WORKSPACE_ROOT, body.to);
+  const from = resolveWorkspacePath(activeWorkspaceRoot(), body.from);
+  const to = resolveWorkspacePath(activeWorkspaceRoot(), body.to);
   const copiedDocuments = await collectDocumentStateTransitions(from.relativePath, to.relativePath);
   await fs.mkdir(path.dirname(to.absolutePath), { recursive: true });
   await fs.cp(from.absolutePath, to.absolutePath, {
@@ -1564,11 +1766,11 @@ async function uploadFile(req) {
   if (typeof body.dataBase64 !== "string") {
     throw Object.assign(new Error("Missing file data."), { status: 400 });
   }
-  const { relativePath, absolutePath } = resolveWorkspacePath(WORKSPACE_ROOT, body.path);
+  const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), body.path);
   await assertPathAvailable(absolutePath);
   await fs.mkdir(path.dirname(absolutePath), { recursive: true });
   await fs.writeFile(absolutePath, Buffer.from(body.dataBase64, "base64"), { flag: "wx" });
-  const documentJob = queueUploadedNotesPdfProcessing(relativePath, absolutePath);
+  const documentJob = await queueUploadedNotesPdfProcessing(relativePath, absolutePath);
   if (!documentJob) await refreshSearchIndexPaths([relativePath]);
   return { ok: true, path: relativePath, documentJob };
 }
@@ -1579,7 +1781,7 @@ async function replaceBinaryFile(req) {
   if (typeof body.dataBase64 !== "string") {
     throw Object.assign(new Error("Missing file data."), { status: 400 });
   }
-  const { relativePath, absolutePath } = resolveWorkspacePath(WORKSPACE_ROOT, body.path);
+  const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), body.path);
   const stat = await fs.stat(absolutePath);
   if (stat.isDirectory()) throw Object.assign(new Error("Cannot replace a folder."), { status: 400 });
   await fs.writeFile(absolutePath, Buffer.from(body.dataBase64, "base64"));
@@ -1594,7 +1796,7 @@ async function importCodmesPdf(req) {
   if (typeof body.pdfDataBase64 !== "string") {
     throw Object.assign(new Error("Missing PDF data."), { status: 400 });
   }
-  const requested = resolveWorkspacePath(WORKSPACE_ROOT, body.path);
+  const requested = resolveWorkspacePath(activeWorkspaceRoot(), body.path);
   const target = await availableWorkspaceFilePath(requested.relativePath);
   await fs.mkdir(path.dirname(target.absolutePath), { recursive: true });
   await fs.writeFile(target.absolutePath, Buffer.from(body.pdfDataBase64, "base64"), { flag: "wx" });
@@ -1603,10 +1805,10 @@ async function importCodmesPdf(req) {
   if (typeof body.codmesDataBase64 === "string" && body.codmesDataBase64.trim()) {
     const raw = Buffer.from(body.codmesDataBase64, "base64").toString("utf8");
     annotations = normalizeAnnotations(target.relativePath, JSON.parse(raw));
-    const targetAnnotationPath = annotationsPathForDocument(WORKSPACE_ROOT, target.relativePath);
+    const targetAnnotationPath = annotationsPathForDocument(activeWorkspaceRoot(), target.relativePath);
     await fs.mkdir(path.dirname(targetAnnotationPath), { recursive: true });
     await fs.writeFile(targetAnnotationPath, JSON.stringify(annotations, null, 2) + "\n", "utf8");
-    await ensureDocumentStateManifest(WORKSPACE_ROOT, target.relativePath);
+    await ensureDocumentStateManifest(activeWorkspaceRoot(), target.relativePath);
   }
 
   const documentJob = queueUploadedNotesPdfProcessing(target.relativePath, target.absolutePath);
@@ -1656,19 +1858,19 @@ async function importCodmesPdfPackage(req) {
   }
   const packageContents = readCodmesPdfPackage(Buffer.from(body.packageDataBase64, "base64"));
   const requestedName = body.path || `Documents/${codmesPdfBaseName(packageContents.manifest.title)}.pdf`;
-  const requested = resolveWorkspacePath(WORKSPACE_ROOT, ensurePdfExtension(requestedName));
+  const requested = resolveWorkspacePath(activeWorkspaceRoot(), ensurePdfExtension(requestedName));
   const target = await availableWorkspaceFilePath(requested.relativePath);
-  const stateDirectory = documentStateDirectory(WORKSPACE_ROOT, target.relativePath);
+  const stateDirectory = documentStateDirectory(activeWorkspaceRoot(), target.relativePath);
   let documentJob = null;
   try {
     await fs.rm(stateDirectory, { recursive: true, force: true });
     await fs.mkdir(path.dirname(target.absolutePath), { recursive: true });
     await fs.writeFile(target.absolutePath, packageContents.pdfData, { flag: "wx" });
     const annotations = normalizeAnnotations(target.relativePath, packageContents.annotations);
-    const targetAnnotationPath = annotationsPathForDocument(WORKSPACE_ROOT, target.relativePath);
+    const targetAnnotationPath = annotationsPathForDocument(activeWorkspaceRoot(), target.relativePath);
     await fs.mkdir(path.dirname(targetAnnotationPath), { recursive: true });
     await fs.writeFile(targetAnnotationPath, JSON.stringify(annotations, null, 2) + "\n", "utf8");
-    await ensureDocumentStateManifest(WORKSPACE_ROOT, target.relativePath);
+    await ensureDocumentStateManifest(activeWorkspaceRoot(), target.relativePath);
     documentJob = queueUploadedNotesPdfProcessing(target.relativePath, target.absolutePath);
     if (!documentJob) await refreshSearchIndexPaths([target.relativePath]);
   } catch (error) {
@@ -1705,7 +1907,7 @@ async function startChunkedUpload(req) {
   if (!Number.isSafeInteger(size) || size < 0) {
     throw Object.assign(new Error("Missing or invalid file size."), { status: 400 });
   }
-  const { relativePath, absolutePath } = resolveWorkspacePath(WORKSPACE_ROOT, body.path);
+  const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), body.path);
   await assertPathAvailable(absolutePath);
   await fs.mkdir(uploadTempDir(), { recursive: true });
   const uploadId = randomUUID();
@@ -1758,7 +1960,7 @@ async function completeChunkedUpload(req) {
   if (meta.received !== meta.size) {
     throw Object.assign(new Error(`Upload incomplete. Received ${meta.received} of ${meta.size} bytes.`), { status: 400 });
   }
-  const { relativePath, absolutePath } = resolveWorkspacePath(WORKSPACE_ROOT, meta.path);
+  const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), meta.path);
   await assertPathAvailable(absolutePath);
   await fs.mkdir(path.dirname(absolutePath), { recursive: true });
   await fs.copyFile(uploadTempPath(uploadId), absolutePath, fsConstants.COPYFILE_EXCL);
@@ -1768,40 +1970,26 @@ async function completeChunkedUpload(req) {
   return { ok: true, uploadId, path: relativePath, documentJob };
 }
 
-function queueUploadedNotesPdfProcessing(relativePath, absolutePath) {
+async function queueUploadedNotesPdfProcessing(relativePath, absolutePath) {
   const normalized = String(relativePath || "").replace(/\\/g, "/");
   if (!normalized.toLowerCase().startsWith("notes/") || path.extname(normalized).toLowerCase() !== ".pdf") {
     return null;
   }
-  const job = startDocumentJob({ path: normalized });
-  const run = async () => {
-    try {
-      const result = await normalizePdfBinaryTextLayer(WORKSPACE_ROOT, absolutePath, normalized, {
-        onProgress: (progress) => updateDocumentJob(job.id, progress)
-      });
-      updateDocumentJob(job.id, {
-        stage: "indexing",
-        stageLabel: "검색 인덱스 갱신 중",
-        progress: 0.96,
-        completedUnits: null,
-        totalUnits: null
-      });
-      await refreshSearchIndexPaths([normalized]);
-      finishDocumentJob(job.id, {
-        status: "completed",
-        message: result.normalized
-          ? `${result.pages?.length || 0}개 페이지를 정규화했습니다.`
-          : "기존 PDF 텍스트 레이어가 정상입니다."
-      });
-    } catch (error) {
-      console.warn(`[codmes] PDF text-layer normalization failed for ${normalized}: ${error?.message || error}`);
-      await refreshSearchIndexPaths([normalized]).catch(() => {});
-      finishDocumentJob(job.id, {
-        status: "failed",
-        message: String(error?.message || error)
-      });
-    }
-  };
+  const workspace = currentRequestContext().workspace;
+  const queued = postgresIngestQueue && workspace?.id
+    ? await postgresIngestQueue.enqueue({
+        workspaceId: workspace.id,
+        jobType: "pdf-normalization",
+        payload: { path: normalized }
+      })
+    : null;
+  const job = startDocumentJob({ id: queued?.id, path: normalized });
+  const run = async () => await runDocumentIngestJob({
+    job,
+    persistent: queued,
+    workspace: workspace || { id: null, root: activeWorkspaceRoot(), role: "owner" },
+    absolutePath
+  });
   setImmediate(() => {
     run().catch((error) => {
       finishDocumentJob(job.id, { status: "failed", message: String(error?.message || error) });
@@ -1815,6 +2003,52 @@ function queueUploadedNotesPdfProcessing(relativePath, absolutePath) {
   };
 }
 
+async function runDocumentIngestJob({ job, persistent, workspace, absolutePath = null, alreadyClaimed = false }) {
+  const claimed = persistent && !alreadyClaimed
+    ? await postgresIngestQueue.claimById(job.id, INGEST_WORKER_ID)
+    : persistent;
+  if (persistent && !claimed) return;
+  return await withRequestContext({ workspaceRoot: workspace.root, workspace, user: null }, async () => {
+    const sourcePath = absolutePath || resolveWorkspacePath(workspace.root, job.path).absolutePath;
+    try {
+      const result = await normalizePdfBinaryTextLayer(workspace.root, sourcePath, job.path, {
+        onProgress: (progress) => {
+          updateDocumentJob(job.id, progress);
+          if (persistent) postgresIngestQueue.progress(job.id, INGEST_WORKER_ID, progress.progress).catch(() => {});
+        }
+      });
+      updateDocumentJob(job.id, { stage: "indexing", stageLabel: "검색 인덱스 갱신 중", progress: 0.96 });
+      await refreshSearchIndexPaths([job.path]);
+      finishDocumentJob(job.id, {
+        status: "completed",
+        message: result.normalized ? `${result.pages?.length || 0}개 페이지를 정규화했습니다.` : "기존 PDF 텍스트 레이어가 정상입니다."
+      });
+      if (persistent) await postgresIngestQueue.complete(job.id, INGEST_WORKER_ID);
+    } catch (error) {
+      console.warn(`[codmes] PDF text-layer normalization failed for ${job.path}: ${error?.message || error}`);
+      await refreshSearchIndexPaths([job.path]).catch(() => {});
+      finishDocumentJob(job.id, { status: "failed", message: String(error?.message || error) });
+      if (persistent) await postgresIngestQueue.fail(job.id, INGEST_WORKER_ID, error);
+    }
+  });
+}
+
+async function resumePendingIngestJobs() {
+  for (;;) {
+    const claimed = await postgresIngestQueue.claim(INGEST_WORKER_ID, ["pdf-normalization"]);
+    if (!claimed) return;
+    const workspace = await workspaceTenancy.resolveByIdInternal(claimed.workspaceId);
+    if (!workspace) {
+      await postgresIngestQueue.fail(claimed.id, INGEST_WORKER_ID, "Workspace no longer exists.");
+      continue;
+    }
+    const job = startDocumentJob({ id: claimed.id, path: claimed.payload.path });
+    // The row is already claimed by this recovery worker, so run without a
+    // second claim while retaining persistent progress and completion.
+    await runDocumentIngestJob({ job, persistent: claimed, workspace, alreadyClaimed: true });
+  }
+}
+
 async function cancelChunkedUpload(req) {
   const body = await readJsonBody(req);
   const uploadId = requireUploadId(body.uploadId);
@@ -1824,7 +2058,7 @@ async function cancelChunkedUpload(req) {
 
 async function deletePath(url) {
   const filePath = requireQuery(url, "path");
-  const { relativePath, absolutePath } = resolveWorkspacePath(WORKSPACE_ROOT, filePath);
+  const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), filePath);
   const deletedDocuments = await collectDocumentPathsForState(relativePath);
   await fs.rm(absolutePath, { recursive: true, force: false });
   await removeDocumentStateFiles(deletedDocuments);
@@ -1834,12 +2068,12 @@ async function deletePath(url) {
 
 async function fileMetadata(url) {
   const filePath = requireQuery(url, "path");
-  return await readFileMetadata(WORKSPACE_ROOT, filePath);
+  return await readFileMetadata(activeWorkspaceRoot(), filePath);
 }
 
 async function readFileAnnotations(url) {
   const filePath = requireQuery(url, "path");
-  const { relativePath, absolutePath } = resolveWorkspacePath(WORKSPACE_ROOT, filePath);
+  const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), filePath);
   const stat = await fs.stat(absolutePath);
   if (stat.isDirectory()) throw Object.assign(new Error("Cannot annotate a folder."), { status: 400 });
   try {
@@ -1861,7 +2095,7 @@ async function availableWorkspaceFilePath(relativePath) {
   for (let index = 0; index < 1000; index += 1) {
     const candidateName = index === 0 ? `${baseName}${extension}` : `${baseName} ${index + 1}${extension}`;
     const candidatePath = directory ? `${directory}/${candidateName}` : candidateName;
-    const resolved = resolveWorkspacePath(WORKSPACE_ROOT, candidatePath);
+    const resolved = resolveWorkspacePath(activeWorkspaceRoot(), candidatePath);
     const exists = await fs.stat(resolved.absolutePath).then(() => true, () => false);
     if (!exists) return resolved;
   }
@@ -1870,7 +2104,7 @@ async function availableWorkspaceFilePath(relativePath) {
 
 async function writeFileAnnotations(req, url) {
   const filePath = requireQuery(url, "path");
-  const { relativePath, absolutePath } = resolveWorkspacePath(WORKSPACE_ROOT, filePath);
+  const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), filePath);
   const stat = await fs.stat(absolutePath);
   if (stat.isDirectory()) throw Object.assign(new Error("Cannot annotate a folder."), { status: 400 });
   const body = await readJsonBody(req);
@@ -1878,13 +2112,13 @@ async function writeFileAnnotations(req, url) {
   const targetPath = annotationsPath(relativePath);
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
   await fs.writeFile(targetPath, JSON.stringify(annotations, null, 2) + "\n", "utf8");
-  await ensureDocumentStateManifest(WORKSPACE_ROOT, relativePath);
+  await ensureDocumentStateManifest(activeWorkspaceRoot(), relativePath);
   await refreshSearchIndexPaths([relativePath]);
   return annotations;
 }
 
 function annotationsPath(relativePath) {
-  return annotationsPathForDocument(WORKSPACE_ROOT, relativePath);
+  return annotationsPathForDocument(activeWorkspaceRoot(), relativePath);
 }
 
 async function collectDocumentStateTransitions(fromRelativePath, toRelativePath) {
@@ -1902,7 +2136,7 @@ async function collectDocumentStateTransitions(fromRelativePath, toRelativePath)
 }
 
 async function collectDocumentPathsForState(relativePath) {
-  const resolved = resolveWorkspacePath(WORKSPACE_ROOT, relativePath);
+  const resolved = resolveWorkspacePath(activeWorkspaceRoot(), relativePath);
   const stat = await fs.stat(resolved.absolutePath).catch(() => null);
   if (!stat) return [];
   if (!stat.isDirectory()) return [resolved.relativePath];
@@ -1927,7 +2161,7 @@ async function collectFilesUnderDirectory(absoluteDir, relativeDir, paths) {
 
 async function transferDocumentStateFiles(transitions, { mode }) {
   for (const transition of transitions) {
-    const targetPath = annotationsPathForDocument(WORKSPACE_ROOT, transition.to);
+    const targetPath = annotationsPathForDocument(activeWorkspaceRoot(), transition.to);
     const sourcePath = await existingAnnotationStatePath(transition.from);
     const movedTargetPath = await existingAnnotationStatePath(transition.to);
     const readablePath = sourcePath || movedTargetPath;
@@ -1943,17 +2177,17 @@ async function transferDocumentStateFiles(transitions, { mode }) {
     } catch {}
     if (mode === "copy") {
       await fs.writeFile(targetPath, output);
-      await ensureDocumentStateManifest(WORKSPACE_ROOT, transition.to);
+      await ensureDocumentStateManifest(activeWorkspaceRoot(), transition.to);
     } else {
       await fs.writeFile(targetPath, output);
-      await ensureDocumentStateManifest(WORKSPACE_ROOT, transition.to);
+      await ensureDocumentStateManifest(activeWorkspaceRoot(), transition.to);
       await removeAnnotationStateForPath(transition.from);
     }
   }
 }
 
 async function removeDocumentStateFiles(relativePaths) {
-  await removeDocumentIngestCacheFiles(WORKSPACE_ROOT, relativePaths);
+  await removeDocumentIngestCacheFiles(activeWorkspaceRoot(), relativePaths);
   for (const relativePath of relativePaths) {
     await removeAnnotationStateForPath(relativePath);
   }
@@ -1961,10 +2195,10 @@ async function removeDocumentStateFiles(relativePaths) {
 
 async function existingAnnotationStatePath(relativePath) {
   for (const candidate of [
-    annotationsPathForDocument(WORKSPACE_ROOT, relativePath),
-    documentFolderAnnotationsPathForDocument(WORKSPACE_ROOT, relativePath),
-    contentScopedAnnotationsPathForDocument(WORKSPACE_ROOT, relativePath),
-    legacyAnnotationsPathForDocument(WORKSPACE_ROOT, relativePath)
+    annotationsPathForDocument(activeWorkspaceRoot(), relativePath),
+    documentFolderAnnotationsPathForDocument(activeWorkspaceRoot(), relativePath),
+    contentScopedAnnotationsPathForDocument(activeWorkspaceRoot(), relativePath),
+    legacyAnnotationsPathForDocument(activeWorkspaceRoot(), relativePath)
   ]) {
     try {
       await fs.access(candidate);
@@ -1976,19 +2210,19 @@ async function existingAnnotationStatePath(relativePath) {
 
 async function removeAnnotationStateForPath(relativePath) {
   await Promise.all([
-    fs.rm(documentStateDirectory(WORKSPACE_ROOT, relativePath), { recursive: true, force: true }),
-    fs.rm(documentFolderAnnotationsPathForDocument(WORKSPACE_ROOT, relativePath), { force: true }),
-    fs.rm(contentScopedAnnotationsPathForDocument(WORKSPACE_ROOT, relativePath), { force: true }),
-    fs.rm(legacyAnnotationsPathForDocument(WORKSPACE_ROOT, relativePath), { force: true })
+    fs.rm(documentStateDirectory(activeWorkspaceRoot(), relativePath), { recursive: true, force: true }),
+    fs.rm(documentFolderAnnotationsPathForDocument(activeWorkspaceRoot(), relativePath), { force: true }),
+    fs.rm(contentScopedAnnotationsPathForDocument(activeWorkspaceRoot(), relativePath), { force: true }),
+    fs.rm(legacyAnnotationsPathForDocument(activeWorkspaceRoot(), relativePath), { force: true })
   ]);
 }
 
 async function migrateLegacyAnnotations(relativePath) {
-  const targetPath = annotationsPathForDocument(WORKSPACE_ROOT, relativePath);
+  const targetPath = annotationsPathForDocument(activeWorkspaceRoot(), relativePath);
   for (const legacyPath of [
-    documentFolderAnnotationsPathForDocument(WORKSPACE_ROOT, relativePath),
-    contentScopedAnnotationsPathForDocument(WORKSPACE_ROOT, relativePath),
-    legacyAnnotationsPathForDocument(WORKSPACE_ROOT, relativePath)
+    documentFolderAnnotationsPathForDocument(activeWorkspaceRoot(), relativePath),
+    contentScopedAnnotationsPathForDocument(activeWorkspaceRoot(), relativePath),
+    legacyAnnotationsPathForDocument(activeWorkspaceRoot(), relativePath)
   ]) {
     if (legacyPath === targetPath) continue;
     try {
@@ -1998,7 +2232,7 @@ async function migrateLegacyAnnotations(relativePath) {
       await fs.writeFile(targetPath, raw, { flag: "wx" }).catch((error) => {
         if (error?.code !== "EEXIST") throw error;
       });
-      await ensureDocumentStateManifest(WORKSPACE_ROOT, relativePath);
+      await ensureDocumentStateManifest(activeWorkspaceRoot(), relativePath);
       const persisted = JSON.parse(await fs.readFile(targetPath, "utf8"));
       await fs.rm(legacyPath, { force: true });
       return persisted || parsed;
@@ -2033,12 +2267,12 @@ function normalizeAnnotations(relativePath, body) {
 
 async function resolveContext(req) {
   const body = await readJsonBody(req);
-  return await buildWorkspaceContext(WORKSPACE_ROOT, body);
+  return await buildWorkspaceContext(activeWorkspaceRoot(), body);
 }
 
 async function indexStatus() {
-  const index = await readIndex(WORKSPACE_ROOT);
-  const search = searchStatus(WORKSPACE_ROOT);
+  const index = await readIndex(activeWorkspaceRoot());
+  const search = searchStatus(activeWorkspaceRoot());
   return {
     provider: index.provider,
     builtAt: index.builtAt,
@@ -2049,9 +2283,12 @@ async function indexStatus() {
 }
 
 async function rebuildIndex() {
-  const index = await buildIndex(WORKSPACE_ROOT);
+  const index = await buildIndex(activeWorkspaceRoot());
   const config = await readSearchConfig();
-  const search = await buildSearchIndex(WORKSPACE_ROOT, searchIndexOptions(config));
+  const search = await buildSearchIndex(activeWorkspaceRoot(), {
+    ...searchIndexOptions(config),
+    workspaceId: currentRequestContext()?.workspace?.id
+  });
   return {
     ok: true,
     provider: index.provider,
@@ -2069,11 +2306,16 @@ async function rebuildIndex() {
 
 async function runSearch(req) {
   const body = await readJsonBody(req);
-  return await searchWorkspace(WORKSPACE_ROOT, body);
+  const config = await readSearchConfig();
+  return await searchWorkspace(activeWorkspaceRoot(), {
+    ...searchIndexOptions(config),
+    ...body,
+    workspaceId: currentRequestContext()?.workspace?.id
+  });
 }
 
 async function runGlobalSearch(url) {
-  return await globalSearch(WORKSPACE_ROOT, {
+  return await globalSearch(activeWorkspaceRoot(), {
     query: url.searchParams.get("q") || url.searchParams.get("query") || "",
     surface: url.searchParams.get("surface") || "all",
     limit: url.searchParams.get("limit") || url.searchParams.get("maxResults") || 100,
@@ -2082,7 +2324,7 @@ async function runGlobalSearch(url) {
 }
 
 async function skillsList() {
-  const skills = await listSkills(WORKSPACE_ROOT);
+  const skills = await listSkills(activeWorkspaceRoot());
   return {
     skills: skills.map((skill) => ({
       name: skill.name,
@@ -2094,12 +2336,12 @@ async function skillsList() {
 }
 
 async function skillDetail(name) {
-  return await readSkill(WORKSPACE_ROOT, decodeURIComponent(name));
+  return await readSkill(activeWorkspaceRoot(), decodeURIComponent(name));
 }
 
 async function setSkillEnabled(name, enabled) {
   await assertSkillExists(name);
-  const skill = await enableSkill(WORKSPACE_ROOT, decodeURIComponent(name), enabled);
+  const skill = await enableSkill(activeWorkspaceRoot(), decodeURIComponent(name), enabled);
   return {
     ok: true,
     name: skill.name,
@@ -2109,7 +2351,7 @@ async function setSkillEnabled(name, enabled) {
 
 async function assertSkillExists(name) {
   const decoded = decodeURIComponent(name);
-  const skills = await listSkills(WORKSPACE_ROOT);
+  const skills = await listSkills(activeWorkspaceRoot());
   if (!skills.some((skill) => skill.name === decoded)) {
     throw Object.assign(new Error(`Skill not found: ${decoded}`), { status: 404 });
   }
@@ -2117,7 +2359,7 @@ async function assertSkillExists(name) {
 
 async function updateSecurity(req) {
   const body = await readJsonBody(req);
-  const current = await readSecurityConfig(WORKSPACE_ROOT);
+  const current = await readSecurityConfig(activeWorkspaceRoot());
   const next = {
     approvalMode: body.approvalMode ?? current.approvalMode,
     allowShell: body.allowShell ?? current.allowShell,
@@ -2125,12 +2367,12 @@ async function updateSecurity(req) {
     deniedCommands: Array.isArray(body.deniedCommands) ? body.deniedCommands : current.deniedCommands,
     requireApproval: Array.isArray(body.requireApproval) ? body.requireApproval : current.requireApproval
   };
-  await writeSecurityConfig(WORKSPACE_ROOT, next);
+  await writeSecurityConfig(activeWorkspaceRoot(), next);
   return { ok: true, security: next };
 }
 
 async function listMcpServers() {
-  const config = await readRuntimeConfig(WORKSPACE_ROOT);
+  const config = await readRuntimeConfig(activeWorkspaceRoot());
   return { servers: await Promise.all((config.mcpServers || []).map(normalizeMcpServer)) };
 }
 
@@ -2140,28 +2382,28 @@ async function refreshPluginMcpTools(pluginId) {
     import("./lib/runtime/mcp-client.mjs"),
     import("./lib/runtime/mcp-tool-consent.mjs")
   ]);
-  const plugin = await getRuntimePlugin(WORKSPACE_ROOT, pluginId);
+  const plugin = await getRuntimePlugin(activeWorkspaceRoot(), pluginId);
   if (!plugin || plugin.builtIn) {
     throw Object.assign(new Error("Community plugin was not found."), { status: 404 });
   }
-  const config = await readRuntimeConfig(WORKSPACE_ROOT);
+  const config = await readRuntimeConfig(activeWorkspaceRoot());
   const mcp = (config.mcpServers || []).find((server) => server.pluginId === plugin.id);
   if (!mcp) throw Object.assign(new Error("This plugin does not provide an MCP server."), { status: 404 });
   if (mcp.enabled === false || plugin.enabled === false) {
     throw Object.assign(new Error("Enable the plugin before discovering its MCP tools."), { status: 409 });
   }
   const client = createMcpClient(mcp, {
-    workspaceRoot: WORKSPACE_ROOT,
+    workspaceRoot: activeWorkspaceRoot(),
     env: mcp.env || {},
     tokenAccessor: () => mcp.credential_id
-      ? getMcpCredential(WORKSPACE_ROOT, mcp.credential_id)
+      ? getMcpCredential(activeWorkspaceRoot(), mcp.credential_id)
       : null,
     allowUnauthenticated: mcp.allowUnauthenticated === true
   });
   try {
     await client.start();
     const tools = await client.listTools();
-    return await reconcilePluginMcpTools(WORKSPACE_ROOT, {
+    return await reconcilePluginMcpTools(activeWorkspaceRoot(), {
       pluginId: plugin.id,
       serverName: mcp.name,
       tools
@@ -2174,7 +2416,7 @@ async function refreshPluginMcpTools(pluginId) {
 async function addMcpServer(req) {
   const body = await readJsonBody(req);
   const name = safeMcpName(body.name);
-  const config = await readRuntimeConfig(WORKSPACE_ROOT);
+  const config = await readRuntimeConfig(activeWorkspaceRoot());
   const servers = config.mcpServers || [];
   const next = normalizeMcpRequest({ ...body, name });
   const existingIndex = servers.findIndex((server) => server.name === name);
@@ -2183,18 +2425,18 @@ async function addMcpServer(req) {
       ...servers[existingIndex],
       ...next
     };
-    await writeRuntimeConfig(WORKSPACE_ROOT, { ...config, mcpServers: servers });
+    await writeRuntimeConfig(activeWorkspaceRoot(), { ...config, mcpServers: servers });
     return { ok: true, created: false, server: await normalizeMcpServer(servers[existingIndex]) };
   }
   servers.push(next);
-  await writeRuntimeConfig(WORKSPACE_ROOT, { ...config, mcpServers: servers });
+  await writeRuntimeConfig(activeWorkspaceRoot(), { ...config, mcpServers: servers });
   return { ok: true, created: true, server: await normalizeMcpServer(servers.at(-1)) };
 }
 
 async function updateMcpServer(name, req) {
   const target = safeMcpName(decodeURIComponent(name));
   const body = await readJsonBody(req);
-  const config = await readRuntimeConfig(WORKSPACE_ROOT);
+  const config = await readRuntimeConfig(activeWorkspaceRoot());
   const servers = config.mcpServers || [];
   const index = servers.findIndex((item) => item.name === target);
   if (index === -1) throw Object.assign(new Error(`MCP server not found: ${target}`), { status: 404 });
@@ -2202,53 +2444,58 @@ async function updateMcpServer(name, req) {
   const current = servers[index];
   const next = normalizeMcpRequest({ ...current, ...body, name: current.name });
   servers[index] = next;
-  await writeRuntimeConfig(WORKSPACE_ROOT, { ...config, mcpServers: servers });
+  await writeRuntimeConfig(activeWorkspaceRoot(), { ...config, mcpServers: servers });
   return { ok: true, server: await normalizeMcpServer(next) };
 }
 
 async function setMcpEnabled(name, enabled) {
   const target = safeMcpName(decodeURIComponent(name));
-  const config = await readRuntimeConfig(WORKSPACE_ROOT);
+  const config = await readRuntimeConfig(activeWorkspaceRoot());
   const servers = config.mcpServers || [];
   const server = servers.find((item) => item.name === target);
   if (!server) throw Object.assign(new Error(`MCP server not found: ${target}`), { status: 404 });
   server.enabled = enabled;
-  await writeRuntimeConfig(WORKSPACE_ROOT, { ...config, mcpServers: servers });
+  await writeRuntimeConfig(activeWorkspaceRoot(), { ...config, mcpServers: servers });
   return { ok: true, server: await normalizeMcpServer(server) };
 }
 
 async function removeMcpServer(name) {
   const target = safeMcpName(decodeURIComponent(name));
-  const config = await readRuntimeConfig(WORKSPACE_ROOT);
+  const config = await readRuntimeConfig(activeWorkspaceRoot());
   const servers = config.mcpServers || [];
   const next = servers.filter((item) => item.name !== target);
   if (next.length === servers.length) {
     throw Object.assign(new Error(`MCP server not found: ${target}`), { status: 404 });
   }
-  await writeRuntimeConfig(WORKSPACE_ROOT, { ...config, mcpServers: next });
+  await writeRuntimeConfig(activeWorkspaceRoot(), { ...config, mcpServers: next });
   return { ok: true, removed: target };
 }
 
 async function readSearchConfig() {
   const envPath = codmesSearchEnvPath();
   const env = await readEnvFile(envPath);
-  return {
+  const config = {
     configPath: envPath,
     roots: normalizeSearchRoots(splitCsv(env.FILE_ROOTS || defaultSearchRoots())),
     includeGlobs: splitCsv(env.FILE_INCLUDE_GLOBS || defaultSearchIncludeGlobs()),
     excludeGlobs: splitCsv(env.FILE_EXCLUDE_GLOBS || defaultSearchExcludeGlobs()),
-    embeddingsProvider: env.EMBEDDINGS_PROVIDER || "openai",
-    openaiBaseUrl: env.OPENAI_BASE_URL || "http://127.0.0.1:11434/v1",
-    openaiApiKeyConfigured: Boolean(env.OPENAI_API_KEY),
-    openaiEmbedModel: env.OPENAI_EMBED_MODEL || "bge-m3",
-    openaiEmbedDim: Number.parseInt(env.OPENAI_EMBED_DIM || "1024", 10),
+    embeddingsProvider: env.EMBEDDINGS_PROVIDER || process.env.CODMES_EMBEDDINGS_PROVIDER || "openai",
+    openaiBaseUrl: env.OPENAI_BASE_URL || process.env.CODMES_EMBEDDING_BASE_URL || process.env.OPENAI_BASE_URL || "http://127.0.0.1:11434/v1",
+    openaiApiKeyConfigured: Boolean(env.OPENAI_API_KEY || process.env.OPENAI_API_KEY),
+    openaiEmbedModel: env.OPENAI_EMBED_MODEL || process.env.CODMES_EMBEDDING_MODEL || "bge-m3",
+    openaiEmbedDim: Number.parseInt(env.OPENAI_EMBED_DIM || process.env.CODMES_EMBEDDING_DIM || "1024", 10),
     vlmProvider: env.VLM_PROVIDER || "",
     vlmModel: env.VLM_MODEL || "",
     vlmBaseUrl: env.VLM_BASE_URL || "",
     vlmApiKeyConfigured: Boolean(env.VLM_API_KEY),
-    dbPath: env.DB_PATH || path.join(WORKSPACE_ROOT, ".codmes", "index", "search.sqlite"),
-    backend: env.SEARCH_BACKEND || "codmes"
+    dbPath: env.DB_PATH || path.join(activeWorkspaceRoot(), ".codmes", "index", "search.sqlite"),
+    backend: env.SEARCH_BACKEND || process.env.CODMES_SEARCH_BACKEND || process.env.SEARCH_BACKEND || "codmes"
   };
+  Object.defineProperty(config, "openaiApiKey", {
+    value: env.OPENAI_API_KEY || process.env.OPENAI_API_KEY || "",
+    enumerable: false
+  });
+  return config;
 }
 
 async function updateSearchConfig(req) {
@@ -2263,7 +2510,9 @@ async function updateSearchConfig(req) {
     FILE_ROOTS: roots.join(","),
     FILE_INCLUDE_GLOBS: includeGlobs.join(","),
     FILE_EXCLUDE_GLOBS: excludeGlobs.join(","),
-    SEARCH_BACKEND: "codmes",
+    SEARCH_BACKEND: new Set(["codmes", "postgres"]).has(String(body.backend || current.backend || "codmes"))
+      ? String(body.backend || current.backend || "codmes")
+      : "codmes",
     EMBEDDINGS_PROVIDER: String(body.embeddingsProvider || current.embeddingsProvider || "openai").trim(),
     OPENAI_BASE_URL: String(body.openaiBaseUrl || current.openaiBaseUrl || "http://127.0.0.1:11434/v1").trim(),
     OPENAI_API_KEY: body.openaiApiKey !== undefined
@@ -2277,7 +2526,7 @@ async function updateSearchConfig(req) {
     VLM_API_KEY: body.vlmApiKey !== undefined
       ? String(body.vlmApiKey || "").trim()
       : previousEnv.VLM_API_KEY || "",
-    DB_PATH: String(body.dbPath || current.dbPath || path.join(WORKSPACE_ROOT, ".codmes", "index", "search.sqlite")).trim()
+    DB_PATH: String(body.dbPath || current.dbPath || path.join(activeWorkspaceRoot(), ".codmes", "index", "search.sqlite")).trim()
   };
   await fs.mkdir(path.dirname(envPath), { recursive: true });
   await fs.mkdir(path.dirname(nextEnv.DB_PATH), { recursive: true });
@@ -2288,7 +2537,7 @@ async function updateSearchConfig(req) {
 }
 
 function codmesSearchEnvPath() {
-  return path.join(WORKSPACE_ROOT, ".codmes", "config", "search.env");
+  return path.join(activeWorkspaceRoot(), ".codmes", "config", "search.env");
 }
 
 function defaultSearchRoots() {
@@ -2306,8 +2555,11 @@ function searchIndexOptions(config) {
     roots: normalizeSearchRoots(config.roots || splitCsv(defaultSearchRoots())),
     embeddingsProvider: config.embeddingsProvider,
     openaiBaseUrl: config.openaiBaseUrl,
+    openaiApiKey: config.openaiApiKey,
     openaiEmbedModel: config.openaiEmbedModel,
-    openaiEmbedDim: config.openaiEmbedDim
+    openaiEmbedDim: config.openaiEmbedDim,
+    backend: config.backend,
+    databaseUrl: process.env.CODMES_DATABASE_URL || process.env.DATABASE_URL || ""
   };
 }
 
@@ -2316,8 +2568,8 @@ function normalizeSearchRoots(roots) {
     .map((root) => {
       const raw = String(root || "").trim();
       if (!raw) return "";
-      const absolute = path.isAbsolute(raw) ? raw : path.join(WORKSPACE_ROOT, raw);
-      const relative = path.relative(WORKSPACE_ROOT, absolute).replace(/\\/g, "/");
+      const absolute = path.isAbsolute(raw) ? raw : path.join(activeWorkspaceRoot(), raw);
+      const relative = path.relative(activeWorkspaceRoot(), absolute).replace(/\\/g, "/");
       if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
       return relative === "." ? "" : relative;
     })
@@ -2329,7 +2581,7 @@ async function startSearchWatchers() {
   const config = await readSearchConfig().catch(() => null);
   if (!config) return;
   for (const root of normalizeSearchRoots(config.roots)) {
-    const absolute = path.join(WORKSPACE_ROOT, root);
+    const absolute = path.join(activeWorkspaceRoot(), root);
     const stat = await fs.stat(absolute).catch(() => null);
     if (!stat?.isDirectory()) continue;
     try {
@@ -2372,9 +2624,14 @@ async function refreshSearchIndexPaths(pathsToRefresh) {
     .map((item) => String(item || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, ""))
     .filter((item) => item && !item.startsWith(".codmes/"))));
   if (!paths.length) return null;
+  const workspaceRoot = activeWorkspaceRoot();
+  const workspaceId = currentRequestContext()?.workspace?.id;
   const run = async () => {
     const config = await readSearchConfig().catch(() => null);
-    return await updateSearchIndex(WORKSPACE_ROOT, paths, searchIndexOptions(config || {}));
+    return await updateSearchIndex(workspaceRoot, paths, {
+      ...searchIndexOptions(config || {}),
+      workspaceId
+    });
   };
   const next = searchIndexUpdateChain.then(run, run).catch((error) => {
     console.warn(`[codmes] search partial index update failed: ${error?.message || error}`);
@@ -2411,16 +2668,16 @@ function defaultSearchExcludeGlobs() {
 
 async function doctorStatus() {
   const [config, security, skills, index, audit] = await Promise.all([
-    readRuntimeConfig(WORKSPACE_ROOT),
-    readSecurityConfig(WORKSPACE_ROOT),
-    listSkills(WORKSPACE_ROOT),
-    readIndex(WORKSPACE_ROOT),
-    readAuditSummary(WORKSPACE_ROOT)
+    readRuntimeConfig(activeWorkspaceRoot()),
+    readSecurityConfig(activeWorkspaceRoot()),
+    listSkills(activeWorkspaceRoot()),
+    readIndex(activeWorkspaceRoot()),
+    readAuditSummary(activeWorkspaceRoot())
   ]);
   return {
     ok: true,
     service: "codmes",
-    workspaceRoot: WORKSPACE_ROOT,
+    workspaceRoot: activeWorkspaceRoot(),
     authRequired: Boolean(SERVER_TOKEN),
     runtime: {
       defaultModel: config.defaultModel,
@@ -2441,7 +2698,7 @@ async function doctorStatus() {
       itemCount: index.itemCount || 0
     },
     audit,
-    search: searchStatus(WORKSPACE_ROOT),
+    search: searchStatus(activeWorkspaceRoot()),
     documentIngest: await documentIngestDiagnostics()
   };
 }
@@ -2506,8 +2763,8 @@ async function pythonLibraryDiagnostics(python, modules) {
 async function listRuntimeProviders() {
   const [providers, credentials, config] = await Promise.all([
     Promise.resolve(listProviderRegistry()),
-    listCredentialStatus(WORKSPACE_ROOT),
-    readRuntimeConfig(WORKSPACE_ROOT)
+    listCredentialStatus(activeWorkspaceRoot()),
+    readRuntimeConfig(activeWorkspaceRoot())
   ]);
   const credentialMap = new Map(credentials.map((item) => [item.provider, item]));
   return {
@@ -2529,13 +2786,13 @@ async function discoverProviderModels(providerParam) {
   }
 
   if (providerId === "ollama-local") {
-    return discoverOllamaModels(WORKSPACE_ROOT);
+    return discoverOllamaModels(activeWorkspaceRoot());
   }
 
   if (providerId === "openai-codex") {
     return {
       ...(await discoverCodexModelIds({
-        workspaceRoot: WORKSPACE_ROOT,
+        workspaceRoot: activeWorkspaceRoot(),
         fallbackModels: provider.models || []
       })),
       baseUrl: provider.defaultBaseUrl || null
@@ -2552,7 +2809,7 @@ async function discoverProviderModels(providerParam) {
 
 async function listRuntimeAuth() {
   return {
-    providers: await listCredentialStatus(WORKSPACE_ROOT)
+    providers: await listCredentialStatus(activeWorkspaceRoot())
   };
 }
 
@@ -2560,7 +2817,7 @@ async function startProviderOAuthLogin(providerId) {
   if (providerId !== "openai-codex") {
     throw Object.assign(new Error(`OAuth login is not implemented for provider: ${providerId}`), { status: 400 });
   }
-  return await startCodexOAuthLogin({ workspaceRoot: WORKSPACE_ROOT });
+  return await startCodexOAuthLogin({ workspaceRoot: activeWorkspaceRoot() });
 }
 
 async function readProviderAuth(providerParam) {
@@ -2571,7 +2828,7 @@ async function readProviderAuth(providerParam) {
   }
   return {
     provider: providerId,
-    credentials: await listProviderCredentialEntries(WORKSPACE_ROOT, providerId)
+    credentials: await listProviderCredentialEntries(activeWorkspaceRoot(), providerId)
   };
 }
 
@@ -2586,7 +2843,7 @@ async function selectProviderAuth(providerParam, req) {
   if (!credentialId) {
     throw Object.assign(new Error("credentialId is required."), { status: 400 });
   }
-  const selected = await selectProviderCredentialEntry(WORKSPACE_ROOT, providerId, credentialId);
+  const selected = await selectProviderCredentialEntry(activeWorkspaceRoot(), providerId, credentialId);
   return { ok: true, provider: providerId, selected };
 }
 
@@ -2597,7 +2854,7 @@ async function deleteProviderAuthCredential(providerParam, credentialParam) {
     throw Object.assign(new Error(`Unknown provider: ${providerId}`), { status: 400 });
   }
   const credentialId = decodeURIComponent(credentialParam);
-  return await removeProviderCredentialEntry(WORKSPACE_ROOT, providerId, credentialId);
+  return await removeProviderCredentialEntry(activeWorkspaceRoot(), providerId, credentialId);
 }
 
 async function deleteProviderAuthAll(providerParam) {
@@ -2606,11 +2863,11 @@ async function deleteProviderAuthAll(providerParam) {
   if (!provider) {
     throw Object.assign(new Error(`Unknown provider: ${providerId}`), { status: 400 });
   }
-  return await removeCredentialValue(WORKSPACE_ROOT, providerId);
+  return await removeCredentialValue(activeWorkspaceRoot(), providerId);
 }
 
 async function readDefaultModel() {
-  const config = await readRuntimeConfig(WORKSPACE_ROOT);
+  const config = await readRuntimeConfig(activeWorkspaceRoot());
   return {
     defaultModel: config.defaultModel || null
   };
@@ -2623,7 +2880,7 @@ async function updateDefaultModel(req) {
   if (!provider || !model) {
     throw Object.assign(new Error("provider and model are required."), { status: 400 });
   }
-  const config = await readRuntimeConfig(WORKSPACE_ROOT);
+  const config = await readRuntimeConfig(activeWorkspaceRoot());
   const defaultModel = {
     provider,
     model,
@@ -2631,7 +2888,7 @@ async function updateDefaultModel(req) {
     baseUrl: body.baseUrl === undefined ? config.defaultModel?.baseUrl : String(body.baseUrl || ""),
     apiMode: body.apiMode === undefined ? config.defaultModel?.apiMode : String(body.apiMode || "")
   };
-  await writeRuntimeConfig(WORKSPACE_ROOT, { ...config, defaultModel });
+  await writeRuntimeConfig(activeWorkspaceRoot(), { ...config, defaultModel });
   return { ok: true, defaultModel };
 }
 
@@ -2662,7 +2919,7 @@ async function updateProviderAuth(providerParam, req) {
 
   const stored = [];
   for (const [key, value] of entries) {
-    stored.push(await setCredentialValue(WORKSPACE_ROOT, providerId, key, value));
+    stored.push(await setCredentialValue(activeWorkspaceRoot(), providerId, key, value));
   }
   return { ok: true, provider: providerId, stored };
 }
@@ -2674,7 +2931,7 @@ async function deleteProviderAuth(providerParam, keyParam) {
     throw Object.assign(new Error(`Unknown provider: ${providerId}`), { status: 400 });
   }
   const key = providerCredentialKey(provider, decodeURIComponent(keyParam));
-  return await removeCredentialValue(WORKSPACE_ROOT, providerId, key);
+  return await removeCredentialValue(activeWorkspaceRoot(), providerId, key);
 }
 
 async function createCustomProvider(req) {
@@ -2685,13 +2942,13 @@ async function createCustomProvider(req) {
   }
   const stored = [];
   if (body.baseUrl) {
-    stored.push(await setCredentialValue(WORKSPACE_ROOT, "custom", "CODMES_CUSTOM_BASE_URL", String(body.baseUrl)));
+    stored.push(await setCredentialValue(activeWorkspaceRoot(), "custom", "CODMES_CUSTOM_BASE_URL", String(body.baseUrl)));
   }
   if (body.apiKey || body.token) {
-    stored.push(await setCredentialValue(WORKSPACE_ROOT, "custom", "CODMES_CUSTOM_API_KEY", String(body.apiKey || body.token)));
+    stored.push(await setCredentialValue(activeWorkspaceRoot(), "custom", "CODMES_CUSTOM_API_KEY", String(body.apiKey || body.token)));
   }
   if (body.model) {
-    await setDefaultModel(WORKSPACE_ROOT, "custom", String(body.model));
+    await setDefaultModel(activeWorkspaceRoot(), "custom", String(body.model));
   }
   return { ok: true, provider: { id: "custom", name: body.name || "Custom OpenAI-compatible" }, stored };
 }
@@ -2701,7 +2958,7 @@ async function deleteCustomProvider(idParam) {
   if (id !== "custom") {
     throw Object.assign(new Error("This preview build supports the built-in custom provider id only."), { status: 404 });
   }
-  return await removeCredentialValue(WORKSPACE_ROOT, "custom");
+  return await removeCredentialValue(activeWorkspaceRoot(), "custom");
 }
 
 function providerCredentialKey(provider, rawKey) {
@@ -2736,7 +2993,7 @@ function normalizeMcpRequest(server) {
 async function normalizeMcpServer(server = {}) {
   const normalized = normalizeMcpRequest(server);
   if (normalized.transport === "streamable_http") {
-    return { ...normalized, credentialConfigured: await getMcpCredentialStatus(WORKSPACE_ROOT, normalized.credential_id) };
+    return { ...normalized, credentialConfigured: await getMcpCredentialStatus(activeWorkspaceRoot(), normalized.credential_id) };
   }
   return normalized;
 }
@@ -2949,25 +3206,39 @@ async function rejectCodeTaskPatch(taskId, proposalId, req) {
 
 async function summarizeSession(sessionIdParam) {
   const sessionId = decodeURIComponent(sessionIdParam);
-  const filePath = path.join(WORKSPACE_ROOT, ".codmes", "sessions", `${sessionId}.json`);
+  const filePath = path.join(activeWorkspaceRoot(), ".codmes", "sessions", `${sessionId}.json`);
   const session = JSON.parse(await fs.readFile(filePath, "utf8"));
-  const { buildSessionSummary } = await import("./lib/session-runtime.mjs");
-  const summary = buildSessionSummary(session);
+  const engine = createAgentEngine();
+  let summary;
+  try {
+    if (typeof engine.runtime?.summarizeSessionForSearch !== "function") {
+      throw Object.assign(new Error("A configured model runtime is required to summarize this session."), { status: 503 });
+    }
+    summary = await engine.runtime.summarizeSessionForSearch(session, {
+      provider: session.provider,
+      model: session.model,
+      sessionId
+    });
+  } finally {
+    engine.close();
+  }
   session.summary = summary;
   session.updatedAt = new Date().toISOString();
   await fs.writeFile(filePath, JSON.stringify(session, null, 2), "utf8");
   const { indexSession } = await import("./lib/runtime/conversation-index.mjs");
-  await indexSession(WORKSPACE_ROOT, session);
+  await indexSession(activeWorkspaceRoot(), session);
+  const { updateMemoryFromSession } = await import("./lib/runtime/memory-retrieval.mjs");
+  await updateMemoryFromSession(activeWorkspaceRoot(), session);
   return { ok: true, sessionId, summary };
 }
 
 async function extractMemoryFromSession(sessionIdParam) {
   const sessionId = String(sessionIdParam || "").trim();
   if (!sessionId) throw Object.assign(new Error("sessionId is required."), { status: 400 });
-  const filePath = path.join(WORKSPACE_ROOT, ".codmes", "sessions", `${sessionId}.json`);
+  const filePath = path.join(activeWorkspaceRoot(), ".codmes", "sessions", `${sessionId}.json`);
   const session = JSON.parse(await fs.readFile(filePath, "utf8"));
   const { updateMemoryFromSession } = await import("./lib/runtime/memory-retrieval.mjs");
-  return await updateMemoryFromSession(WORKSPACE_ROOT, session);
+  return await updateMemoryFromSession(activeWorkspaceRoot(), session);
 }
 
 async function renderMarkdown(req) {
@@ -2986,11 +3257,64 @@ async function renderMarkdown(req) {
 
 async function streamSessionAsset(res, sessionId, fileName) {
   const safeSessionId = String(sessionId || "").replace(/[^a-zA-Z0-9._-]/g, "_");
-  const absolutePath = path.join(WORKSPACE_ROOT, ".codmes", "sessions", "assets", safeSessionId, fileName);
+  const absolutePath = path.join(activeWorkspaceRoot(), ".codmes", "sessions", "assets", safeSessionId, fileName);
   const stat = await fs.stat(absolutePath);
   if (!stat.isFile()) throw Object.assign(new Error("Session image not found."), { status: 404 });
   res.writeHead(200, {
     "content-type": contentTypeForPath(fileName),
+    "content-length": String(stat.size),
+    "cache-control": "private, max-age=31536000, immutable"
+  });
+  createReadStream(absolutePath).pipe(res);
+}
+
+async function streamDocumentAsset(res, documentDirectory, fileName) {
+  const safeDirectory = path.basename(String(documentDirectory || ""));
+  if (safeDirectory !== documentDirectory || !/--[a-f0-9]{8}$/.test(safeDirectory)) {
+    throw Object.assign(new Error("Invalid document asset path."), { status: 400 });
+  }
+  const absolutePath = path.join(
+    activeWorkspaceRoot(),
+    ".codmes",
+    "documents",
+    safeDirectory,
+    "index",
+    "images",
+    fileName
+  );
+  const stat = await fs.stat(absolutePath);
+  if (!stat.isFile()) throw Object.assign(new Error("Document image not found."), { status: 404 });
+  res.writeHead(200, {
+    "content-type": contentTypeForPath(fileName),
+    "content-length": String(stat.size),
+    "cache-control": "private, max-age=31536000, immutable"
+  });
+  createReadStream(absolutePath).pipe(res);
+}
+
+async function streamWorkspaceAsset(res, assetId) {
+  if (!codmesDatabase || !currentRequestContext().workspace?.id) {
+    throw Object.assign(new Error("Workspace assets require the PostgreSQL workspace backend."), { status: 404 });
+  }
+  const result = await codmesDatabase.query(
+    `SELECT a.storage_path
+       FROM codmes_document_assets a
+       JOIN codmes_documents d ON d.id = a.document_id
+      WHERE a.id = $1 AND d.workspace_id = $2`,
+    [assetId, currentRequestContext().workspace.id]
+  );
+  const storagePath = String(result.rows[0]?.storage_path || "");
+  if (!storagePath) throw Object.assign(new Error("Document image not found."), { status: 404 });
+  const workspaceRoot = path.resolve(activeWorkspaceRoot());
+  const absolutePath = path.resolve(workspaceRoot, storagePath);
+  const relative = path.relative(workspaceRoot, absolutePath);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw Object.assign(new Error("Invalid document asset path."), { status: 400 });
+  }
+  const stat = await fs.stat(absolutePath);
+  if (!stat.isFile()) throw Object.assign(new Error("Document image not found."), { status: 404 });
+  res.writeHead(200, {
+    "content-type": contentTypeForPath(absolutePath),
     "content-length": String(stat.size),
     "cache-control": "private, max-age=31536000, immutable"
   });
@@ -3070,7 +3394,7 @@ async function normalizeSessionsResponse(value) {
   const folderTitleById = new Map();
   try {
     const { listFolders } = await import("./lib/runtime/conversation-folders.mjs");
-    for (const folder of await listFolders(WORKSPACE_ROOT)) {
+    for (const folder of await listFolders(activeWorkspaceRoot())) {
       folderTitleById.set(folder.id, folder.name);
     }
   } catch {}
@@ -3155,7 +3479,7 @@ function stringField(...values) {
 }
 
 function uploadTempDir() {
-  return path.join(WORKSPACE_ROOT, ".codmes", "uploads");
+  return path.join(activeWorkspaceRoot(), ".codmes", "uploads");
 }
 
 function requireUploadId(value) {
@@ -3208,15 +3532,15 @@ async function fetchPluginViewDocument(pluginId, routeId) {
   const { getRuntimeContribution } = await import("./lib/runtime/plugin-runtime.mjs");
   const { renderPluginViewDocument } = await import("./lib/runtime/plugin-view-renderer.mjs");
   const { getPluginCredential } = await import("./lib/runtime/config-store.mjs");
-  const runtimeContribution = await getRuntimeContribution(WORKSPACE_ROOT, pluginId);
+  const runtimeContribution = await getRuntimeContribution(activeWorkspaceRoot(), pluginId);
   const { manifest, navigation, uiRoute, url } = runtimeContribution
     ? resolveViewDocumentTarget(runtimeContribution, routeId)
-    : await resolvePluginViewDocumentTarget(WORKSPACE_ROOT, pluginId, routeId);
+    : await resolvePluginViewDocumentTarget(activeWorkspaceRoot(), pluginId, routeId);
   if (manifest.surface.type !== "declarative") {
     throw Object.assign(new Error("Plugin does not provide a declarative surface."), { status: 400 });
   }
   const credential = manifest.surface.auth
-    ? await getPluginCredential(WORKSPACE_ROOT, manifest.surface.auth.credentialId)
+    ? await getPluginCredential(activeWorkspaceRoot(), manifest.surface.auth.credentialId)
     : null;
   if (navigation.requiresAuth && !credential) {
     return {
@@ -3240,7 +3564,7 @@ async function fetchPluginViewDocument(pluginId, routeId) {
           return {
             id: source.id,
             value: await readPluginCollection(
-              WORKSPACE_ROOT,
+              activeWorkspaceRoot(),
               manifest,
               source.path.slice("collection:".length)
             )
@@ -3286,7 +3610,7 @@ async function mutateInstalledPluginCollection(pluginId, collectionId, operation
   const { mutatePluginCollection } = await import("./lib/runtime/plugin-collection-store.mjs");
   const manifest = await resolveCollectionProvider(pluginId);
   return await mutatePluginCollection(
-    WORKSPACE_ROOT,
+    activeWorkspaceRoot(),
     manifest,
     collectionId,
     operation,
@@ -3297,8 +3621,8 @@ async function mutateInstalledPluginCollection(pluginId, collectionId, operation
 async function resolveCollectionProvider(providerId) {
   const { getRuntimeContribution } = await import("./lib/runtime/plugin-runtime.mjs");
   const { getInstalledPlugin } = await import("./lib/runtime/plugin-registry.mjs");
-  const manifest = await getRuntimeContribution(WORKSPACE_ROOT, providerId)
-    || await getInstalledPlugin(WORKSPACE_ROOT, providerId);
+  const manifest = await getRuntimeContribution(activeWorkspaceRoot(), providerId)
+    || await getInstalledPlugin(activeWorkspaceRoot(), providerId);
   if (!manifest) {
     throw Object.assign(new Error("Surface data provider is not available."), { status: 404 });
   }
@@ -3356,11 +3680,11 @@ async function pluginAuthStatus(pluginId) {
     removePluginCredential,
     removeSharedPluginCredential
   } = await import("./lib/runtime/config-store.mjs");
-  const plugin = await getInstalledPlugin(WORKSPACE_ROOT, pluginId);
+  const plugin = await getInstalledPlugin(activeWorkspaceRoot(), pluginId);
   if (!plugin) throw Object.assign(new Error("Plugin is not installed."), { status: 404 });
   const auth = plugin.surface.auth;
   if (!auth) return { supported: false, authenticated: false, username: null };
-  const credential = await getPluginCredential(WORKSPACE_ROOT, auth.credentialId);
+  const credential = await getPluginCredential(activeWorkspaceRoot(), auth.credentialId);
   if (!credential) return { supported: true, authenticated: false, username: null };
   const url = new URL(auth.statusPath, plugin.surface.upstreamUrl);
   try {
@@ -3373,7 +3697,7 @@ async function pluginAuthStatus(pluginId) {
       const removeCredential = plugin.mcp?.credentialId === auth.credentialId
         ? removeSharedPluginCredential
         : removePluginCredential;
-      await removeCredential(WORKSPACE_ROOT, auth.credentialId);
+      await removeCredential(activeWorkspaceRoot(), auth.credentialId);
       return { supported: true, authenticated: false, username: null };
     }
     if (!response.ok) {
@@ -3417,7 +3741,7 @@ async function loginPlugin(req, pluginId) {
     setPluginCredential,
     setSharedPluginCredential
   } = await import("./lib/runtime/config-store.mjs");
-  const plugin = await getInstalledPlugin(WORKSPACE_ROOT, pluginId);
+  const plugin = await getInstalledPlugin(activeWorkspaceRoot(), pluginId);
   if (!plugin) throw Object.assign(new Error("Plugin is not installed."), { status: 404 });
   const auth = plugin.surface.auth;
   if (!auth) throw Object.assign(new Error("Plugin does not support user authentication."), { status: 400 });
@@ -3458,7 +3782,7 @@ async function loginPlugin(req, pluginId) {
   const saveCredential = sharesMcpCredential
     ? setSharedPluginCredential
     : setPluginCredential;
-  await saveCredential(WORKSPACE_ROOT, auth.credentialId, token, { username });
+  await saveCredential(activeWorkspaceRoot(), auth.credentialId, token, { username });
   return { authenticated: true, username };
 }
 
@@ -3469,11 +3793,11 @@ async function logoutPlugin(pluginId) {
     removePluginCredential,
     removeSharedPluginCredential
   } = await import("./lib/runtime/config-store.mjs");
-  const plugin = await getInstalledPlugin(WORKSPACE_ROOT, pluginId);
+  const plugin = await getInstalledPlugin(activeWorkspaceRoot(), pluginId);
   if (!plugin) throw Object.assign(new Error("Plugin is not installed."), { status: 404 });
   const auth = plugin.surface.auth;
   if (!auth) return { authenticated: false, removed: false };
-  const credential = await getPluginCredential(WORKSPACE_ROOT, auth.credentialId);
+  const credential = await getPluginCredential(activeWorkspaceRoot(), auth.credentialId);
   let remoteRevoked = null;
   if (credential && auth.logoutPath) {
     try {
@@ -3495,7 +3819,7 @@ async function logoutPlugin(pluginId) {
   const removeCredential = sharesMcpCredential
     ? removeSharedPluginCredential
     : removePluginCredential;
-  const result = await removeCredential(WORKSPACE_ROOT, auth.credentialId);
+  const result = await removeCredential(activeWorkspaceRoot(), auth.credentialId);
   return {
     authenticated: false,
     removed: result.removed,
@@ -3641,7 +3965,7 @@ function sendError(res, error) {
 function setCors(res) {
   res.setHeader("access-control-allow-origin", "*");
   res.setHeader("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  res.setHeader("access-control-allow-headers", "content-type, authorization");
+  res.setHeader("access-control-allow-headers", "content-type, authorization, x-codmes-token, x-codmes-workspace-id");
 }
 
 function contentTypeForPath(filePath) {
@@ -3655,7 +3979,7 @@ function contentTypeForPath(filePath) {
 }
 
 async function getUserMemories() {
-  const filePath = path.join(WORKSPACE_ROOT, ".codmes", "memory", "user", "memories.jsonl");
+  const filePath = path.join(activeWorkspaceRoot(), ".codmes", "memory", "user", "memories.jsonl");
   try {
     const data = await fs.readFile(filePath, "utf8");
     return data.split("\n").filter(Boolean).map(JSON.parse);
@@ -3665,7 +3989,7 @@ async function getUserMemories() {
 }
 
 async function saveUserMemories(list) {
-  const dir = path.join(WORKSPACE_ROOT, ".codmes", "memory", "user");
+  const dir = path.join(activeWorkspaceRoot(), ".codmes", "memory", "user");
   await fs.mkdir(dir, { recursive: true });
   const filePath = path.join(dir, "memories.jsonl");
   await fs.writeFile(filePath, list.map(m => JSON.stringify(m)).join("\n") + "\n", "utf8");

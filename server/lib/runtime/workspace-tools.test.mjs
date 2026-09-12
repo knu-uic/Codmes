@@ -5,6 +5,38 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { executeWorkspaceTool } from "./workspace-tools.mjs";
+import { documentIngestCacheDirectory } from "../document-ingest.mjs";
+
+test("Workspace tools return extracted document text and related images instead of PDF bytes", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-workspace-tools-document-"));
+  const relativePath = "Notes/study.pdf";
+  const absolutePath = path.join(root, relativePath);
+  await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+  await fs.writeFile(absolutePath, "%PDF binary placeholder", "utf8");
+  const stat = await fs.stat(absolutePath);
+  const cacheDirectory = documentIngestCacheDirectory(root, relativePath);
+  await fs.mkdir(cacheDirectory, { recursive: true });
+  const relatedImage = {
+    asset_id: "d1234567890abcdef1234567",
+    reference: "[그림:d1234567890abcdef1234567]",
+    url: "/api/document-assets/study--12345678/figure.png"
+  };
+  await fs.writeFile(path.join(cacheDirectory, "extraction.json"), JSON.stringify({
+    schemaVersion: 15,
+    path: relativePath,
+    kind: "pdf",
+    text: "DBMS 플랫폼 계층도",
+    markdown: "# DBMS 플랫폼 계층도",
+    blocks: [{ page: 1, text: "DBMS 플랫폼 계층도", metadata: { related_images: [relatedImage] } }],
+    cache: { version: 15, sourcePath: relativePath, size: stat.size, mtimeMs: stat.mtimeMs }
+  }), "utf8");
+
+  const file = await executeWorkspaceTool(root, "read_note_file", { path: relativePath });
+
+  assert.equal(file.content, "# DBMS 플랫폼 계층도");
+  assert.deepEqual(file.related_images, [relatedImage]);
+  assert.doesNotMatch(file.content, /%PDF/);
+});
 
 test("Workspace tools route code surface operations through CodeAgentRuntime", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-workspace-tools-code-"));

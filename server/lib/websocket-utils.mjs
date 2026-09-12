@@ -7,11 +7,17 @@ export function acceptWebSocket(req, socket) {
     .createHash("sha1")
     .update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
     .digest("base64");
+  const requestedProtocols = String(req.headers["sec-websocket-protocol"] || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const selectedProtocol = requestedProtocols.find((value) => value.startsWith("codmes.bearer.")) || "";
   socket.write([
     "HTTP/1.1 101 Switching Protocols",
     "Upgrade: websocket",
     "Connection: Upgrade",
     `Sec-WebSocket-Accept: ${accept}`,
+    ...(selectedProtocol ? [`Sec-WebSocket-Protocol: ${selectedProtocol}`] : []),
     "",
     ""
   ].join("\r\n"));

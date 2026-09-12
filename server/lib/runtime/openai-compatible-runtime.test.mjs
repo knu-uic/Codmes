@@ -67,6 +67,231 @@ test("OpenAI-compatible runtime streams chat completions from Codmes config", as
   assert.equal(typeof events[0].contextUsageRatio, "number");
 });
 
+test("runtime uses the selected LLM to compact old completed tool groups", async () => {
+  const messages = [
+    { role: "system", content: "system" },
+    { role: "user", content: "finish the goal" }
+  ];
+  for (let index = 1; index <= 4; index += 1) {
+    messages.push({
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: `call-${index}`, type: "function", function: { name: `tool_${index}`, arguments: "{}" } }]
+    });
+    messages.push({ role: "tool", tool_call_id: `call-${index}`, name: `tool_${index}`, content: `${index}-${"x".repeat(5000)}` });
+  }
+
+  let request = null;
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: process.cwd(),
+    fetchImpl: async (url, options) => {
+      request = { url, body: JSON.parse(options.body) };
+      return jsonResponse({ choices: [{ message: { content: "Calls 1-3 completed; keep call-4 active." } }] });
+    }
+  });
+  runtime.contextWindowCache.set("custom:demo", 4_000);
+  const result = await runtime.compactToolLoopContext({
+    provider: { id: "custom" }, model: "demo", apiMode: "chat_completions",
+    baseUrl: "http://model.test/v1", apiKey: "", extraHeaders: {}
+  }, messages);
+
+  assert.equal(result.compacted, true);
+  assert.ok(result.removedToolGroups >= 1);
+  assert.match(result.messages[2].content, /Calls 1-3 completed/);
+  assert.equal(result.messages.some((message) => message.tool_call_id === "call-1"), false);
+  assert.equal(result.messages.some((message) => message.tool_call_id === "call-4"), true);
+  assert.equal(request.url, "http://model.test/v1/chat/completions");
+  assert.match(request.body.messages[0].content, /exact tool names/i);
+});
+
+test("session context uses native Responses compaction and keeps a raw tail", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-native-compaction-"));
+  await setDefaultModel(root, "custom", "demo");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_BASE_URL", "http://model.test/v1");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_API_KEY", "key");
+  await writeRuntimeConfig(root, { providers: { custom: { api_mode: "responses" } } });
+  let request = null;
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: root,
+    fetchImpl: async (url, options) => {
+      request = { url, body: JSON.parse(options.body) };
+      return jsonResponse({
+        object: "response.compaction",
+        output: [{ type: "compaction", id: "cmp_1", encrypted_content: "opaque" }]
+      });
+    }
+  });
+  const session = longSession(28);
+  const context = await runtime.prepareSessionContext(session, {
+    provider: "custom", model: "demo", apiMode: "responses", contextWindow: 4_000,
+    compactionProtectLastN: 4
+  });
+  assert.equal(context.state.mode, "native");
+  assert.equal(context.stateChanged, true);
+  assert.ok(context.history.length >= 4);
+  assert.ok(context.history.length < session.messages.length);
+  assert.equal(context.summary, null);
+  assert.equal(context.nativeCompaction.output[0].id, "cmp_1");
+  assert.equal(request.url, "http://model.test/v1/responses/compact");
+});
+
+test("session context falls back to semantic model compaction and reuses it", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-model-compaction-"));
+  await setDefaultModel(root, "custom", "demo");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_BASE_URL", "http://model.test/v1");
+  let calls = 0;
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: root,
+    fetchImpl: async () => {
+      calls += 1;
+      return jsonResponse({ choices: [{ message: { content: "Goal: edit /Code/app.js. Blocker: failing integration test." } }] });
+    }
+  });
+  const session = longSession(28);
+  const first = await runtime.prepareSessionContext(session, {
+    provider: "custom", model: "demo", contextWindow: 4_000, compactionProtectLastN: 4
+  });
+  assert.equal(first.state.mode, "summary");
+  assert.match(first.summary.content, /\/Code\/app\.js/);
+  const second = await runtime.prepareSessionContext({ ...session, contextCompaction: first.state }, {
+    provider: "custom", model: "demo", contextWindow: 4_000, compactionProtectLastN: 4
+  });
+  assert.equal(second.stateChanged, false);
+  assert.equal(second.summary.content, first.summary.content);
+  assert.equal(calls, 1);
+});
+
+test("failed session compaction keeps the complete original history", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-compaction-failure-"));
+  await setDefaultModel(root, "custom", "demo");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_BASE_URL", "http://model.test/v1");
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: root,
+    fetchImpl: async () => jsonResponse({ error: "unavailable" }, 503)
+  });
+  const session = longSession(28);
+  const context = await runtime.prepareSessionContext(session, {
+    provider: "custom", model: "demo", contextWindow: 4_000
+  });
+  assert.equal(context.compactionFailed, true);
+  assert.equal(context.stateChanged, false);
+  assert.equal(context.history.length, session.messages.length);
+  assert.equal(context.summary, null);
+});
+
+test("Ollama context planning falls back to model metadata while the model is unloaded", async () => {
+  const requests = [];
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: process.cwd(),
+    fetchImpl: async (url) => {
+      requests.push(url);
+      if (/\/api\/ps$/.test(url)) return jsonResponse({ models: [] });
+      assert.match(url, /\/api\/show$/);
+      return jsonResponse({ model_info: { "gemma4_unified.context_length": 262_144 } });
+    }
+  });
+  const contextWindow = await runtime.resolveContextWindow({
+    provider: { id: "ollama-local" }, model: "gemma4:12b-mlx",
+    baseUrl: "http://127.0.0.1:11434/v1"
+  });
+  assert.equal(contextWindow, 262_144);
+  assert.deepEqual(requests.map((url) => new URL(url).pathname), ["/api/ps", "/api/show"]);
+});
+
+test("Ollama context planning prefers the loaded runner's actual context", async () => {
+  const requests = [];
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: process.cwd(),
+    fetchImpl: async (url) => {
+      requests.push(url);
+      if (/\/api\/ps$/.test(url)) {
+        return jsonResponse({
+          models: [{
+            name: "gemma4:12b-mlx",
+            model: "gemma4:12b-mlx",
+            context_length: 131_072
+          }]
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }
+  });
+  const contextWindow = await runtime.resolveContextWindow({
+    provider: { id: "ollama-local" }, model: "gemma4:12b-mlx",
+    baseUrl: "http://127.0.0.1:11434/v1"
+  });
+  assert.equal(contextWindow, 131_072);
+  assert.deepEqual(requests.map((url) => new URL(url).pathname), ["/api/ps"]);
+});
+
+test("Ollama context planning refreshes cached metadata after the model loads", async () => {
+  let loaded = false;
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: process.cwd(),
+    fetchImpl: async (url) => {
+      if (/\/api\/ps$/.test(url)) {
+        return jsonResponse({
+          models: loaded
+            ? [{ name: "gemma4:12b-mlx", context_length: 131_072 }]
+            : []
+        });
+      }
+      if (/\/api\/show$/.test(url)) {
+        return jsonResponse({ model_info: { "gemma4_unified.context_length": 262_144 } });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }
+  });
+  const selection = {
+    provider: { id: "ollama-local" }, model: "gemma4:12b-mlx",
+    baseUrl: "http://127.0.0.1:11434/v1"
+  };
+  assert.equal(await runtime.resolveContextWindow(selection), 262_144);
+  loaded = true;
+  assert.equal(await runtime.resolveContextWindow(selection), 131_072);
+  assert.equal(runtime.contextWindowCache.get("ollama-local:gemma4:12b-mlx"), 131_072);
+});
+
+test("Ollama refreshes the actual context immediately after the first completion loads the runner", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-ollama-context-refresh-"));
+  await setDefaultModel(root, "ollama-local", "gemma4:12b-mlx");
+  let completionFinished = false;
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: root,
+    fetchImpl: async (url) => {
+      if (/\/chat\/completions$/.test(url)) {
+        completionFinished = true;
+        return {
+          ok: true,
+          headers: { get: () => "text/event-stream" },
+          body: streamChunks([
+            'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+            "data: [DONE]\n\n"
+          ])
+        };
+      }
+      if (/\/api\/ps$/.test(url)) {
+        return jsonResponse({
+          models: completionFinished
+            ? [{ name: "gemma4:12b-mlx", context_length: 131_072 }]
+            : []
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }
+  });
+
+  const result = await runtime.submitPrompt({
+    sessionId: "session-ollama-context-refresh",
+    provider: "ollama-local",
+    model: "gemma4:12b-mlx",
+    message: "hello"
+  });
+
+  assert.equal(result.reply, "ok");
+  assert.equal(runtime.contextWindowCache.get("ollama-local:gemma4:12b-mlx"), 131_072);
+});
+
 test("OpenAI-compatible runtime uses the model selected when the session was created", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-session-model-"));
   await setDefaultModel(root, "custom", "workspace-default");
@@ -301,6 +526,54 @@ test("OpenAI-compatible runtime executes workspace search tool calls", async () 
     "message.delta",
     "turn.complete"
   ]);
+});
+
+test("OpenAI-compatible runtime resolves a Notes document figure selected after workspace search", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-openai-runtime-document-figure-"));
+  await fs.mkdir(path.join(root, ".codmes", "index"), { recursive: true });
+  await fs.writeFile(path.join(root, ".codmes", "index", "search.json"), JSON.stringify({
+    schemaVersion: 1,
+    provider: "codmes-search-index",
+    builtAt: new Date().toISOString(),
+    items: [{ path: "Notes/study.pdf" }],
+    chunks: [{
+      id: "chunk-figure",
+      path: "Notes/study.pdf",
+      kind: "pdf",
+      chunkIndex: 0,
+      text: "DBMS 플랫폼 계층도",
+      source: "pdf-text",
+      page: 1,
+      related_images: [{
+        asset_id: "d1234567890abcdef1234567",
+        number: 1,
+        description: "DBMS 플랫폼 계층도",
+        url: "/api/document-assets/study--12345678/figure.png"
+      }]
+    }]
+  }), "utf8");
+  await setDefaultModel(root, "custom", "demo-model");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_BASE_URL", "http://model.test/v1");
+  await setCredentialValue(root, "custom", "CODMES_CUSTOM_API_KEY", "test-key");
+
+  let requestCount = 0;
+  const runtime = new OpenAICompatibleRuntime({
+    workspaceRoot: root,
+    env: { ...process.env, CODMES_PORT: "8787" },
+    fetchImpl: async () => {
+      requestCount += 1;
+      const chunks = requestCount === 1
+        ? ['data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_search_figure","type":"function","function":{"name":"workspace_search","arguments":"{\\"query\\":\\"DBMS 플랫폼\\"}"}}]}}]}\n\n', "data: [DONE]\n\n"]
+        : ['data: {"choices":[{"delta":{"content":"설명입니다.\\n[그림:d1234567890abcdef1234567]"}}]}\n\n', "data: [DONE]\n\n"];
+      return { ok: true, headers: { get: () => "text/event-stream" }, body: streamChunks(chunks) };
+    }
+  });
+
+  const result = await runtime.submitPrompt({ sessionId: "session-figure", message: "DBMS 계층을 보여줘", surface: "notes" });
+
+  assert.match(result.reply, /!\[그림 1 · DBMS 플랫폼 계층도\]/);
+  assert.match(result.reply, /http:\/\/127\.0\.0\.1:8787\/api\/document-assets/);
+  runtime.close();
 });
 
 test("OpenAI-compatible runtime filters tools by surface defaults", async () => {
@@ -642,14 +915,14 @@ test("OpenAI-compatible runtime filters tools using disabledTools config", async
   assert.equal(sentTools.some(t => t.function.name === "workspace_read_file"), true);
 });
 
-test("OpenAI-compatible runtime global disabledTools can block core recall tools", async () => {
+test("OpenAI-compatible runtime always exposes conversation history tools", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-openai-runtime-core-disabled-"));
   await setDefaultModel(root, "openai-api", "gpt-5.5");
   await setCredentialValue(root, "openai-api", "CODMES_OPENAI_API_KEY", "test-key");
 
   await writeRuntimeConfig(root, {
     defaultModel: { provider: "openai-api", model: "gpt-5.5" },
-    disabledTools: ["memory_search"]
+    disabledTools: ["memory_search", "conversation_search", "conversation_read"]
   });
 
   let sentTools = null;
@@ -671,6 +944,7 @@ test("OpenAI-compatible runtime global disabledTools can block core recall tools
   await runtime.submitPrompt({ sessionId: "session-core-disabled", message: "안녕", surface: "chat" });
   assert.equal(sentTools.some(t => t.function.name === "memory_search"), false);
   assert.equal(sentTools.some(t => t.function.name === "conversation_search"), true);
+  assert.equal(sentTools.some(t => t.function.name === "conversation_read"), true);
 });
 
 test("OpenAI-compatible runtime exposes MCP tools and executes them via stdio JSON-RPC", async () => {
@@ -1732,4 +2006,27 @@ rl.on("line", (line) => {
 function fakeJwt(payload) {
   const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
   return `${encode({ alg: "none", typ: "JWT" })}.${encode(payload)}.signature`;
+}
+
+function jsonResponse(value, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: () => "application/json" },
+    json: async () => value,
+    text: async () => JSON.stringify(value)
+  };
+}
+
+function longSession(count) {
+  return {
+    id: "session-long",
+    provider: "custom",
+    model: "demo",
+    messages: Array.from({ length: count }, (_, index) => ({
+      id: `m${index + 1}`,
+      role: index % 2 === 0 ? "user" : "assistant",
+      content: `message ${index + 1}: ${"x".repeat(900)}`
+    }))
+  };
 }

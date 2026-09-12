@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileKind, resolveWorkspacePath } from "../path-utils.mjs";
 import { readFileMetadata } from "../file-index.mjs";
 import { searchWorkspace } from "../search-service.mjs";
+import { extractAndCacheDocument, isDocumentIngestFile } from "../document-ingest.mjs";
 
 const MAX_READ_CHARS = 60000;
 const MAX_TREE_ENTRIES = 200;
@@ -279,6 +280,7 @@ export async function executeWorkspaceTool(workspaceRoot, toolName, rawArgs = {}
   const args = typeof rawArgs === "string" ? parseToolArgs(rawArgs) : rawArgs;
   if (toolName === "workspace_search" || toolName === "codmes_search") {
     return await searchWorkspace(workspaceRoot, {
+      workspaceId: options.workspaceId || null,
       query: args.query,
       scopePath: args.scopePath || "",
       maxResults: clampNumber(args.maxResults, 1, 20, 8)
@@ -312,8 +314,36 @@ async function readWorkspaceFile(workspaceRoot, args) {
   if (stat.isDirectory()) {
     throw Object.assign(new Error("workspace_read_file cannot read a folder."), { status: 400 });
   }
-  const content = await fs.readFile(resolved.absolutePath, "utf8");
   const maxChars = clampNumber(args.maxChars, 1000, 100000, MAX_READ_CHARS);
+  if (isDocumentIngestFile(resolved.relativePath)) {
+    const document = await extractAndCacheDocument(
+      workspaceRoot,
+      resolved.absolutePath,
+      resolved.relativePath,
+      stat
+    );
+    const content = String(document.markdown || document.text || "");
+    const relatedImages = [];
+    const seen = new Set();
+    for (const block of document.blocks || []) {
+      for (const image of block.metadata?.related_images || block.related_images || []) {
+        const key = String(image?.asset_id || image?.url || "");
+        if (!key || seen.has(key)) continue;
+        relatedImages.push(image);
+        seen.add(key);
+      }
+    }
+    return {
+      path: resolved.relativePath,
+      kind: fileKind(resolved.relativePath),
+      size: stat.size,
+      modifiedAt: stat.mtime.toISOString(),
+      truncated: content.length > maxChars,
+      content: truncateMiddle(content, maxChars),
+      related_images: relatedImages
+    };
+  }
+  const content = await fs.readFile(resolved.absolutePath, "utf8");
   return {
     path: resolved.relativePath,
     kind: fileKind(resolved.relativePath),

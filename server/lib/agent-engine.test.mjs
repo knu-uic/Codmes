@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { isExternalPluginSurface, WorkspaceAgentEngine, WorkspaceAgentStateStore } from "./agent-engine.mjs";
 import { OpenAICompatibleRuntime } from "./runtime/openai-compatible-runtime.mjs";
+import { executeConversationRead, executeConversationSearch } from "./runtime/conversation-tools.mjs";
+import { indexSession } from "./runtime/conversation-index.mjs";
 import { setCredentialValue, setDefaultModel, setMcpCredential, writeRuntimeConfig } from "./runtime/config-store.mjs";
 import { installPlugin } from "./runtime/plugin-registry.mjs";
 import { checkAction, writeSecurityConfig } from "./runtime/security-policy.mjs";
@@ -70,6 +72,8 @@ test("workspace agent engine resolves context and records task state", async () 
   assert.equal(prompt.ok, true);
   assert.equal(runtime.lastPrompt.context.workspaceContext.workspace.activePath, "Notes/a.md");
   assert.equal(runtime.lastPrompt.context.workspaceContext.inlineBlocks[0].path, "Notes/a.md");
+  assert.equal(runtime.lastPrompt.sessionSummary, null);
+  assert.deepEqual(runtime.lastPrompt.memoryResults, []);
 
   const taskDir = path.join(root, ".codmes", "tasks");
   const allFiles = await fs.readdir(taskDir);
@@ -130,10 +134,73 @@ test("workspace agent engine persists streamed assistant replies into sessions",
   });
 
   assert.deepEqual(runtime.lastPrompt.history.map((message) => message.role), ["user", "assistant"]);
+  assert.equal(runtime.lastPrompt.sessionSummary, null);
+  assert.deepEqual(runtime.lastPrompt.memoryResults, []);
   assert.deepEqual(runtime.lastPrompt.history.map((message) => message.content), [
     "안녕",
     "안녕하세요\n![그림](http://127.0.0.1/image.png)"
   ]);
+});
+
+test("workspace agent engine persists model compaction state before continuing the session", async () => {
+  const root = await fixtureWorkspace();
+  const runtime = new CompactionAgentRuntime();
+  const engine = new WorkspaceAgentEngine({ workspaceRoot: root }, runtime);
+  const session = await engine.createSession({ provider: "custom", model: "demo" });
+  await engine.submitPrompt({ sessionId: session.sessionId, message: "continue" });
+
+  const stored = await engine.state.readSession(session.sessionId);
+  assert.equal(stored.contextCompaction.mode, "summary");
+  assert.equal(stored.contextCompaction.summary, "LLM-created checkpoint");
+  assert.equal(stored.summary.generator, "auxiliary_model_compaction");
+  assert.equal(stored.messages.at(-1).content, "continue");
+  assert.equal(runtime.lastPrompt.sessionSummary.content, "LLM-created checkpoint");
+  assert.deepEqual(runtime.lastPrompt.fallbackHistory, [{ role: "user", content: "original" }]);
+});
+
+test("new sessions do not receive foreign conversation context but can retrieve it with fixed tools", async () => {
+  const root = await fixtureWorkspace();
+  const runtime = new FakeAgentRuntime();
+  const engine = new WorkspaceAgentEngine({ workspaceRoot: root }, runtime);
+  const foreignSession = {
+    id: "foreign-session",
+    title: "Foreign conversation",
+    kind: "general",
+    surface: "chat",
+    searchable: true,
+    visibleInSidebar: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    summary: { content: "foreign-session-secret-orchid", updatedAt: new Date().toISOString() },
+    messages: [
+      { id: "foreign-u1", role: "user", content: "foreign-session-secret-orchid", createdAt: new Date().toISOString() }
+    ]
+  };
+  await engine.state.writeSession(foreignSession);
+  await indexSession(root, foreignSession);
+
+  const current = await engine.createSession({ title: "Current conversation" });
+  await engine.submitPrompt({
+    sessionId: current.sessionId,
+    message: "Start without foreign context"
+  });
+
+  assert.deepEqual(runtime.lastPrompt.history, []);
+  assert.equal(runtime.lastPrompt.sessionSummary, null);
+  assert.deepEqual(runtime.lastPrompt.memoryResults, []);
+  assert.doesNotMatch(JSON.stringify({
+    message: runtime.lastPrompt.message,
+    context: runtime.lastPrompt.context,
+    history: runtime.lastPrompt.history,
+    sessionSummary: runtime.lastPrompt.sessionSummary,
+    memoryResults: runtime.lastPrompt.memoryResults
+  }), /foreign-session-secret-orchid/);
+
+  const search = await executeConversationSearch(root, { query: "secret orchid" });
+  const hit = search.results.find((item) => item.sessionId === foreignSession.id);
+  assert.ok(hit);
+  const read = await executeConversationRead(root, { sessionId: foreignSession.id });
+  assert.match(JSON.stringify(read), /foreign-session-secret-orchid/);
 });
 
 test("workspace agent state creates the unified state directory shape", async () => {
@@ -622,6 +689,34 @@ class FakeAgentRuntime extends EventEmitter {
   }
 
   close() {}
+}
+
+class CompactionAgentRuntime extends FakeAgentRuntime {
+  async prepareSessionContext() {
+    const state = {
+      version: 1,
+      mode: "summary",
+      provider: "custom",
+      model: "demo",
+      contextWindow: 4_000,
+      thresholdTokens: 2_048,
+      coveredMessageCount: 1,
+      coveredMessageIds: ["1"],
+      tokenEstimate: 8,
+      compactionCount: 1,
+      summary: "LLM-created checkpoint",
+      updatedAt: "2026-09-11T00:00:00.000Z"
+    };
+    return {
+      history: [],
+      fallbackHistory: [{ role: "user", content: "original" }],
+      summary: { content: state.summary, coveredMessageIds: state.coveredMessageIds },
+      nativeCompaction: null,
+      state,
+      stateChanged: true,
+      stats: { contextWindow: 4_000, compactedMessageCount: 1 }
+    };
+  }
 }
 
 class ApprovalRequiredRuntime extends EventEmitter {

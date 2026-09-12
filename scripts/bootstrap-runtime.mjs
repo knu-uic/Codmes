@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeRoot = path.join(repoRoot, ".codmes-runtime");
 const vendorRoot = path.join(repoRoot, "vendor", "hermes-agent");
-const documentRequirements = path.join(repoRoot, "server", "workers", "document-ingest", "requirements.txt");
+const documentRequirements = path.join(repoRoot, "server", "workers", "document-ingest", "requirements.lock.txt");
 const isWindows = process.platform === "win32";
 const runtimePython = path.join(runtimeRoot, isWindows ? "Scripts/python.exe" : "bin/python");
 

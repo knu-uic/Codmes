@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "check": "node scripts/check-release-version.mjs && tsc --noEmit && cargo test --manifest-path src-tauri/Cargo.toml",
     "stage:runtime": "node scripts/stage-runtime.mjs",
-    "bundle": "npm run stage:runtime && tauri build",
+    "bundle": "node scripts/stage-runtime.mjs --require-postgres && tauri build",
     "tauri": "tauri"
   },
   "dependencies": {

@@ -83,10 +83,14 @@ export const DEFAULT_TOOL_MODES = {
   }
 };
 
+export const ALWAYS_AVAILABLE_CONVERSATION_TOOLS = [
+  "conversation_search",
+  "conversation_read"
+];
+
 export const CORE_RECALL_TOOLS = [
   "tool_discovery",
-  "conversation_search",
-  "conversation_read",
+  ...ALWAYS_AVAILABLE_CONVERSATION_TOOLS,
   "memory_search"
 ];
 

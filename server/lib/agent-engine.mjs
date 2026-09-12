@@ -15,7 +15,7 @@ import { migrateWorkspaceState, stateRoot } from "./runtime/state-dir.mjs";
 
 export function createWorkspaceAgentEngine(config) {
   const runtime = config.runtime === undefined
-    ? new OpenAICompatibleRuntime({ workspaceRoot: config.workspaceRoot })
+    ? new OpenAICompatibleRuntime({ workspaceRoot: config.workspaceRoot, workspaceId: config.workspaceId })
     : config.runtime;
   return new WorkspaceAgentEngine(config, runtime || null);
 }
@@ -95,6 +95,7 @@ export class WorkspaceAgentEngine extends EventEmitter {
     const sessionObj = {
       id: result.sessionId,
       title: params.title || `Session ${new Date().toLocaleDateString()}`,
+      provider: params.provider || this.config.model?.provider || null,
       model: params.model || this.config.model?.default || "unknown",
       preview: "",
       updatedAt: new Date().toISOString(),
@@ -163,6 +164,8 @@ export class WorkspaceAgentEngine extends EventEmitter {
     const routedSurface = await inferSurfaceForPrompt(params, priorSession, this.runtime);
     params = {
       ...params,
+      provider: params.provider || priorSession?.provider || undefined,
+      model: params.model || priorSession?.model || undefined,
       uiSurface,
       surface: routedSurface,
       executionSurface: routedSurface
@@ -180,8 +183,21 @@ export class WorkspaceAgentEngine extends EventEmitter {
       reasoningEffort: params.reasoningEffort
     });
     try {
-      const history = this.sessionRuntime.promptHistory(priorSession);
-      const memoryResults = await this.searchRelevantMemory(params, priorSession);
+      const promptContext = typeof this.runtime?.prepareSessionContext === "function"
+        ? await this.runtime.prepareSessionContext(priorSession || {}, { ...params, taskId: task.id })
+        : this.sessionRuntime.promptContext(priorSession, {
+            provider: params.provider || priorSession?.provider || "",
+            model: params.model || priorSession?.model || this.config.model?.default || ""
+          });
+      if (promptContext.stateChanged && params.sessionId && promptContext.state) {
+        await this.sessionRuntime.persistContextCompaction(params.sessionId, promptContext.state);
+      }
+      const history = promptContext.history;
+      const sessionSummary = promptContext.summary;
+      // Cross-session conversations are intentionally not injected into every
+      // prompt. The model can retrieve them explicitly with conversation_search
+      // and conversation_read when the current request actually needs them.
+      const memoryResults = [];
       const codeTaskContext = await this.ensureCodeSurfaceTask(params, priorSession, context);
       const ensureCodeTask = async () => await this.ensureCodeSurfaceTask({
         ...params,
@@ -199,7 +215,10 @@ export class WorkspaceAgentEngine extends EventEmitter {
         ...params,
         context,
         history,
-        sessionSummary: priorSession?.summary || null,
+        fallbackHistory: promptContext.fallbackHistory,
+        sessionSummary,
+        nativeCompaction: promptContext.nativeCompaction || null,
+        sessionContextStats: promptContext.stats,
         memoryResults,
         surface: params.surface || priorSession?.surface || null,
         folderId: priorSession?.folderId || params.folderId || null,
@@ -709,38 +728,6 @@ export class WorkspaceAgentEngine extends EventEmitter {
       ...(params.context || {}),
       workspaceContext: await buildWorkspaceContext(this.config.workspaceRoot, params.contextRequest)
     };
-  }
-
-  async searchRelevantMemory(params, session) {
-    try {
-      const { searchMemory } = await import("./runtime/memory-retrieval.mjs");
-      const rawResults = await searchMemory(this.config.workspaceRoot, params.prompt || params.message || "", {
-        currentFolderId: session?.folderId || params.folderId || "",
-        currentProjectId: session?.projectId || params.projectId || "",
-        maxResults: 8
-      });
-      const externalPluginSurface = await isExternalPluginSurface(
-        this.config.workspaceRoot,
-        params.uiSurface || params.surface || session?.surface || "chat"
-      );
-      const trimmed = [];
-      let usedChars = 0;
-      for (const memory of rawResults) {
-        // A prior assistant answer is useful conversational history, but it is
-        // not fresh evidence for a live external service. External plugin
-        // Surfaces must re-read their MCP source instead of silently recycling
-        // a session summary from an earlier query.
-        if (externalPluginSurface && memory.type === "session_summary_memory") continue;
-        const content = String(memory.content || "");
-        if (!content) continue;
-        if (usedChars + content.length > 2000) break;
-        trimmed.push(memory);
-        usedChars += content.length;
-      }
-      return trimmed;
-    } catch {
-      return [];
-    }
   }
 
   async ensureCodeSurfaceTask(params, session, context = {}) {

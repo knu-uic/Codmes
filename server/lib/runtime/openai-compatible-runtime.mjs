@@ -23,6 +23,18 @@ import {
 import { ToolRegistry } from "./tool-registry.mjs";
 import { toolCatalogPromptLines } from "./tool-discovery.mjs";
 import { reconcilePluginMcpTools } from "./mcp-tool-consent.mjs";
+import {
+  estimateContextWindow,
+  estimateMessagesTokens,
+  estimateTextTokens,
+  truncateTextToTokenBudget
+} from "./context-budget.mjs";
+import {
+  compactionTranscript,
+  createCompactionState,
+  planConversationCompaction,
+  promptContextFromPlan
+} from "./conversation-compaction.mjs";
 
 const OPENAI_COMPATIBLE_DEFAULTS = {
   "openai-api": "https://api.openai.com/v1",
@@ -46,10 +58,11 @@ const EXECUTION_PROFILE_BUDGETS = Object.freeze({
 });
 
 export class OpenAICompatibleRuntime extends EventEmitter {
-  constructor({ workspaceRoot, env = process.env, fetchImpl = globalThis.fetch, mcpClientFactory = null } = {}) {
+  constructor({ workspaceRoot, workspaceId = null, env = process.env, fetchImpl = globalThis.fetch, mcpClientFactory = null } = {}) {
     super();
     this.name = "codmes-openai-compatible";
     this.workspaceRoot = workspaceRoot;
+    this.workspaceId = workspaceId;
     this.env = env;
     this.fetch = fetchImpl;
     this.mcpClientFactory = mcpClientFactory;
@@ -57,6 +70,7 @@ export class OpenAICompatibleRuntime extends EventEmitter {
     this.mcpClients = new Map();
     this.mcpToolNameMap = new Map();
     this.toolRegistry = new ToolRegistry();
+    this.contextWindowCache = new Map();
   }
 
   async connect() {
@@ -152,6 +166,285 @@ export class OpenAICompatibleRuntime extends EventEmitter {
     return sessionId;
   }
 
+  async prepareSessionContext(session = {}, params = {}) {
+    const selection = await this.resolveModelSelection({
+      provider: params.provider || session.provider || "",
+      model: params.model || session.model || "",
+      apiMode: params.apiMode
+    });
+    const contextWindow = await this.resolveContextWindow(selection, params);
+    const plan = planConversationCompaction(session, {
+      provider: selection.provider.id,
+      model: selection.model,
+      contextWindow,
+      thresholdRatio: params.compactionThresholdRatio,
+      targetRatio: params.compactionTargetRatio,
+      protectLastN: params.compactionProtectLastN
+    });
+    if (!plan.shouldCompact) return { ...promptContextFromPlan(plan), stateChanged: false };
+
+    let compacted;
+    const continueNative = !plan.existingState || plan.existingState.mode === "native";
+    if (continueNative && supportsNativeCompaction(selection)) {
+      try {
+        compacted = await this.compactConversationNatively(selection, plan, params);
+      } catch (error) {
+        this.emit("event", {
+          type: "context.compaction.fallback",
+          sessionId: params.sessionId || session.id,
+          taskId: params.taskId,
+          from: "native",
+          to: "auxiliary_model",
+          error: error?.message || "Native compaction failed.",
+          createdAt: new Date().toISOString()
+        });
+      }
+    }
+    if (!compacted) {
+      try {
+        compacted = await this.compactConversationWithModel(selection, plan, params);
+      } catch (error) {
+        this.emit("event", {
+          type: "context.compaction.failed",
+          sessionId: params.sessionId || session.id,
+          taskId: params.taskId,
+          error: error?.message || "Conversation compaction failed.",
+          retainedOriginalMessages: true,
+          createdAt: new Date().toISOString()
+        });
+        const uncompactedPlan = { ...plan, existingState: null };
+        return { ...promptContextFromPlan(uncompactedPlan, null), stateChanged: false, compactionFailed: true };
+      }
+    }
+    const state = createCompactionState(plan, compacted);
+    this.emit("event", {
+      type: "context.compacted",
+      sessionId: params.sessionId || session.id,
+      taskId: params.taskId,
+      reason: "conversation_threshold",
+      mode: state.mode,
+      coveredMessageCount: state.coveredMessageCount,
+      recentMessageCount: plan.messages.length - state.coveredMessageCount,
+      compactionCount: state.compactionCount,
+      contextWindow,
+      thresholdTokens: plan.thresholdTokens,
+      createdAt: state.updatedAt
+    });
+    return { ...promptContextFromPlan(plan, state), stateChanged: true };
+  }
+
+  async compactConversationNatively(selection, plan, params = {}) {
+    const previousOutput = plan.existingState?.mode === "native"
+      ? plan.existingState.output
+      : [];
+    const { input: newInput } = chatMessagesToResponsesInput(plan.messagesToCompact);
+    const headers = {
+      "content-type": "application/json",
+      accept: "application/json",
+      ...selection.extraHeaders
+    };
+    if (selection.apiKey) headers.authorization = `Bearer ${selection.apiKey}`;
+    const response = await this.fetch(`${selection.baseUrl}/responses/compact`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: selection.model,
+        input: [...previousOutput, ...newInput],
+        instructions: compactionInstructions(),
+        prompt_cache_key: codexCacheScopeId(params.sessionId)
+      })
+    });
+    if (!response.ok) {
+      const bodyText = await response.text().catch(() => "");
+      throw Object.assign(new Error(`Native compaction failed: ${response.status} ${bodyText.slice(0, 300)}`), {
+        status: response.status
+      });
+    }
+    const json = await response.json();
+    if (json?.object !== "response.compaction" || !Array.isArray(json.output) || !json.output.length) {
+      throw new Error("Native compaction returned an invalid response.");
+    }
+    return { mode: "native", output: json.output, usage: json.usage || null };
+  }
+
+  async compactConversationWithModel(selection, plan, _params = {}) {
+    const transcript = compactionTranscript(plan);
+    if (!transcript) throw new Error("There is no conversation content to compact.");
+    const result = await this.requestAuxiliaryCompaction(selection, compactionInstructions(), transcript);
+    return { mode: "summary", summary: result.text, usage: result.usage };
+  }
+
+  async summarizeSessionForSearch(session = {}, params = {}) {
+    const selection = await this.resolveModelSelection({
+      provider: params.provider || session.provider || "",
+      model: params.model || session.model || "",
+      apiMode: params.apiMode
+    });
+    const messages = (Array.isArray(session.messages) ? session.messages : [])
+      .filter((message) => message?.role === "user" || message?.role === "assistant");
+    if (!messages.length) throw Object.assign(new Error("The session has no conversation to summarize."), { status: 400 });
+    const transcript = messages
+      .map((message) => `${message.role.toUpperCase()}: ${String(message.content || "")}`)
+      .join("\n\n");
+    const result = await this.requestAuxiliaryCompaction(selection, sessionSummaryInstructions(), transcript);
+    const coveredMessageIds = messages.map((message, index) => String(message.id || index + 1));
+    return {
+      content: result.text,
+      generator: "auxiliary_model",
+      provider: selection.provider.id,
+      model: selection.model,
+      sourceMessageIds: coveredMessageIds,
+      coveredMessageIds,
+      lastSummarizedMessageId: coveredMessageIds.at(-1) || null,
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  async requestAuxiliaryCompaction(selection, instructions, transcript) {
+    let response;
+    if (selection.apiMode === "codex_responses" || selection.apiMode === "responses" || selection.provider.id === "openai-codex") {
+      const headers = { "content-type": "application/json", accept: "application/json", ...selection.extraHeaders };
+      if (selection.apiKey) headers.authorization = `Bearer ${selection.apiKey}`;
+      response = await this.fetch(`${selection.baseUrl}/responses`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: selection.model,
+          instructions,
+          input: [{ role: "user", content: [{ type: "input_text", text: transcript }] }],
+          store: false,
+          stream: false,
+          max_output_tokens: 4_096
+        })
+      });
+    } else {
+      const headers = { "content-type": "application/json", ...selection.extraHeaders };
+      if (selection.apiKey) headers.authorization = `Bearer ${selection.apiKey}`;
+      response = await this.fetch(`${selection.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: selection.model,
+          stream: false,
+          temperature: 0,
+          max_tokens: 4_096,
+          messages: [
+            { role: "system", content: instructions },
+            { role: "user", content: transcript }
+          ]
+        })
+      });
+    }
+    if (!response.ok) {
+      const bodyText = await response.text().catch(() => "");
+      throw Object.assign(new Error(`Auxiliary compaction failed: ${response.status} ${bodyText.slice(0, 300)}`), {
+        status: response.status
+      });
+    }
+    const json = await response.json();
+    const summary = selection.apiMode === "codex_responses" || selection.apiMode === "responses" || selection.provider.id === "openai-codex"
+      ? extractResponsesText(json)
+      : extractNonStreamingText(json);
+    if (!String(summary || "").trim()) throw new Error("Auxiliary compaction returned an empty summary.");
+    return { text: String(summary).trim(), usage: json.usage || null };
+  }
+
+  async compactToolLoopContext(selection, messages, params = {}) {
+    const key = `${selection.provider.id}:${selection.model}`;
+    const contextWindow = this.contextWindowCache.get(key) || estimateContextWindow(selection.model);
+    const thresholdTokens = Math.max(2_048, Math.floor(contextWindow * 0.5));
+    const tokenEstimate = estimateMessagesTokens(messages);
+    if (tokenEstimate < thresholdTokens) {
+      return { messages, compacted: false, tokenEstimate, thresholdTokens };
+    }
+    const lastUserIndex = messages.map((message) => message?.role).lastIndexOf("user");
+    if (lastUserIndex < 0 || lastUserIndex >= messages.length - 1) {
+      return { messages, compacted: false, tokenEstimate, thresholdTokens };
+    }
+    const prefix = messages.slice(0, lastUserIndex + 1);
+    const afterUser = messages.slice(lastUserIndex + 1);
+    const previousCheckpoint = afterUser.find((message) =>
+      message?.role === "assistant" && String(message.content || "").startsWith("Earlier tool activity checkpoint:")
+    );
+    const groups = completedToolGroups(afterUser);
+    if (groups.length < 2) return { messages, compacted: false, tokenEstimate, thresholdTokens };
+
+    const removedGroups = [];
+    const targetTokens = Math.floor(thresholdTokens * 0.7);
+    let nextEstimate = tokenEstimate;
+    while (groups.length > 1 && nextEstimate > targetTokens) {
+      removedGroups.push(groups.shift());
+      nextEstimate = estimateMessagesTokens([...prefix, ...groups.flat()]);
+    }
+    if (!removedGroups.length) return { messages, compacted: false, tokenEstimate, thresholdTokens };
+    const transcript = [
+      previousCheckpoint?.content ? `PREVIOUS TOOL CHECKPOINT:\n${previousCheckpoint.content}` : "",
+      "TOOL ACTIVITY TO COMPACT:\n" + removedGroups.flat().map((message) => JSON.stringify(message)).join("\n")
+    ].filter(Boolean).join("\n\n");
+    try {
+      const result = await this.requestAuxiliaryCompaction(selection, toolCompactionInstructions(), transcript);
+      const checkpoint = { role: "assistant", content: `Earlier tool activity checkpoint:\n${result.text}` };
+      const compactedMessages = [...prefix, checkpoint, ...groups.flat()];
+      return {
+        messages: compactedMessages,
+        compacted: true,
+        removedToolGroups: removedGroups.length,
+        tokenEstimate: estimateMessagesTokens(compactedMessages),
+        thresholdTokens
+      };
+    } catch (error) {
+      this.emit("event", {
+        type: "context.compaction.failed",
+        sessionId: params.sessionId,
+        taskId: params.taskId,
+        scope: "tool_loop",
+        error: error?.message || "Tool activity compaction failed.",
+        retainedOriginalMessages: true,
+        createdAt: new Date().toISOString()
+      });
+      return { messages, compacted: false, tokenEstimate, thresholdTokens, error };
+    }
+  }
+
+  async resolveContextWindow(selection, params = {}) {
+    const explicit = Number.parseInt(params.contextWindow || this.env.CODMES_CONTEXT_WINDOW || "", 10);
+    if (Number.isFinite(explicit) && explicit > 0) return explicit;
+    const key = `${selection.provider.id}:${selection.model}`;
+    let detected = 0;
+    if (selection.provider.id === "ollama-local") {
+      try {
+        const base = new URL(selection.baseUrl);
+        base.pathname = "/api/ps";
+        base.search = "";
+        base.hash = "";
+        const response = await this.fetch(base.toString());
+        if (response.ok) detected = ollamaLoadedContextWindow(await response.json(), selection.model);
+      } catch {}
+      if (detected > 0) {
+        this.contextWindowCache.set(key, detected);
+        return detected;
+      }
+      if (this.contextWindowCache.has(key)) return this.contextWindowCache.get(key);
+      try {
+        const base = new URL(selection.baseUrl);
+        base.pathname = "/api/show";
+        base.search = "";
+        base.hash = "";
+        const response = await this.fetch(base.toString(), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: selection.model })
+        });
+        if (response.ok) detected = ollamaContextWindow(await response.json());
+      } catch {}
+    } else if (this.contextWindowCache.has(key)) {
+      return this.contextWindowCache.get(key);
+    }
+    const value = detected || estimateContextWindow(selection.model);
+    this.contextWindowCache.set(key, value);
+    return value;
+  }
+
   async submitPrompt(params = {}) {
     // The client chooses its provider/model when it creates a session. Prompt
     // submission only carries the session id, so restore that selection before
@@ -176,7 +469,9 @@ export class OpenAICompatibleRuntime extends EventEmitter {
         const systemPrompt = await this.buildSystemPrompt(activeParams);
         const messages = buildMessages(activeParams, systemPrompt);
         const promptTokenEstimate = estimateMessagesTokens(messages);
-        const contextWindow = estimateContextWindow(selection.model);
+        const contextWindow = activeParams.sessionContextStats?.contextWindow
+          || this.contextWindowCache.get(`${selection.provider.id}:${selection.model}`)
+          || estimateContextWindow(selection.model);
 
         this.emit("event", {
           type: "turn.start",
@@ -186,7 +481,8 @@ export class OpenAICompatibleRuntime extends EventEmitter {
           model: selection.model,
           promptTokenEstimate,
           contextWindow,
-          contextUsageRatio: contextWindow ? promptTokenEstimate / contextWindow : null
+          contextUsageRatio: contextWindow ? promptTokenEstimate / contextWindow : null,
+          sessionContext: activeParams.sessionContextStats || null
         });
 
         const result = await this.runChatLoop(selection, messages, activeParams);
@@ -235,6 +531,11 @@ export class OpenAICompatibleRuntime extends EventEmitter {
 
             activeParams.provider = nextProvider;
             activeParams.model = nextModel;
+            if (activeParams.nativeCompaction) {
+              activeParams.history = activeParams.fallbackHistory || activeParams.history;
+              activeParams.nativeCompaction = null;
+              activeParams.sessionSummary = null;
+            }
             continue;
           }
         }
@@ -267,12 +568,33 @@ export class OpenAICompatibleRuntime extends EventEmitter {
     );
 
     for (;;) {
+      const fitted = await this.compactToolLoopContext(selection, messages, activeParams);
+      if (fitted.compacted) {
+        messages = fitted.messages;
+        this.emit("event", {
+          type: "context.compacted",
+          sessionId: params.sessionId,
+          taskId: params.taskId,
+          reason: "tool_loop_token_budget",
+          removedToolGroups: fitted.removedToolGroups,
+          tokenEstimate: fitted.tokenEstimate,
+          thresholdTokens: fitted.thresholdTokens,
+          createdAt: new Date().toISOString()
+        });
+      }
       const result = await this.requestChatCompletion(selection, messages, activeParams);
+      if (selection.provider.id === "ollama-local") {
+        // The first completion may have loaded the runner. Refresh now so any
+        // following tool rounds use Ollama's effective context, not /api/show's
+        // model maximum that was used while the runner was still unloaded.
+        await this.resolveContextWindow(selection, activeParams);
+      }
       reply += result.text;
       if (result.reasoning) reasoning += result.reasoning;
       if (!result.toolCalls.length) {
+        const renderedReply = renderSelectedFigureTokens(reply, allowedFigureAssets);
         return {
-          reply: renderSelectedFigureTokens(reply, allowedFigureAssets),
+          reply: renderedReply,
           reasoning,
           toolRounds,
           executionProfile,
@@ -406,11 +728,30 @@ export class OpenAICompatibleRuntime extends EventEmitter {
         for (const image of collectRelatedImages(toolResult)) {
           allowedFigureAssets.set(String(image.asset_id), image);
         }
+        const modelVisibleToolResult = JSON.stringify(redactRelatedImageUrlsForModel(toolResult));
+        const toolResultTokenBudget = Math.max(1_024, Math.min(12_000, Math.floor(estimateContextWindow(selection.model) * 0.1)));
+        const compactedToolResult = truncateTextToTokenBudget(
+          modelVisibleToolResult,
+          toolResultTokenBudget,
+          "\n…[tool result compacted; call the tool again for omitted detail]…\n"
+        );
+        if (compactedToolResult !== modelVisibleToolResult) {
+          this.emit("event", {
+            type: "context.compacted",
+            sessionId: params.sessionId,
+            taskId: params.taskId,
+            reason: "oversized_tool_result",
+            toolName: call.name,
+            originalTokenEstimate: estimateTextTokens(modelVisibleToolResult),
+            compactedTokenEstimate: estimateTextTokens(compactedToolResult),
+            createdAt: new Date().toISOString()
+          });
+        }
         messages.push({
           role: "tool",
           tool_call_id: call.id,
           name: call.name,
-          content: JSON.stringify(redactRelatedImageUrlsForModel(toolResult))
+          content: compactedToolResult
         });
       }
     }
@@ -428,7 +769,7 @@ export class OpenAICompatibleRuntime extends EventEmitter {
 
     // Read toggles & MCP servers to merge active tools
     const config = await readRuntimeConfig(this.workspaceRoot);
-    const { CORE_RECALL_TOOLS, getEffectiveToolMode } = await import("./tool-mode-registry.mjs");
+    const { ALWAYS_AVAILABLE_CONVERSATION_TOOLS, CORE_RECALL_TOOLS, getEffectiveToolMode } = await import("./tool-mode-registry.mjs");
     const { TOOL_DISCOVERY_DEFINITION } = await import("./tool-discovery.mjs");
     const { CONVERSATION_SEARCH_DEFINITION, CONVERSATION_READ_DEFINITION } = await import("./conversation-tools.mjs");
     const { MEMORY_SEARCH_DEFINITION } = await import("./memory-retrieval.mjs");
@@ -439,6 +780,7 @@ export class OpenAICompatibleRuntime extends EventEmitter {
     const modeDisabledTools = new Set(effectiveMode.disabledTools || []);
     const globallyDisabledTools = new Set(config.disabledTools || []);
     const coreRecallTools = new Set(CORE_RECALL_TOOLS);
+    const alwaysAvailableConversationTools = new Set(ALWAYS_AVAILABLE_CONVERSATION_TOOLS);
 
     const toolRegistry = new ToolRegistry();
     for (const tool of WORKSPACE_TOOL_DEFINITIONS) {
@@ -576,7 +918,7 @@ export class OpenAICompatibleRuntime extends EventEmitter {
     // Filter tools based on tool mode enabledTools list
     const filteredTools = activeTools.filter((t) => {
       const name = t.function.name;
-      if (globallyDisabledTools.has(name)) {
+      if (globallyDisabledTools.has(name) && !alwaysAvailableConversationTools.has(name)) {
         return false;
       }
       const mappedMcpTool = this.mcpToolNameMap.get(name);
@@ -601,7 +943,7 @@ export class OpenAICompatibleRuntime extends EventEmitter {
       return true;
     });
 
-    if (selection.apiMode === "codex_responses" || selection.provider.id === "openai-codex") {
+    if (selection.apiMode === "codex_responses" || selection.apiMode === "responses" || selection.provider.id === "openai-codex") {
       return await this.requestCodexResponses(selection, messages, params, filteredTools);
     }
 
@@ -709,6 +1051,9 @@ export class OpenAICompatibleRuntime extends EventEmitter {
     let text = "";
     const toolCalls = [];
     const { instructions, input } = chatMessagesToResponsesInput(messages);
+    const persistedCompaction = Array.isArray(params.nativeCompaction?.output)
+      ? params.nativeCompaction.output
+      : [];
     const responseTools = responsesTools(filteredTools);
     const headers = {
       "content-type": "application/json",
@@ -725,7 +1070,7 @@ export class OpenAICompatibleRuntime extends EventEmitter {
     const body = {
       model: selection.model,
       instructions,
-      input,
+      input: [...persistedCompaction, ...input],
       store: false,
       stream: true,
       prompt_cache_key: codexPromptCacheKey(instructions, responseTools) || cacheScopeId,
@@ -808,15 +1153,16 @@ export class OpenAICompatibleRuntime extends EventEmitter {
 
   async executeToolCall(call, params) {
     const config = await readRuntimeConfig(this.workspaceRoot);
-    const { CORE_RECALL_TOOLS, getEffectiveToolMode } = await import("./tool-mode-registry.mjs");
+    const { ALWAYS_AVAILABLE_CONVERSATION_TOOLS, CORE_RECALL_TOOLS, getEffectiveToolMode } = await import("./tool-mode-registry.mjs");
     const effectiveMode = await getEffectiveToolMode(this.workspaceRoot, params.surface || "chat");
     const enabledTools = new Set(effectiveMode.enabledTools || []);
     const expandedTools = new Set(params.expandedToolsForThisTurn || []);
     const mandatory = new Set(CORE_RECALL_TOOLS);
+    const alwaysAvailableConversationTools = new Set(ALWAYS_AVAILABLE_CONVERSATION_TOOLS);
 
     // Check if tool is disabled in config first
     const disabledTools = new Set(config.disabledTools || []);
-    if (disabledTools.has(call.name)) {
+    if (disabledTools.has(call.name) && !alwaysAvailableConversationTools.has(call.name)) {
       const errorMsg = `Tool '${call.name}' is currently disabled in config.`;
       this.emit("event", {
         type: "tool.error",
@@ -1192,11 +1538,16 @@ export class OpenAICompatibleRuntime extends EventEmitter {
           result = await this.executeCodmesSearch(args, params);
         } else {
           result = await executeWorkspaceTool(this.workspaceRoot, call.name, call.arguments, {
+            workspaceId: this.workspaceId,
             codeRuntime: params.codeRuntime,
             approved: params.approved === true,
             currentCodeTaskId: params.currentCodeTaskId,
             currentCodeScopePath: params.currentCodeScopePath
           });
+          result = normalizeRelatedImageUrls(
+            result,
+            `http://127.0.0.1:${Number.parseInt(process.env.CODMES_PORT || process.env.PORT || "8787", 10) || 8787}`
+          );
         }
       }
       this.emit("event", {
@@ -1405,6 +1756,7 @@ export class OpenAICompatibleRuntime extends EventEmitter {
   async executeCodmesSearch(args = {}) {
     const { searchWorkspace } = await import("../search-service.mjs");
     const search = await searchWorkspace(this.workspaceRoot, {
+      workspaceId: this.workspaceId,
       query: args.query || "",
       scopePath: args.scopePath || "",
       maxResults: clampNumber(args.maxResults, 1, 20, 8)
@@ -1447,7 +1799,7 @@ export class OpenAICompatibleRuntime extends EventEmitter {
 
     const workspace = context.workspace || {};
     if (params.sessionSummary?.content) {
-      parts.push("Current session summary:");
+      parts.push("Current session checkpoint:");
       parts.push(String(params.sessionSummary.content));
       if (Array.isArray(params.sessionSummary.decisions) && params.sessionSummary.decisions.length) {
         parts.push(`Session decisions: ${params.sessionSummary.decisions.slice(0, 6).join(" / ")}`);
@@ -1721,7 +2073,7 @@ function buildSystemMessage(params) {
 
   const workspace = context.workspace || {};
   if (params.sessionSummary?.content) {
-    parts.push("Current session summary:");
+    parts.push("Current session checkpoint:");
     parts.push(String(params.sessionSummary.content));
     if (Array.isArray(params.sessionSummary.decisions) && params.sessionSummary.decisions.length) {
       parts.push(`Session decisions: ${params.sessionSummary.decisions.slice(0, 6).join(" / ")}`);
@@ -1833,27 +2185,73 @@ function codexCacheScopeId(sessionId) {
   return `codmes_${digest}`;
 }
 
-function estimateMessagesTokens(messages = []) {
-  const text = (messages || []).map((message) => {
-    if (!message || typeof message !== "object") return "";
-    const content = message.content;
-    if (typeof content === "string") return content;
-    if (Array.isArray(content)) {
-      return content.map((part) => typeof part === "string" ? part : JSON.stringify(part || {})).join(" ");
-    }
-    return JSON.stringify(content || "");
-  }).join("\n");
-  return Math.max(1, Math.ceil(text.length / 4));
+function supportsNativeCompaction(selection = {}) {
+  return selection.apiMode === "codex_responses"
+    || selection.apiMode === "responses"
+    || selection.provider?.id === "openai-codex";
 }
 
-function estimateContextWindow(model = "") {
-  const id = String(model || "").toLowerCase();
-  if (!id) return null;
-  if (id.includes("gpt-5") || id.includes("gpt-4.1") || id.includes("gemini-2.5") || id.includes("gemini-3")) return 1_000_000;
-  if (id.includes("claude") || id.includes("opus") || id.includes("sonnet")) return 200_000;
-  if (id.includes("qwen") || id.includes("deepseek") || id.includes("kimi")) return 128_000;
-  if (id.includes("llama") || id.includes("gemma") || id.includes("mistral")) return 32_000;
-  return 128_000;
+function compactionInstructions() {
+  return [
+    "Compress the conversation for faithful continuation of the same task.",
+    "Preserve the user's objective and constraints, decisions, completed actions, exact identifiers and file paths, tool outcomes, unresolved errors or blockers, and the next concrete work.",
+    "Preserve unrelated side questions only when they changed requirements or state.",
+    "Use the conversation's primary language. Do not invent facts, claim unverified work is complete, or include commentary about the compression process."
+  ].join(" ");
+}
+
+function sessionSummaryInstructions() {
+  return [
+    "Summarize this saved conversation for later semantic search and human inspection.",
+    "Preserve the user's objectives and preferences, decisions, constraints, important facts, completed and pending work, unresolved errors, and exact identifiers or file paths.",
+    "Be concise, factual, and do not infer facts that were not stated. Do not describe the summarization process."
+  ].join(" ");
+}
+
+function toolCompactionInstructions() {
+  return [
+    "Compress completed tool activity for continuation of the current agent turn.",
+    "Preserve exact tool names, arguments or identifiers needed later, successful side effects, verification results, errors, unresolved blockers, artifact paths, and what the agent should do next.",
+    "Do not repeat large raw outputs, invent results, or mark failed and unverified work as complete."
+  ].join(" ");
+}
+
+function ollamaContextWindow(json = {}) {
+  const candidates = [];
+  for (const [key, value] of Object.entries(json.model_info || {})) {
+    if (/(?:^|\.)context_length$/i.test(key)) candidates.push(Number(value));
+  }
+  const parameterText = String(json.parameters || "");
+  const numCtx = parameterText.match(/(?:^|\n)\s*num_ctx\s+(\d+)/i);
+  if (numCtx) candidates.push(Number(numCtx[1]));
+  return Math.max(0, ...candidates.filter((value) => Number.isFinite(value) && value > 0));
+}
+
+function ollamaLoadedContextWindow(json = {}, requestedModel = "") {
+  const requested = String(requestedModel || "").trim().toLowerCase();
+  if (!requested) return 0;
+  const requestedNames = new Set([requested]);
+  if (!requested.includes(":")) requestedNames.add(`${requested}:latest`);
+  const loaded = Array.isArray(json.models) ? json.models : [];
+  const match = loaded.find((entry) => [entry?.name, entry?.model]
+    .some((value) => requestedNames.has(String(value || "").trim().toLowerCase())));
+  const contextWindow = Number(match?.context_length);
+  return Number.isFinite(contextWindow) && contextWindow > 0 ? Math.floor(contextWindow) : 0;
+}
+
+function completedToolGroups(messages) {
+  const groups = [];
+  let current = [];
+  for (const message of messages) {
+    if (message?.role === "assistant" && Array.isArray(message.tool_calls)) {
+      if (current.length) groups.push(current);
+      current = [message];
+    } else if (current.length) {
+      current.push(message);
+    }
+  }
+  if (current.length) groups.push(current);
+  return groups;
 }
 
 function getPartialMatch(str, target) {
@@ -2376,7 +2774,18 @@ function normalizeWorkspaceSearchResults(result = {}) {
     snippet: item.snippet || item.text || "",
     score: Number.isFinite(Number(item.score)) ? Number(item.score) : undefined,
     page: item.page,
-    chunkId: item.chunkId || `${index + 1}`
+    chunkId: item.chunkId || `${index + 1}`,
+    related_images: normalizeWorkspaceRelatedImages(item.related_images)
+  }));
+}
+
+function normalizeWorkspaceRelatedImages(images) {
+  const origin = `http://127.0.0.1:${Number.parseInt(process.env.CODMES_PORT || process.env.PORT || "8787", 10) || 8787}`;
+  return (Array.isArray(images) ? images : []).map((image) => ({
+    ...image,
+    url: typeof image?.url === "string" && image.url.startsWith("/")
+      ? `${origin}${image.url}`
+      : image?.url
   }));
 }
 
@@ -2427,8 +2836,7 @@ export function collectRelatedImages(value) {
         for (const image of item) {
           if (
             image && typeof image === "object"
-            && Number.isSafeInteger(Number(image.asset_id))
-            && Number(image.asset_id) > 0
+            && /^[a-zA-Z0-9_-]{1,64}$/.test(String(image.asset_id || ""))
             && /^https?:\/\//i.test(String(image.url || ""))
           ) found.push(image);
         }
@@ -2482,7 +2890,7 @@ export function renderSelectedFigureTokens(reply, allowedAssets) {
   const assets = allowedAssets instanceof Map
     ? allowedAssets
     : new Map(collectRelatedImages(allowedAssets).map((image) => [String(image.asset_id), image]));
-  return String(reply || "").replace(/\[그림\s*:\s*(\d+)\]/g, (token, assetId) => {
+  return String(reply || "").replace(/\[그림\s*:\s*([a-zA-Z0-9_-]{1,64})\]/g, (token, assetId) => {
     const image = assets.get(String(assetId));
     if (!image) return token;
     const number = Number.isFinite(Number(image.number)) ? `그림 ${Number(image.number)}` : "관련 그림";

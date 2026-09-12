@@ -47,7 +47,7 @@ export class RuntimeChatBackend extends ChatBackend {
             resolve({
               ok: true,
               sessionId: params.sessionId,
-              reply: answerText,
+              reply: text || answerText,
               reasoning: reasoningText
             });
           }

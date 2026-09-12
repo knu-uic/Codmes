@@ -42,23 +42,21 @@ export async function indexSession(workspaceRoot, session) {
   await fs.writeFile(metaPath, sessions.map(s => JSON.stringify(s)).join("\n") + "\n", "utf8");
 
   // 2. Index Summary
+  const summaryPath = path.join(dir, "summaries.jsonl");
+  let summaries = [];
+  try {
+    const data = await fs.readFile(summaryPath, "utf8");
+    summaries = data.split("\n").filter(Boolean).map(JSON.parse);
+  } catch {}
+  summaries = summaries.filter(s => s.sessionId !== session.id);
   if (session.summary && session.summary.content) {
-    const summaryPath = path.join(dir, "summaries.jsonl");
-    let summaries = [];
-    try {
-      const data = await fs.readFile(summaryPath, "utf8");
-      summaries = data.split("\n").filter(Boolean).map(JSON.parse);
-    } catch {}
-    
-    summaries = summaries.filter(s => s.sessionId !== session.id);
     summaries.push({
       sessionId: session.id,
       summary: session.summary.content,
       updatedAt: session.summary.updatedAt || new Date().toISOString()
     });
-    
-    await fs.writeFile(summaryPath, summaries.map(s => JSON.stringify(s)).join("\n") + "\n", "utf8");
   }
+  await fs.writeFile(summaryPath, summaries.map(s => JSON.stringify(s)).join("\n") + (summaries.length ? "\n" : ""), "utf8");
 
   // 3. Index Messages
   if (Array.isArray(session.messages)) {
@@ -81,6 +79,23 @@ export async function indexSession(workspaceRoot, session) {
     });
     
     await fs.writeFile(msgPath, messages.map(m => JSON.stringify(m)).join("\n") + "\n", "utf8");
+  }
+}
+
+export async function removeSessionFromConversationIndex(workspaceRoot, sessionId) {
+  const dir = await ensureConversationIndex(workspaceRoot);
+  for (const [fileName, key] of [
+    ["sessions.jsonl", "id"],
+    ["summaries.jsonl", "sessionId"],
+    ["messages.jsonl", "sessionId"]
+  ]) {
+    const filePath = path.join(dir, fileName);
+    let rows = [];
+    try {
+      rows = (await fs.readFile(filePath, "utf8")).split("\n").filter(Boolean).map(JSON.parse);
+    } catch {}
+    const next = rows.filter((row) => row?.[key] !== sessionId);
+    await fs.writeFile(filePath, next.map((row) => JSON.stringify(row)).join("\n") + (next.length ? "\n" : ""), "utf8");
   }
 }
 

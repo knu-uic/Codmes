@@ -120,6 +120,91 @@ test("builds and searches the native Codmes search index", async () => {
   assert.equal(result.results[0].path, "Notes/os.md");
 });
 
+test("associates a PDF figure only with the chunk that contains its marker and description", async () => {
+  const root = await fixtureWorkspace();
+  const relativePath = "Notes/layered.pdf";
+  const absolutePath = path.join(root, relativePath);
+  await fs.writeFile(absolutePath, "%PDF-1.4\n%%EOF\n", "utf8");
+  const stat = await fs.stat(absolutePath);
+  const cacheDirectory = documentIngestCacheDirectory(root, relativePath);
+  await fs.mkdir(cacheDirectory, { recursive: true });
+  const relatedImage = {
+    asset_id: "d1234567890abcdef1234567",
+    reference: "[그림:d1234567890abcdef1234567]",
+    description: "DBMS 계층도",
+    url: "/api/document-assets/layered--12345678/figure.png"
+  };
+  await fs.writeFile(path.join(cacheDirectory, "extraction.json"), JSON.stringify({
+    schemaVersion: 15,
+    path: relativePath,
+    kind: "pdf",
+    text: "DBMS 플랫폼은 운영체제와 하드웨어 위에서 동작한다.",
+    markdown: "DBMS 플랫폼은 운영체제와 하드웨어 위에서 동작한다.",
+    tables: [],
+    figures: [],
+    warnings: [],
+    blocks: [
+      { path: relativePath, kind: "pdf", source: "pdf-text", page: 1, text: "DBMS 플랫폼은 운영체제와 하드웨어 위에서 동작한다." },
+      { path: relativePath, kind: "pdf", source: "pdf-figure", page: 1, text: "[그림 1] DBMS 계층도", metadata: { related_images: [relatedImage] } }
+    ],
+    cache: { version: 15, sourcePath: relativePath, size: stat.size, mtimeMs: stat.mtimeMs }
+  }), "utf8");
+
+  await buildSearchIndex(root, { roots: ["Notes"] });
+  const result = await searchWorkspace(root, { query: "운영체제 하드웨어", scopePath: "Notes" });
+
+  assert.equal(result.results[0].source, "pdf-text");
+  assert.deepEqual(result.results[0].related_images, []);
+
+  const figureResult = await searchWorkspace(root, { query: "DBMS 계층도", scopePath: "Notes" });
+  const figureHit = figureResult.results.find((item) => item.source === "pdf-figure");
+  assert.ok(figureHit);
+  assert.deepEqual(figureHit.related_images, [relatedImage]);
+});
+
+test("does not leak another figure from the same PDF page into a retrieved figure chunk", async () => {
+  const root = await fixtureWorkspace();
+  const relativePath = "Notes/stops.pdf";
+  const absolutePath = path.join(root, relativePath);
+  await fs.writeFile(absolutePath, "%PDF-1.4\n%%EOF\n", "utf8");
+  const stat = await fs.stat(absolutePath);
+  const cacheDirectory = documentIngestCacheDirectory(root, relativePath);
+  await fs.mkdir(cacheDirectory, { recursive: true });
+  const stop3 = {
+    asset_id: "d3333333333333333333333",
+    reference: "[그림:d3333333333333333333333]",
+    description: "첫마을 3단지 정류장",
+    url: "/api/document-assets/stops--12345678/three.png"
+  };
+  const stop7 = {
+    asset_id: "d7777777777777777777777",
+    reference: "[그림:d7777777777777777777777]",
+    description: "첫마을 7단지 701동 인근 변압기 앞",
+    url: "/api/document-assets/stops--12345678/seven.png"
+  };
+  await fs.writeFile(path.join(cacheDirectory, "extraction.json"), JSON.stringify({
+    schemaVersion: 15,
+    path: relativePath,
+    kind: "pdf",
+    text: "[그림 1] 첫마을 3단지\n[그림 2] 첫마을 7단지 701동 인근 변압기 앞",
+    markdown: "[그림 1] 첫마을 3단지\n[그림 2] 첫마을 7단지 701동 인근 변압기 앞",
+    tables: [],
+    figures: [],
+    warnings: [],
+    blocks: [
+      { path: relativePath, kind: "pdf", source: "pdf-figure", page: 1, text: "[그림 1]\n[그림 설명] 첫마을 3단지 정류장", metadata: { related_images: [stop3] } },
+      { path: relativePath, kind: "pdf", source: "pdf-figure", page: 1, text: "[그림 2]\n[그림 설명] 첫마을 7단지 701동 인근 변압기 앞", metadata: { related_images: [stop7] } }
+    ],
+    cache: { version: 15, sourcePath: relativePath, size: stat.size, mtimeMs: stat.mtimeMs }
+  }), "utf8");
+
+  await buildSearchIndex(root, { roots: ["Notes"] });
+  const result = await searchWorkspace(root, { query: "7단지 701동 변압기", scopePath: "Notes", maxResults: 1 });
+
+  assert.equal(result.results[0].source, "pdf-figure");
+  assert.deepEqual(result.results[0].related_images, [stop7]);
+});
+
 test("partially updates the native search index when files change", async () => {
   const root = await fixtureWorkspace();
   await buildSearchIndex(root, {

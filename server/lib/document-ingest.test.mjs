@@ -14,6 +14,7 @@ import {
   extractAndCacheDocument,
   parseDocumentWorkerOutput,
   extractDocumentAnnotationBlocks,
+  findFigureNearbyText,
   documentIngestCacheDirectory,
   documentIngestCachePath,
   documentIngestMarkdownPath,
@@ -23,6 +24,7 @@ import {
   isDocumentIngestFile,
   legacyAnnotationsPathForDocument,
   normalizeOcrBox,
+  pagesNeedingOcr,
   pdfTextNeedsOcr,
   pruneDocumentIngestCacheFiles,
   removeDocumentIngestCacheFiles,
@@ -37,6 +39,27 @@ test("document worker output tolerates native dependency startup warnings", () =
     { schemaVersion: 1, text: "ok" }
   );
   assert.throws(() => parseDocumentWorkerOutput("warning only"), /Unexpected token/);
+});
+
+test("matches each PDF figure only to its nearest spatial caption", () => {
+  const bbox = (x, y, width, height) => ({
+    x, y, width, height, pageWidth: 1000, pageHeight: 1000,
+    normalized: { x: x / 1000, y: y / 1000, width: width / 1000, height: height / 1000 }
+  });
+  const blocks = [
+    { page: 1, source: "pdf-text", text: "승차지점 : 첫마을 3단지 정류장", bbox: bbox(650, 100, 230, 20) },
+    { page: 1, source: "pdf-text", text: "승차지점 : 첫마을 7단지 701동 인근 변압기 앞", bbox: bbox(650, 400, 300, 20) },
+    { page: 1, source: "pdf-text", text: "운행 노선 표", bbox: bbox(100, 300, 400, 300) }
+  ];
+
+  assert.equal(
+    findFigureNearbyText(blocks, { page: 1, bbox: bbox(700, 130, 260, 220) }),
+    "승차지점 : 첫마을 3단지 정류장"
+  );
+  assert.equal(
+    findFigureNearbyText(blocks, { page: 1, bbox: bbox(700, 430, 260, 220) }),
+    "승차지점 : 첫마을 7단지 701동 인근 변압기 앞"
+  );
 });
 
 test("document ingest extracts and caches PDF text through the worker", async () => {
@@ -73,7 +96,7 @@ test("document ingest stores structured PDF tables and a Markdown sidecar", asyn
   await createTablePdf(pdfPath);
 
   const result = await extractAndCacheDocument(root, pdfPath, relativePath);
-  assert.equal(result.schemaVersion, 3);
+  assert.equal(result.schemaVersion, 15);
   assert.ok(result.tables.length >= 1);
   const table = result.tables.find((item) => item.headers.includes("Event"));
   assert.ok(table);
@@ -81,6 +104,8 @@ test("document ingest stores structured PDF tables and a Markdown sidecar", asyn
   assert.deepEqual(table.rows[0].slice(0, 3), ["March", "GTC", "San Jose"]);
   assert.equal(table.page, 1);
   assert.ok(table.bbox?.normalized);
+  assert.ok(result.blocks.some((block) => block.source === "pdf-table" && /GTC/.test(block.text)));
+  assert.ok(result.blocks.some((block) => block.source === "pdf-table-row" && /March.*GTC.*San Jose/.test(block.text)));
 
   const stat = await fs.stat(pdfPath);
   const markdownPath = documentIngestMarkdownPath(root, relativePath, stat);
@@ -90,6 +115,25 @@ test("document ingest stores structured PDF tables and a Markdown sidecar", asyn
   const metadata = await getDocumentIngestMetadata(root, pdfPath, relativePath, stat);
   assert.ok(metadata.tableCount >= 1);
   assert.match(metadata.markdownPath, /\.md$/);
+});
+
+test("document ingest classifies digital and scanner-OCR PDFs at document level", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "document-ingest-pdf-type-"));
+  await fs.mkdir(path.join(root, "Documents"), { recursive: true });
+  const digitalPath = path.join(root, "Documents", "digital.pdf");
+  const scannedPath = path.join(root, "Documents", "scanned.pdf");
+  await createMinimalPdf(
+    digitalPath,
+    "This digitally generated page contains enough native searchable text to classify the PDF reliably."
+  );
+  await createScannerOcrPdf(scannedPath);
+
+  const digital = await extractAndCacheDocument(root, digitalPath, "Documents/digital.pdf");
+  const scanned = await extractAndCacheDocument(root, scannedPath, "Documents/scanned.pdf");
+  assert.equal(digital.metadata.pdfType, "digital");
+  assert.equal(scanned.metadata.pdfType, "scanned");
+  assert.equal(scanned.metadata.fullPageRasterCount, 1);
+  assert.ok(scanned.metadata.pageSignals[0].characterCount >= 40);
 });
 
 test("document folders remain readable and distinct for duplicate filenames", () => {
@@ -112,7 +156,7 @@ test("document ingest migrates the current legacy hash cache into its document f
   const markdown = await fs.readFile(documentIngestMarkdownPath(root, relativePath), "utf8");
   const stat = await fs.stat(pdfPath);
   const oldKey = crypto.createHash("sha256")
-    .update(`v3\n${relativePath}\n${stat.size}:${stat.mtimeMs}`)
+    .update(`v15\n${relativePath}\n${stat.size}:${stat.mtimeMs}`)
     .digest("hex");
   const oldDirectory = path.join(root, ".codmes", "index", "documents");
   const oldJsonPath = path.join(oldDirectory, `${oldKey}.json`);
@@ -232,6 +276,48 @@ test("document ingest adds VLM OCR blocks for image-only PDF pages", async () =>
 test("detects corrupted Korean PDF character maps without flagging normal Korean", () => {
   assert.equal(pdfTextNeedsOcr("컴퓨터구조론 저자 김종현 연세대학교 전기공학과에서 연구했습니다."), false);
   assert.equal(pdfTextNeedsOcr("킚s 퍟D 좷둄 젨잂f뾥慧 䞲E 젮잂퐉셊씏D 뾥f킚s 퍟f씏D 괱"), true);
+});
+
+test("keeps reliable native text for digital PDF pages with minor broken glyphs", () => {
+  const corruptedHeader = "��������������";
+  const route = "세종 첫마을 7단지 한솔중학교 정류장 인근 변압기 앞".repeat(4);
+  const document = {
+    kind: "pdf",
+    text: `${corruptedHeader}\n${route}`,
+    blocks: [{ page: 1, source: "pdf-text", text: `${corruptedHeader}\n${route}` }],
+    metadata: {
+      pdfType: "digital",
+      pageSignals: [{
+        page: 1,
+        characterCount: 180,
+        nativeText: true,
+        suspiciousTextRatio: 0.01
+      }]
+    }
+  };
+
+  assert.equal(pdfTextNeedsOcr(document.text), true);
+  assert.equal(pagesNeedingOcr("Notes/route.pdf", document, { minTextChars: 80 }), null);
+});
+
+test("still requests OCR for substantially corrupted digital PDF pages", () => {
+  const text = "������������������������";
+  const document = {
+    kind: "pdf",
+    text,
+    blocks: [{ page: 1, source: "pdf-text", text }],
+    metadata: {
+      pdfType: "digital",
+      pageSignals: [{
+        page: 1,
+        characterCount: 120,
+        nativeText: true,
+        suspiciousTextRatio: 0.2
+      }]
+    }
+  };
+
+  assert.deepEqual(pagesNeedingOcr("Notes/corrupt.pdf", document, { minTextChars: 80 }), [1]);
 });
 
 test("preserves fractional Vision OCR coordinates", () => {
@@ -558,6 +644,26 @@ shape = page.new_shape()
 shape.draw_rect(fitz.Rect(40, 40, 320, 140))
 shape.finish(color=(0, 0, 0), fill=(0.95, 0.95, 0.95))
 shape.commit()
+doc.save(path)
+`;
+  await execFileAsync(process.env.CODMES_PYTHON || ".codmes-runtime/bin/python", ["-c", script, filePath]);
+}
+
+async function createScannerOcrPdf(filePath) {
+  const script = `
+import fitz, io, sys
+from PIL import Image, ImageDraw
+path = sys.argv[1]
+image = Image.new("RGB", (1200, 1600), "white")
+draw = ImageDraw.Draw(image)
+draw.rectangle((100, 100, 1100, 1500), outline="black", width=4)
+draw.text((160, 180), "Scanned book page", fill="black")
+buffer = io.BytesIO()
+image.save(buffer, format="JPEG", quality=80)
+doc = fitz.open()
+page = doc.new_page(width=600, height=800)
+page.insert_image(page.rect, stream=buffer.getvalue())
+page.insert_text((72, 72), "OCR text layer with enough characters to look searchable but the visible source is still a full page scan.", fontsize=8, render_mode=3)
 doc.save(path)
 `;
   await execFileAsync(process.env.CODMES_PYTHON || ".codmes-runtime/bin/python", ["-c", script, filePath]);

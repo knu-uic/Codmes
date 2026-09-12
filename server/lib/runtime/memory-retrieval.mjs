@@ -264,13 +264,10 @@ export async function readMemoryById(workspaceRoot, memoryId) {
 export function extractMemoryCandidates(session, _options = {}) {
   if (!session || !Array.isArray(session.messages)) return [];
   const sourceMessageIds = session.messages.map((message, index) => message.id || String(index + 1));
-  const content = [
-    session.summary?.content || "",
-    ...session.messages
-      .filter((message) => ["user", "assistant"].includes(message.role))
-      .slice(-12)
-      .map((message) => message.content || "")
-  ].join("\n").trim();
+  // Long-term memory candidates are derived only from a model-produced
+  // session summary. Raw recent turns are searchable as conversation records;
+  // regex-matching an arbitrary last-N window is not a reliable memory policy.
+  const content = String(session.summary?.content || "").trim();
   if (!content) return [];
 
   const tags = extractTags(content);

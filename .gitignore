@@ -7,6 +7,8 @@ HermesWorkspace/
 .codmes-runtime/
 coverage/
 .build/
+/output/
+/tmp/
 *.egg-info/
 __pycache__/
 *.pyc

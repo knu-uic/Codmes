@@ -16,6 +16,7 @@ struct OCRBox: Codable {
 struct OCRLine: Codable {
     let text: String
     let bbox: OCRBox
+    let confidence: Double
 }
 
 struct OCRBlock: Codable {
@@ -74,9 +75,10 @@ func recognize(_ image: CGImage, languages: [String]) throws -> (String, [OCRLin
         return $0.boundingBox.minX < $1.boundingBox.minX
     }
     let lines = observations.compactMap { observation -> OCRLine? in
-        guard let text = observation.topCandidates(1).first?.string, !text.isEmpty else {
+        guard let candidate = observation.topCandidates(1).first, !candidate.string.isEmpty else {
             return nil
         }
+        let text = candidate.string
         let box = observation.boundingBox
         return OCRLine(
             text: text,
@@ -85,7 +87,8 @@ func recognize(_ image: CGImage, languages: [String]) throws -> (String, [OCRLin
                 y: 1.0 - box.maxY,
                 width: box.width,
                 height: box.height
-            )
+            ),
+            confidence: Double(candidate.confidence)
         )
     }
     return (lines.map(\.text).joined(separator: "\n"), lines)

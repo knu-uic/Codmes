@@ -3,10 +3,10 @@ import { randomUUID } from "node:crypto";
 const jobs = new Map();
 const MAX_RETAINED_JOBS = 20;
 
-export function startDocumentJob({ path, title = "", kind = "pdf-normalization" }) {
+export function startDocumentJob({ id = randomUUID(), path, title = "", kind = "pdf-normalization" }) {
   const now = new Date().toISOString();
   const job = {
-    id: randomUUID(),
+    id,
     kind,
     path: String(path || ""),
     title: String(title || "").trim() || String(path || "").split("/").at(-1) || "PDF",

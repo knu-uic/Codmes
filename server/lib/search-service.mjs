@@ -11,6 +11,8 @@ import {
   removeDocumentIngestCacheFiles
 } from "./document-ingest.mjs";
 import { searchConversationIndex } from "./runtime/conversation-index.mjs";
+import { postgresConfigured } from "./database.mjs";
+import { PostgresSearchStore } from "./postgres-search-store.mjs";
 
 const DEFAULT_MAX_RESULTS = 20;
 const DEFAULT_MAX_SCAN_FILES = 1000;
@@ -67,6 +69,7 @@ const SEARCHABLE_EXTENSIONS = new Set([
   ".xls",
   ".zip"
 ]);
+const postgresStores = new Map();
 
 export function searchStatus(workspaceRoot) {
   const filePath = searchIndexPath(workspaceRoot);
@@ -88,7 +91,9 @@ export function searchStatus(workspaceRoot) {
     }
   }
   return {
-    provider: hasIndex ? "codmes-search-index" : "workspace-scan",
+    provider: postgresBackendEnabled()
+      ? "codmes-postgres-hybrid"
+      : hasIndex ? "codmes-search-index" : "workspace-scan",
     workspaceRoot,
     available: true,
     indexed: hasIndex,
@@ -115,6 +120,21 @@ export async function searchWorkspace(workspaceRoot, request = {}) {
   const maxResults = request.unbounded
     ? Number.POSITIVE_INFINITY
     : clampNumber(request.maxResults, 1, 100, DEFAULT_MAX_RESULTS);
+  if (!request.forceScan && postgresBackendEnabled(request)) {
+    try {
+      return await getPostgresStore(request).search({
+        workspaceRoot,
+        workspaceId: request.workspaceId,
+        query,
+        maxResults,
+        scopePath,
+        embedding: embeddingOptions(request)
+      });
+    } catch (error) {
+      if (request.allowPostgresFallback === false) throw error;
+      console.warn(`[codmes] PostgreSQL search unavailable; using file index: ${error?.message || error}`);
+    }
+  }
   if (!request.forceScan) {
     const indexed = await searchBuiltIndex(workspaceRoot, { ...request, query, scopePath, maxResults });
     if (indexed) return indexed;
@@ -254,7 +274,8 @@ export async function buildSearchIndex(workspaceRoot, options = {}) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, JSON.stringify(index, null, 2) + "\n", "utf8");
   await pruneDocumentIngestCacheFiles(workspaceRoot);
-  return index;
+  const postgres = await syncPostgresIndex(workspaceRoot, index, options);
+  return postgres ? { ...index, postgres } : index;
 }
 
 export async function updateSearchIndex(workspaceRoot, changedPaths = [], options = {}) {
@@ -338,7 +359,68 @@ export async function updateSearchIndex(workspaceRoot, changedPaths = [], option
   const filePath = searchIndexPath(workspaceRoot);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, JSON.stringify(index, null, 2) + "\n", "utf8");
-  return index;
+  const postgres = await syncPostgresIndex(workspaceRoot, index, options);
+  return postgres ? { ...index, postgres } : index;
+}
+
+async function syncPostgresIndex(workspaceRoot, index, options) {
+  if (!postgresBackendEnabled(options)) return null;
+  try {
+    return await getPostgresStore(options).replaceWorkspaceIndex({
+      workspaceRoot,
+      workspaceId: options.workspaceId,
+      index,
+      embedding: embeddingOptions(options)
+    });
+  } catch (error) {
+    if (options.allowPostgresFallback === false) throw error;
+    console.warn(`[codmes] PostgreSQL index sync failed; JSON index remains available: ${error?.message || error}`);
+    return { available: false, error: error?.message || String(error) };
+  }
+}
+
+function postgresBackendEnabled(options = {}) {
+  const backend = String(
+    options.backend
+      || process.env.CODMES_SEARCH_BACKEND
+      || process.env.SEARCH_BACKEND
+      || ""
+  ).toLowerCase();
+  return backend === "postgres" && postgresConfigured({
+    CODMES_DATABASE_URL: options.databaseUrl || process.env.CODMES_DATABASE_URL,
+    DATABASE_URL: process.env.DATABASE_URL
+  });
+}
+
+function getPostgresStore(options = {}) {
+  const connectionString = String(
+    options.databaseUrl || process.env.CODMES_DATABASE_URL || process.env.DATABASE_URL || ""
+  );
+  let store = postgresStores.get(connectionString);
+  if (!store) {
+    store = new PostgresSearchStore({ connectionString });
+    postgresStores.set(connectionString, store);
+  }
+  return store;
+}
+
+function embeddingOptions(options = {}) {
+  return {
+    provider: options.embeddingsProvider || options.provider,
+    model: options.openaiEmbedModel || options.model,
+    dimensions: options.openaiEmbedDim || options.dimensions,
+    baseUrl: options.openaiBaseUrl || options.baseUrl,
+    apiKey: options.openaiApiKey || options.apiKey || process.env.OPENAI_API_KEY || "",
+    modelRevision: options.embeddingModelRevision || "",
+    chunkingVersion: options.chunkingVersion || 1,
+    documentEngineVersion: options.documentEngineVersion || "1"
+  };
+}
+
+export async function closePostgresSearchStores() {
+  const stores = Array.from(postgresStores.values());
+  postgresStores.clear();
+  await Promise.all(stores.map((store) => store.close().catch(() => {})));
 }
 
 async function searchBuiltIndex(workspaceRoot, request) {
@@ -365,7 +447,9 @@ async function searchBuiltIndex(workspaceRoot, request) {
       chunkIndex: chunk.chunkIndex,
       page: chunk.page ?? null,
       source: chunk.source || null,
-      bbox: chunk.bbox || null
+      bbox: chunk.bbox || null,
+      metadata: chunk.metadata && typeof chunk.metadata === "object" ? chunk.metadata : {},
+      related_images: Array.isArray(chunk.related_images) ? chunk.related_images : []
     });
   }
   const deduped = [];
@@ -772,7 +856,8 @@ async function indexFile(workspaceRoot, file, options = {}) {
     modifiedAt: file.modifiedAt,
     textLength: content.length,
     chunkCount: 0,
-    blockCount: Array.isArray(document.blocks) ? document.blocks.length : 0
+    blockCount: Array.isArray(document.blocks) ? document.blocks.length : 0,
+    metadata: document.metadata && typeof document.metadata === "object" ? document.metadata : {}
   };
   const chunks = [];
   const blocks = Array.isArray(document.blocks) && document.blocks.length
@@ -802,12 +887,24 @@ async function indexFile(workspaceRoot, file, options = {}) {
         text: chunk.text,
         source: block.source || file.kind,
         page: Number.isFinite(Number(block.page)) ? Number(block.page) : null,
-        bbox: block.bbox || null
+        bbox: block.bbox || null,
+        metadata: compactBlockMetadata(block.metadata),
+        related_images: Array.isArray(block.metadata?.related_images)
+          ? block.metadata.related_images
+          : Array.isArray(block.related_images)
+            ? block.related_images
+            : []
       });
     });
   }
   item.chunkCount = chunks.length;
   return { item, chunks };
+}
+
+function compactBlockMetadata(metadata) {
+  if (!metadata || typeof metadata !== "object") return {};
+  const { lines: _positionedOcrLines, ...compact } = metadata;
+  return compact;
 }
 
 function removeIndexedPath(itemByPath, chunksByPath, rel) {

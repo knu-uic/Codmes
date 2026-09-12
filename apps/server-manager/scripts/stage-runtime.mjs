@@ -24,6 +24,7 @@ for (const entry of ["server", "bin", "bundled", "vendor", "package.json", "pack
 }
 
 await stagePortablePython();
+await stagePortablePostgres();
 
 if (process.platform === "win32") {
   // Node's spawn does not reliably execute .cmd shims directly on Windows.
@@ -68,7 +69,7 @@ async function stagePortablePython() {
       "--system",
       "--break-system-packages",
       "--requirements",
-      path.join(repoRoot, "server/workers/document-ingest/requirements.txt"),
+      path.join(repoRoot, "server/workers/document-ingest/requirements.lock.txt"),
     ],
     repoRoot,
     uvEnvironment,
@@ -92,6 +93,44 @@ async function stagePortablePython() {
     "import fitz, pymupdf4llm, PIL, openpyxl, docx, pptx; print('portable document runtime ready')",
   ], appRoot);
   await fs.rm(pythonBuildRoot, { recursive: true, force: true });
+}
+
+async function stagePortablePostgres() {
+  const sourceRoot = String(process.env.CODMES_MANAGER_POSTGRES_ROOT || "").trim();
+  if (!sourceRoot) {
+    if (process.argv.includes("--require-postgres")) {
+      throw new Error("Standalone release requires CODMES_MANAGER_POSTGRES_ROOT with a portable PostgreSQL + pgvector runtime.");
+    }
+    console.warn("[server-manager] PostgreSQL runtime not staged; set CODMES_MANAGER_POSTGRES_ROOT for a standalone multi-user release.");
+    return;
+  }
+  const resolvedSource = path.resolve(sourceRoot);
+  const requiredExecutables = ["postgres", "initdb", "pg_ctl", "psql", "createdb", "pg_dump", "pg_restore"]
+    .map((name) => process.platform === "win32" ? `${name}.exe` : name);
+  for (const executable of requiredExecutables) {
+    await requireFile(path.join(resolvedSource, "bin", executable), `PostgreSQL executable ${executable}`);
+  }
+  await requireFile(path.join(resolvedSource, "share", "extension", "vector.control"), "pgvector extension metadata");
+  const extensionSql = (await fs.readdir(path.join(resolvedSource, "share", "extension")))
+    .some((name) => /^vector--.*\.sql$/i.test(name));
+  if (!extensionSql) throw new Error("Portable PostgreSQL runtime does not contain pgvector SQL files.");
+  const libraryNames = (await Promise.all([
+    path.join(resolvedSource, "lib"),
+    path.join(resolvedSource, "lib", "postgresql"),
+    path.join(resolvedSource, "bin")
+  ].map((directory) => fs.readdir(directory).catch(() => [])))).flat();
+  if (!libraryNames.some((name) => /^vector(?:\.dylib|\.dll|\.so(?:\.\d+)*)$/i.test(name))) {
+    throw new Error("Portable PostgreSQL runtime does not contain the pgvector shared library.");
+  }
+  const destination = path.join(appRoot, "bundled", "postgres");
+  await fs.rm(destination, { recursive: true, force: true });
+  await fs.cp(resolvedSource, destination, { recursive: true, dereference: true });
+  console.log(`[server-manager] staged PostgreSQL + pgvector from ${resolvedSource}`);
+}
+
+async function requireFile(filePath, label) {
+  const stat = await fs.stat(filePath).catch(() => null);
+  if (!stat?.isFile()) throw new Error(`${label} is missing: ${filePath}`);
 }
 
 function run(command, args, cwd, env = process.env) {

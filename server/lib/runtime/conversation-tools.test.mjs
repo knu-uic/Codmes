@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { indexSession, searchConversationIndex, readConversationMessages } from "./conversation-index.mjs";
+import { indexSession, readConversationMessages, removeSessionFromConversationIndex, searchConversationIndex } from "./conversation-index.mjs";
 import { executeConversationSearch, executeConversationRead } from "./conversation-tools.mjs";
 
 test("Conversation Tools: index, search and read", async () => {
@@ -57,6 +57,22 @@ test("Conversation Tools: index, search and read", async () => {
   assert.equal(readResult.sessionId, "session-123");
   assert.ok(readResult.messages.length > 0);
   assert.ok(readResult.messages.some(m => m.content.includes("clamshell")));
+});
+
+test("Conversation Tools: deleting an index entry removes its messages and summary", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-conversation-delete-"));
+  const session = {
+    id: "deleted-session",
+    title: "Deleted conversation",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    summary: { content: "unique-deleted-summary" },
+    messages: [{ id: "u1", role: "user", content: "unique-deleted-message" }]
+  };
+  await indexSession(root, session);
+  assert.ok((await searchConversationIndex(root, "unique-deleted")).length > 0);
+  await removeSessionFromConversationIndex(root, session.id);
+  assert.deepEqual(await searchConversationIndex(root, "unique-deleted"), []);
 });
 
 test("Conversation Tools: fuzzy keyword recall does not require exact phrase match", async () => {
