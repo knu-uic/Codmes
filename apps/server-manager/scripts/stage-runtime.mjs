@@ -99,7 +99,7 @@ async function stagePortablePostgres() {
   const sourceRoot = String(process.env.CODMES_MANAGER_POSTGRES_ROOT || "").trim();
   if (!sourceRoot) {
     if (process.argv.includes("--require-postgres")) {
-      throw new Error("Standalone release requires CODMES_MANAGER_POSTGRES_ROOT with a portable PostgreSQL + pgvector runtime.");
+      throw new Error("Standalone release requires CODMES_MANAGER_POSTGRES_ROOT with a portable PostgreSQL + pgvector + pg_trgm runtime.");
     }
     console.warn("[server-manager] PostgreSQL runtime not staged; set CODMES_MANAGER_POSTGRES_ROOT for a standalone multi-user release.");
     return;
@@ -111,6 +111,7 @@ async function stagePortablePostgres() {
     await requireFile(path.join(resolvedSource, "bin", executable), `PostgreSQL executable ${executable}`);
   }
   await requireFile(path.join(resolvedSource, "share", "extension", "vector.control"), "pgvector extension metadata");
+  await requireFile(path.join(resolvedSource, "share", "extension", "pg_trgm.control"), "pg_trgm extension metadata");
   const extensionSql = (await fs.readdir(path.join(resolvedSource, "share", "extension")))
     .some((name) => /^vector--.*\.sql$/i.test(name));
   if (!extensionSql) throw new Error("Portable PostgreSQL runtime does not contain pgvector SQL files.");
@@ -122,10 +123,13 @@ async function stagePortablePostgres() {
   if (!libraryNames.some((name) => /^vector(?:\.dylib|\.dll|\.so(?:\.\d+)*)$/i.test(name))) {
     throw new Error("Portable PostgreSQL runtime does not contain the pgvector shared library.");
   }
+  if (!libraryNames.some((name) => /^pg_trgm(?:\.dylib|\.dll|\.so(?:\.\d+)*)$/i.test(name))) {
+    throw new Error("Portable PostgreSQL runtime does not contain the pg_trgm shared library.");
+  }
   const destination = path.join(appRoot, "bundled", "postgres");
   await fs.rm(destination, { recursive: true, force: true });
   await fs.cp(resolvedSource, destination, { recursive: true, dereference: true });
-  console.log(`[server-manager] staged PostgreSQL + pgvector from ${resolvedSource}`);
+  console.log(`[server-manager] staged PostgreSQL + pgvector + pg_trgm from ${resolvedSource}`);
 }
 
 async function requireFile(filePath, label) {
