@@ -46,7 +46,8 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "build=$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
 
-      - name: Require Apple release credentials
+      - name: Resolve Apple signing availability
+        id: signing
         if: steps.release.outputs.tagged == 'true'
         shell: bash
         run: |
@@ -56,12 +57,14 @@ jobs:
             [[ -n "${!name:-}" ]] || missing+=("$name")
           done
           if (( ${#missing[@]} )); then
-            echo "Missing GitHub Actions secrets: ${missing[*]}" >&2
-            exit 1
+            echo "::warning::Publishing an unsigned build because Apple release secrets are missing: ${missing[*]}"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Import Developer ID certificate
-        if: steps.release.outputs.tagged == 'true'
+        if: steps.release.outputs.tagged == 'true' && steps.signing.outputs.enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -92,7 +95,7 @@ jobs:
             ARCHS=arm64
             ONLY_ACTIVE_ARCH=NO
           )
-          if [[ "${{ steps.release.outputs.tagged }}" == "true" ]]; then
+          if [[ "${{ steps.release.outputs.tagged }}" == "true" && "${{ steps.signing.outputs.enabled }}" == "true" ]]; then
             settings+=(
               CODE_SIGN_STYLE=Manual
               CODE_SIGN_IDENTITY="$APPLE_SIGNING_IDENTITY"
@@ -112,8 +115,17 @@ jobs:
             "${settings[@]}"
           echo "APP_PATH=$derived_data/Build/Products/Release/Codmes.app" >> "$GITHUB_ENV"
 
+      - name: Seal and verify ad-hoc application
+        if: steps.signing.outputs.enabled != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          codesign --force --deep --sign - "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          codesign -dvvv "$APP_PATH"
+
       - name: Verify signed application
-        if: steps.release.outputs.tagged == 'true'
+        if: steps.release.outputs.tagged == 'true' && steps.signing.outputs.enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -125,7 +137,11 @@ jobs:
         run: |
           set -euo pipefail
           stage="$RUNNER_TEMP/CodmesDmg"
-          output="$RUNNER_TEMP/Codmes_${{ steps.release.outputs.version }}_macOS-arm64.dmg"
+          suffix=""
+          if [[ "${{ steps.release.outputs.tagged }}" == "true" && "${{ steps.signing.outputs.enabled }}" != "true" ]]; then
+            suffix="_unsigned"
+          fi
+          output="$RUNNER_TEMP/Codmes_${{ steps.release.outputs.version }}_macOS-arm64${suffix}.dmg"
           mkdir -p "$stage"
           ditto "$APP_PATH" "$stage/Codmes.app"
           ln -s /Applications "$stage/Applications"
@@ -133,7 +149,7 @@ jobs:
           echo "DMG_PATH=$output" >> "$GITHUB_ENV"
 
       - name: Notarize disk image
-        if: steps.release.outputs.tagged == 'true'
+        if: steps.release.outputs.tagged == 'true' && steps.signing.outputs.enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -159,6 +175,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          title="Codmes for macOS ${{ steps.release.outputs.version }}"
+          if [[ "${{ steps.signing.outputs.enabled }}" != "true" ]]; then
+            title="$title (unsigned)"
+          fi
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
-            || gh release create "$GITHUB_REF_NAME" --title "Codmes for macOS ${{ steps.release.outputs.version }}" --generate-notes
+            || gh release create "$GITHUB_REF_NAME" --title "$title" --generate-notes
           gh release upload "$GITHUB_REF_NAME" "$DMG_PATH" --clobber
