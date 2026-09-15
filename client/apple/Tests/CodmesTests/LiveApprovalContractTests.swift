@@ -27,6 +27,8 @@ final class LiveApprovalContractTests: XCTestCase {
             PromptSubmitParams(
                 sessionId: "session-1",
                 message: "내 누적성적을 알려줘",
+                provider: "ollama-local",
+                model: "gemma4:12b-mlx",
                 contextRequest: nil,
                 surface: "knu",
                 route: "lms"
@@ -36,6 +38,8 @@ final class LiveApprovalContractTests: XCTestCase {
 
         XCTAssertEqual(json["surface"] as? String, "knu")
         XCTAssertEqual(json["route"] as? String, "lms")
+        XCTAssertEqual(json["provider"] as? String, "ollama-local")
+        XCTAssertEqual(json["model"] as? String, "gemma4:12b-mlx")
     }
 
     func testPromptResultCarriesPostProcessedReply() throws {
