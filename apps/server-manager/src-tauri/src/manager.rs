@@ -64,6 +64,7 @@ pub struct ServerManager {
     settings_path: PathBuf,
     server_root: PathBuf,
     node_path: PathBuf,
+    postgres_bin_path: Option<PathBuf>,
     settings: Mutex<ServerSettings>,
     process: Arc<Mutex<ProcessState>>,
 }
@@ -79,10 +80,12 @@ impl ServerManager {
         let settings = load_settings(&settings_path)
             .unwrap_or_else(|| ServerSettings::for_managed_workspace(config_dir.join("workspace")));
         let (server_root, node_path) = resolve_runtime(app);
+        let postgres_bin_path = find_postgres_bin(&server_root);
         Ok(Self {
             settings_path,
             server_root,
             node_path,
+            postgres_bin_path,
             settings: Mutex::new(settings),
             process: Arc::new(Mutex::new(ProcessState {
                 child: None,
@@ -193,6 +196,9 @@ impl ServerManager {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(postgres_bin_path) = &self.postgres_bin_path {
+            command.env("CODMES_POSTGRES_BIN", postgres_bin_path);
+        }
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::process::CommandExt;
@@ -255,6 +261,16 @@ impl ServerManager {
                     "Codmes server files not found at {}",
                     self.server_root.display()
                 ),
+            );
+        }
+        let settings = self.settings.lock().expect("settings lock");
+        if settings.multiuser_enabled
+            && settings.managed_postgres
+            && self.postgres_bin_path.is_none()
+        {
+            return (
+                false,
+                "PostgreSQL runtime not found. Reinstall the complete Server package.".to_string(),
             );
         }
         (
@@ -391,6 +407,47 @@ fn find_system_node() -> PathBuf {
         }
     }
     PathBuf::from("node")
+}
+
+fn find_postgres_bin(server_root: &Path) -> Option<PathBuf> {
+    let executable = if cfg!(target_os = "windows") {
+        "postgres.exe"
+    } else {
+        "postgres"
+    };
+    let mut candidates = vec![server_root.join("bundled/postgres/bin")];
+    if let Ok(explicit) = std::env::var("CODMES_POSTGRES_BIN") {
+        candidates.push(PathBuf::from(explicit));
+    }
+    if cfg!(target_os = "macos") {
+        candidates.extend([
+            PathBuf::from("/opt/homebrew/opt/postgresql@16/bin"),
+            PathBuf::from("/usr/local/opt/postgresql@16/bin"),
+            PathBuf::from("/Library/PostgreSQL/16/bin"),
+        ]);
+    } else if cfg!(target_os = "linux") {
+        candidates.extend([
+            PathBuf::from("/usr/lib/postgresql/16/bin"),
+            PathBuf::from("/usr/local/pgsql/bin"),
+        ]);
+    } else if cfg!(target_os = "windows") {
+        candidates.extend([
+            PathBuf::from(r"C:\Program Files\PostgreSQL\16\bin"),
+            PathBuf::from(r"C:\Program Files\PostgreSQL\17\bin"),
+        ]);
+    }
+    if let Some(candidate) = candidates
+        .into_iter()
+        .find(|candidate| candidate.join(executable).is_file())
+    {
+        return Some(candidate);
+    }
+    let output = Command::new("pg_config").arg("--bindir").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let candidate = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    candidate.join(executable).is_file().then_some(candidate)
 }
 
 fn display_url(settings: &ServerSettings) -> String {
