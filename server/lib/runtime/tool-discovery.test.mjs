@@ -121,6 +121,35 @@ test("Tool Discovery: disabled tools are discoverable but blocked from turn expa
   assert.equal(res.blockedTools.some((tool) => tool.name === "codmes_search" && tool.reason === "disabled_by_surface_mode"), true);
 });
 
+test("Tool Discovery: reports plugin MCP tools waiting for Workspace consent", async () => {
+  const res = await executeToolDiscovery("/tmp", "knu", {
+    reason: "need current university evidence",
+    desiredCapability: "list recent notices",
+    path: "knu.notices"
+  }, {
+    runtimeTools: [],
+    blockedRuntimeTools: [{
+      name: "knu_list_notices",
+      description: "List recent KNU notices.",
+      group: "knu.notices",
+      surfaces: ["knu"],
+      provider: "mcp",
+      pluginId: "kr.ac.kongju.knu",
+      requiresApproval: true,
+      blockedReason: "workspace_approval_required"
+    }]
+  });
+
+  assert.equal(res.leaf, true);
+  assert.equal(res.tools[0].blockedByConsent, true);
+  assert.deepEqual(res.expandedToolsForThisTurn, []);
+  assert.deepEqual(res.blockedTools, [{
+    name: "knu_list_notices",
+    reason: "workspace_approval_required"
+  }]);
+  assert.match(res.recommendation.reason, /Settings > Plugins/);
+});
+
 test("Tool Discovery: uses live MCP tools and server-owned group descriptions", async () => {
   const runtimeTools = [{
     name: "knu_search_notice_details",

@@ -814,6 +814,7 @@ export class OpenAICompatibleRuntime extends EventEmitter {
     }
 
     this.mcpToolNameMap.clear();
+    const pendingMcpToolsForDiscovery = [];
     const installedPlugins = await listInstalledPlugins(this.workspaceRoot);
     const toolProviders = await listRuntimeToolProviders(this.workspaceRoot);
     for (const plugin of toolProviders) {
@@ -853,7 +854,30 @@ export class OpenAICompatibleRuntime extends EventEmitter {
               : null;
             const approvedMcpTools = new Set(consent?.approvedTools || []);
             for (const tool of mcpTools) {
+              const declared = plugin?.tools?.find(
+                (item) => item.provider.id === mcp.name && item.provider.tool === tool.name
+              );
+              const catalog = mcpToolCatalogMetadata(tool);
+              const advertisedName = catalog?.publicName;
+              const metadataName = isSafeToolName(advertisedName) && !toolRegistry.get(advertisedName)
+                ? advertisedName
+                : null;
+              const publicName = declared?.name || metadataName || this.publicMcpToolName(mcp.name, tool.name);
+              const catalogGroup = allowedMcpCatalogGroup(catalog?.group, mcp, plugin);
               if (plugin && !approvedMcpTools.has(tool.name)) {
+                pendingMcpToolsForDiscovery.push({
+                  name: publicName,
+                  description: tool.description || declared?.description || `Call ${tool.name} on ${mcp.name}.`,
+                  group: catalogGroup || declared?.group || `mcp:${mcp.name}`,
+                  groupDescriptions: catalogGroup
+                    ? safeMcpGroupDescriptions(catalog?.groupDescriptions, catalogGroup)
+                    : declared?.groupDescriptions,
+                  surfaces: declared?.surfaces || mcp.surfaces || [],
+                  provider: "mcp",
+                  pluginId: plugin.id,
+                  requiresApproval: true,
+                  blockedReason: "workspace_approval_required"
+                });
                 this.emit("event", {
                   type: "mcp.tool.pending_consent",
                   sessionId: params.sessionId,
@@ -865,16 +889,6 @@ export class OpenAICompatibleRuntime extends EventEmitter {
                 });
                 continue;
               }
-              const declared = plugin?.tools?.find(
-                (item) => item.provider.id === mcp.name && item.provider.tool === tool.name
-              );
-              const catalog = mcpToolCatalogMetadata(tool);
-              const advertisedName = catalog?.publicName;
-              const metadataName = isSafeToolName(advertisedName) && !toolRegistry.get(advertisedName)
-                ? advertisedName
-                : null;
-              const publicName = declared?.name || metadataName || this.publicMcpToolName(mcp.name, tool.name);
-              const catalogGroup = allowedMcpCatalogGroup(catalog?.group, mcp, plugin);
               toolRegistry.register({
                 name: publicName,
                 description: catalog
@@ -912,6 +926,7 @@ export class OpenAICompatibleRuntime extends EventEmitter {
         }
       }
     }
+    params.pendingMcpToolsForDiscovery = pendingMcpToolsForDiscovery;
     this.toolRegistry = toolRegistry;
     const activeTools = toolRegistry.openAITools();
 
@@ -1502,7 +1517,8 @@ export class OpenAICompatibleRuntime extends EventEmitter {
           disabledTools: effectiveMode.disabledTools || [],
           route: params.route || "",
           allowedPaths: params.discoveryPathsForThisTurn || [""],
-          runtimeTools: this.toolRegistry.list({ provider: "mcp" })
+          runtimeTools: this.toolRegistry.list({ provider: "mcp" }),
+          blockedRuntimeTools: params.pendingMcpToolsForDiscovery || []
         });
         this.emit("event", {
           type: "tool.discovery.result",

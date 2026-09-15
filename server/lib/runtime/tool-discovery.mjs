@@ -55,8 +55,11 @@ export async function executeToolDiscovery(workspaceRoot, surface, args = {}, op
     : null;
   const disabledTools = new Set((options.disabledTools || []).map(String));
   const availableTools = await discoveryTools(workspaceRoot, options.runtimeTools);
-  const catalog = buildCatalog(availableTools);
-  const groupDescriptions = collectGroupDescriptions(availableTools);
+  const blockedRuntimeTools = (Array.isArray(options.blockedRuntimeTools) ? options.blockedRuntimeTools : [])
+    .filter((item) => item?.name && item?.blockedReason);
+  const catalogTools = mergeCatalogTools(availableTools, blockedRuntimeTools);
+  const catalog = buildCatalog(catalogTools);
+  const groupDescriptions = collectGroupDescriptions(catalogTools);
 
   if (selectedPath && allowedPaths && !allowedPaths.has(selectedPath)) {
     const revealedParent = [...allowedPaths]
@@ -91,13 +94,13 @@ export async function executeToolDiscovery(workspaceRoot, surface, args = {}, op
     };
   }
 
-  const toolsInLeaf = availableTools.filter((item) => canonicalGroupPath(item) === selectedPath);
+  const toolsInLeaf = catalogTools.filter((item) => canonicalGroupPath(item) === selectedPath);
   const matched = rankTools(toolsInLeaf, desiredCapability).slice(0, 8);
   const blocked = matched
-    .filter((item) => disabledTools.has(item.name))
+    .filter((item) => item.blockedReason || disabledTools.has(item.name))
     .map((item) => ({
       name: item.name,
-      reason: "disabled_by_surface_mode"
+      reason: item.blockedReason || "disabled_by_surface_mode"
     }));
   const blockedNames = new Set(blocked.map((item) => item.name));
   const expanded = matched.filter((item) => !blockedNames.has(item.name)).map((item) => item.name);
@@ -111,6 +114,7 @@ export async function executeToolDiscovery(workspaceRoot, surface, args = {}, op
       name: item.name,
       description: item.description,
       disabledByUser: disabledTools.has(item.name),
+      blockedByConsent: item.blockedReason === "workspace_approval_required",
       requiresApproval: Boolean(item.requiresApproval),
       provider: item.provider || "native",
       pluginId: item.pluginId || null
@@ -163,6 +167,14 @@ async function discoveryTools(workspaceRoot, runtimeTools = []) {
   return [...discovered.values()];
 }
 
+function mergeCatalogTools(availableTools, blockedRuntimeTools) {
+  const merged = new Map(availableTools.map((item) => [item.name, item]));
+  for (const item of blockedRuntimeTools) {
+    if (!merged.has(item.name)) merged.set(item.name, item);
+  }
+  return [...merged.values()];
+}
+
 function buildCatalog(tools) {
   const paths = new Set();
   for (const item of tools) {
@@ -206,6 +218,12 @@ function rankTools(tools, query) {
 
 function discoveryResult({ args, surface, path, children, tools, expanded, blocked, leaf }) {
   const group = path || "root";
+  const approvalBlocked = blocked.some((item) => item.reason === "workspace_approval_required");
+  const leafRecommendation = approvalBlocked && expanded.length === 0
+    ? `Tools in '${group}' require Workspace approval in Settings > Plugins.`
+    : expanded.length
+      ? `Enabled tools from '${group}'.`
+      : `No executable tools are currently available in '${group}'.`;
   return {
     taskId: args.taskId || null,
     surface,
@@ -219,7 +237,7 @@ function discoveryResult({ args, surface, path, children, tools, expanded, block
     availableToolGroups: children.map((item) => ({ group: item.path, description: item.description, tools: [] })),
     recommendation: {
       enableForThisTurn: expanded,
-      reason: leaf ? `Enabled tools from '${group}'.` : `Select a child group under '${group}'.`
+      reason: leaf ? leafRecommendation : `Select a child group under '${group}'.`
     }
   };
 }

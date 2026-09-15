@@ -1268,6 +1268,12 @@ test("OpenAI-compatible runtime discovers server-owned MCP tool metadata without
   assert.equal(runtime.toolRegistry.get("knu_search_notices").readOnly, true);
   assert.equal(runtime.toolRegistry.get("unexpected_write_tool"), null);
   assert.equal(pendingTools.some((event) => event.toolName === "unexpected_write_tool"), true);
+  assert.equal(requests[2].messages.some((message) =>
+    message.role === "tool"
+      && message.name === "tool_discovery"
+      && message.content.includes("unexpected_write_tool")
+      && message.content.includes("workspace_approval_required")
+  ), true);
   const result = await runtime.executeToolCall({
     id: "knu-search-call",
     name: "knu_search_notices",
