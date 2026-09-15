@@ -159,7 +159,35 @@ export class WorkspaceAgentEngine extends EventEmitter {
 
   async submitPrompt(params = {}) {
     await this.state.ensure();
-    const priorSession = params.sessionId ? await this.state.readSession(params.sessionId) : null;
+    let priorSession = params.sessionId ? await this.state.readSession(params.sessionId) : null;
+    const requestedProvider = String(params.provider || "").trim();
+    const requestedModel = String(params.model || "").trim();
+    if (
+      priorSession
+      && requestedProvider
+      && requestedModel
+      && (priorSession.provider !== requestedProvider || priorSession.model !== requestedModel)
+    ) {
+      priorSession = {
+        ...priorSession,
+        provider: requestedProvider,
+        model: requestedModel,
+        contextCompaction: null,
+        updatedAt: new Date().toISOString()
+      };
+      await this.state.writeSession(priorSession);
+      await this.state.recordSessionEvent({
+        type: "session.model",
+        runtime: this.runtimeName(),
+        sessionId: params.sessionId,
+        provider: requestedProvider,
+        model: requestedModel
+      });
+      try {
+        const { indexSession } = await import("./runtime/conversation-index.mjs");
+        await indexSession(this.config.workspaceRoot, priorSession);
+      } catch {}
+    }
     const uiSurface = params.uiSurface || params.surface || priorSession?.surface || "chat";
     const routedSurface = await inferSurfaceForPrompt(params, priorSession, this.runtime);
     params = {

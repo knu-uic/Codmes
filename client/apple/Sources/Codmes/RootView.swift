@@ -4622,7 +4622,7 @@ private struct RuntimeModelSelectionSettingsView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Model")
                     .font(.headline)
-                Text("Choose the active provider and model for new chat sessions.")
+                Text("Choose the active provider and model for the current conversation and new chats.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -1688,6 +1688,8 @@ struct HermesSessionSummary: Identifiable, Hashable {
     let id: String
     let title: String
     let updatedAt: String?
+    let provider: String?
+    let model: String?
     let folderId: String?
     let folderTitle: String?
     let projectId: String?

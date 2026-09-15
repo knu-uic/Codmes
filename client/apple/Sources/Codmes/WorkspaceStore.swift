@@ -965,9 +965,10 @@ final class WorkspaceStore: ObservableObject {
         guard let api else { return false }
         do {
             try await api.setRuntimeDefaultModel(provider: providerId, model: model)
-            runtimeModelSetupMessage = "Default model updated."
             await refreshRuntimeProviders()
             await refreshHermesMetadata()
+            selectedHermesModelId = "\(providerId):\(model)"
+            runtimeModelSetupMessage = "Active model updated."
             return true
         } catch {
             runtimeModelSetupMessage = error.localizedDescription
@@ -989,9 +990,10 @@ final class WorkspaceStore: ObservableObject {
                 try await api.updateRuntimeProviderAuth(providerId: providerId, values: values)
             }
             try await api.setRuntimeDefaultModel(provider: providerId, model: model, baseUrl: baseUrl)
-            runtimeModelSetupMessage = "Default model updated."
             await refreshRuntimeProviders()
             await refreshHermesMetadata()
+            selectedHermesModelId = "\(providerId):\(model)"
+            runtimeModelSetupMessage = "Active model updated."
             return true
         } catch {
             runtimeModelSetupMessage = error.localizedDescription
@@ -1843,6 +1845,8 @@ final class WorkspaceStore: ObservableObject {
                     id: sessionId,
                     title: result.title,
                     updatedAt: result.updatedAt,
+                    provider: nil,
+                    model: nil,
                     folderId: nil,
                     folderTitle: nil,
                     projectId: result.target.projectId,
@@ -2157,6 +2161,12 @@ final class WorkspaceStore: ObservableObject {
             try await liveClient.resumeSession(sessionId: session.id)
             liveSessionId = session.id
             activeHermesSessionTitle = session.title
+            if let provider = session.provider, let model = session.model {
+                let sessionModelId = "\(provider):\(model)"
+                if hermesModels.contains(where: { $0.id == sessionModelId }) {
+                    selectedHermesModelId = sessionModelId
+                }
+            }
             statusMessage = "Resumed \(session.title)"
         } catch {
             statusMessage = error.localizedDescription
@@ -2178,9 +2188,12 @@ final class WorkspaceStore: ObservableObject {
         activeActivityLineId = nil
         isChatTurnOpen = true
         do {
+            let selectedModel = selectedHermesModel
             let finalReply = try await liveClient.submit(
                 sessionId: liveSessionId,
                 message: trimmed,
+                provider: selectedModel?.provider,
+                model: selectedModel?.model,
                 contextRequest: chatContextRequest(),
                 surface: activeChatSurface,
                 route: activeChatRoute
@@ -2215,6 +2228,8 @@ final class WorkspaceStore: ObservableObject {
                         id: $0.id,
                         title: cleaned,
                         updatedAt: $0.updatedAt,
+                        provider: $0.provider,
+                        model: $0.model,
                         folderId: $0.folderId,
                         folderTitle: $0.folderTitle,
                         projectId: $0.projectId,
@@ -2244,6 +2259,8 @@ final class WorkspaceStore: ObservableObject {
                     id: $0.id,
                     title: $0.title,
                     updatedAt: $0.updatedAt,
+                    provider: $0.provider,
+                    model: $0.model,
                     folderId: $0.folderId,
                     folderTitle: $0.folderTitle,
                     projectId: $0.projectId,

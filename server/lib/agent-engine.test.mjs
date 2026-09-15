@@ -87,6 +87,34 @@ test("workspace agent engine resolves context and records task state", async () 
   assert.match(events, /session.create/);
 });
 
+test("workspace agent engine switches models without replacing the session", async () => {
+  const root = await fixtureWorkspace();
+  const runtime = new FakeAgentRuntime();
+  const engine = new WorkspaceAgentEngine({ workspaceRoot: root }, runtime);
+
+  const session = await engine.createSession({
+    provider: "openai-codex",
+    model: "gpt-5.6-sol"
+  });
+  await engine.submitPrompt({
+    sessionId: session.sessionId,
+    message: "Gemma로 계속해줘",
+    provider: "ollama-local",
+    model: "gemma4:12b-mlx"
+  });
+
+  assert.equal(runtime.lastPrompt.sessionId, session.sessionId);
+  assert.equal(runtime.lastPrompt.provider, "ollama-local");
+  assert.equal(runtime.lastPrompt.model, "gemma4:12b-mlx");
+  const stored = await engine.state.readSession(session.sessionId);
+  assert.equal(stored.id, session.sessionId);
+  assert.equal(stored.provider, "ollama-local");
+  assert.equal(stored.model, "gemma4:12b-mlx");
+  assert.equal(stored.messages[0].content, "Gemma로 계속해줘");
+  const events = await fs.readFile(path.join(root, ".codmes", "sessions", "events.jsonl"), "utf8");
+  assert.match(events, /session.model/);
+});
+
 test("workspace agent engine records live tool events under workspace state", async () => {
   const root = await fixtureWorkspace();
   const runtime = new FakeAgentRuntime();

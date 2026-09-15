@@ -61,6 +61,8 @@ struct ResumeSessionParams: Encodable {
 struct PromptSubmitParams: Encodable {
     let sessionId: String
     let message: String
+    let provider: String?
+    let model: String?
     let contextRequest: ContextRequest?
     let surface: String?
     let route: String?
@@ -150,10 +152,26 @@ actor LiveChatClient {
         )
     }
 
-    func submit(sessionId: String, message: String, contextRequest: ContextRequest? = nil, surface: String? = nil, route: String? = nil) async throws -> String? {
+    func submit(
+        sessionId: String,
+        message: String,
+        provider: String? = nil,
+        model: String? = nil,
+        contextRequest: ContextRequest? = nil,
+        surface: String? = nil,
+        route: String? = nil
+    ) async throws -> String? {
         let response = try await send(
             command: "prompt.submit",
-            params: PromptSubmitParams(sessionId: sessionId, message: message, contextRequest: contextRequest, surface: surface, route: route)
+            params: PromptSubmitParams(
+                sessionId: sessionId,
+                message: message,
+                provider: provider,
+                model: model,
+                contextRequest: contextRequest,
+                surface: surface,
+                route: route
+            )
         )
         return response.result?.reply
     }

@@ -1060,6 +1060,10 @@ private func collectHermesSessions(from object: Any, into sessions: inout [Herme
                     id: id,
                     title: title,
                     updatedAt: updatedAt,
+                    provider: stringValue(dict["provider"])
+                        ?? stringValue(dict["provider_id"])
+                        ?? stringValue(dict["providerId"]),
+                    model: stringValue(dict["model"]),
                     folderId: folderId,
                     folderTitle: folderTitle,
                     projectId: projectId,

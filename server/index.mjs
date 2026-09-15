@@ -3418,6 +3418,7 @@ async function normalizeSessionsResponse(value) {
     sessions.push({
       id,
       title,
+      provider: stringField(item.provider, item.provider_id, item.providerId),
       model: stringField(item.model),
       preview,
       folderId,
