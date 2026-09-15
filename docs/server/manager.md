@@ -70,10 +70,10 @@ git push origin codmes-server-v0.1.1
   설정할 수 있습니다.
 - 관리 창에는 현재 주소, process ID, 자동 관리되는 데이터 경로와 최근 서버 로그가
   표시됩니다. 일반 사용자가 Workspace 폴더를 지정할 필요는 없습니다.
-- KNU Server Manager와 같은 사이드바·대시보드 구조를 사용합니다. `Tool` 메뉴에는
-  built-in 도구와 설치된 외부 MCP 도구가 plugin별로 표시됩니다.
-- 외부 MCP에서 새로 발견한 도구는 자동 허용하지 않습니다. `Tool` 메뉴에서
-  Workspace별 체크박스를 선택하고 저장해야 해당 도구가 모델에 노출됩니다.
+- KNU Server Manager와 같은 사이드바·대시보드 구조를 사용합니다.
+- 사용자·Workspace별 plugin 및 MCP 도구 승인은 로그인된 Codmes 클라이언트의
+  `설정 → Plugins`에서 관리합니다. Server Manager는 사용자 권한을 우회하지 않으며
+  서버 process·네트워크·DB·로그만 관리합니다.
 
 `Quit Codmes Server`로 앱을 완전히 종료하면 이 Manager가 시작한 서버 process도
 함께 종료됩니다. 같은 주소에서 사용자가 직접 실행한 외부 서버는 감지하되 임의로

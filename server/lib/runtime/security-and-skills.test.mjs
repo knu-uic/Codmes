@@ -142,6 +142,25 @@ test("Security policy requires approval for risky shell syntax", async () => {
   }
 });
 
+test("Security policy allows read-only MCP calls and approves dangerous MCP calls in suggest mode", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-security-mcp-"));
+  try {
+    await writeSecurityConfig(root, {
+      approvalMode: "suggest",
+      allowShell: true,
+      allowedCommands: [],
+      deniedCommands: [],
+      requireApproval: []
+    });
+    const read = await checkAction(root, { type: "mcp.tool.call", dangerous: false });
+    const write = await checkAction(root, { type: "mcp.tool.call", dangerous: true });
+    assert.equal(read.status, "allow");
+    assert.equal(write.status, "approve");
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("System prompt dynamically includes enabled and relevant skills", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-prompt-skills-"));
   try {
@@ -185,4 +204,17 @@ test("isDangerousMcpTool heuristics evaluation", () => {
   assert.equal(isDangerousMcpTool({ name: "write_file", description: "Save text content" }), true);
   assert.equal(isDangerousMcpTool({ name: "run_command", description: "Execute shell script" }), true);
   assert.equal(isDangerousMcpTool({ name: "math_add", description: "Add two numbers" }), false);
+  assert.equal(isDangerousMcpTool({
+    name: "get_http_status",
+    description: "Fetch the current status without changing it.",
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  }), false);
+  assert.equal(isDangerousMcpTool({
+    name: "update_record",
+    annotations: { readOnlyHint: false, destructiveHint: false }
+  }), true);
+  assert.equal(isDangerousMcpTool({
+    name: "archive_record",
+    annotations: { readOnlyHint: true, destructiveHint: true }
+  }), true);
 });

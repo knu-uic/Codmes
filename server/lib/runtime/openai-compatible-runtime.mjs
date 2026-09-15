@@ -2983,6 +2983,9 @@ export function classifyError(error) {
 }
 
 export function isDangerousMcpTool(tool) {
+  const annotations = tool?.annotations || {};
+  if (annotations.destructiveHint === true || annotations.readOnlyHint === false) return true;
+  if (annotations.readOnlyHint === true && annotations.destructiveHint !== true) return false;
   const name = String(tool.name).toLowerCase();
   const desc = String(tool.description || "").toLowerCase();
   const dangerousKeywords = [

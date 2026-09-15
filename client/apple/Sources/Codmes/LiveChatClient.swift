@@ -90,6 +90,7 @@ struct ContextRequest: Encodable {
 actor LiveChatClient {
     private var task: URLSessionWebSocketTask?
     private var connectedURL: URL?
+    private var connectedProtocol: String?
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
     private var continuations: [String: CheckedContinuation<LiveEnvelope, Error>] = [:]
@@ -102,18 +103,22 @@ actor LiveChatClient {
         components.scheme = components.scheme == "https" ? "wss" : "ws"
         components.path = "/api/live"
         let token = authToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !token.isEmpty {
-            components.queryItems = [URLQueryItem(name: "token", value: token)]
-        }
         guard let url = components.url else { throw LiveChatClientError.invalidURL }
+        let authProtocol = token.isEmpty ? nil : "codmes.bearer.\(token)"
         self.onEvent = onEvent
-        if task != nil, connectedURL == url {
+        if task != nil, connectedURL == url, connectedProtocol == authProtocol {
             return
         }
         disconnect()
-        let task = URLSession.shared.webSocketTask(with: url)
+        let task: URLSessionWebSocketTask
+        if let authProtocol {
+            task = URLSession.shared.webSocketTask(with: url, protocols: [authProtocol])
+        } else {
+            task = URLSession.shared.webSocketTask(with: url)
+        }
         self.task = task
         connectedURL = url
+        connectedProtocol = authProtocol
         task.resume()
         receiveLoop()
         _ = try await send(command: "connect", params: EmptyParams())
@@ -178,6 +183,7 @@ actor LiveChatClient {
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         connectedURL = nil
+        connectedProtocol = nil
         for continuation in continuations.values {
             continuation.resume(throwing: LiveChatClientError.disconnected)
         }
@@ -218,6 +224,7 @@ actor LiveChatClient {
         case let .failure(error):
             task = nil
             connectedURL = nil
+            connectedProtocol = nil
             for continuation in continuations.values {
                 continuation.resume(throwing: error)
             }

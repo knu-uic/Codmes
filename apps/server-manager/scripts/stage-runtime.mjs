@@ -19,9 +19,21 @@ await fs.rm(pythonBuildRoot, { recursive: true, force: true });
 await fs.mkdir(appRoot, { recursive: true });
 await fs.mkdir(binRoot, { recursive: true });
 
-for (const entry of ["server", "bin", "bundled", "vendor", "package.json", "package-lock.json"]) {
+for (const entry of [
+  "server",
+  "bin",
+  "bundled",
+  "vendor",
+  "marketplace",
+  "package.json",
+  "package-lock.json",
+]) {
   await fs.cp(path.join(repoRoot, entry), path.join(appRoot, entry), { recursive: true });
 }
+await requireFile(
+  path.join(appRoot, "marketplace", "trusted-registry-roots.json"),
+  "Marketplace trusted Registry roots",
+);
 
 await stagePortablePython();
 await stagePortablePostgres();

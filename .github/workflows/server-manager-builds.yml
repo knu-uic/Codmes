@@ -100,10 +100,14 @@ jobs:
             exit 1
           fi
           version="${GITHUB_REF_NAME#codmes-server-v}"
-          gh release create "$GITHUB_REF_NAME" "${files[@]}" \
-            --verify-tag \
-            --title "Codmes Server $version" \
-            --generate-notes
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" \
+              --verify-tag \
+              --title "Codmes Server $version" \
+              --generate-notes
+          fi
 
   publish-existing-artifacts:
     if: github.event_name == 'workflow_dispatch' && inputs.source_run_id != '' && inputs.release_tag != ''
@@ -134,7 +138,11 @@ jobs:
             exit 1
           fi
           version="${RELEASE_TAG#codmes-server-v}"
-          gh release create "$RELEASE_TAG" "${files[@]}" \
-            --verify-tag \
-            --title "Codmes Server $version" \
-            --generate-notes
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
+          else
+            gh release create "$RELEASE_TAG" "${files[@]}" \
+              --verify-tag \
+              --title "Codmes Server $version" \
+              --generate-notes
+          fi

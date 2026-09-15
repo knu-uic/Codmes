@@ -260,7 +260,7 @@ function isAuthorized(req, url) {
 
 async function authorizeRequest(req, url) {
   if (!MULTIUSER_ENABLED) return isAuthorized(req, url);
-  const user = await localAccounts.resolveToken(requestAuthToken(req));
+  const user = await localAccounts.resolveToken(requestAuthToken(req, url));
   if (!user) return false;
   updateRequestContext({ user });
   if (requestDoesNotRequireWorkspace(url)) return true;
@@ -279,7 +279,7 @@ async function authorizeRequest(req, url) {
   return true;
 }
 
-function requestAuthToken(req) {
+function requestAuthToken(req, url = null) {
   const authorization = String(req.headers.authorization || "");
   const bearer = authorization.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
   if (bearer) return bearer;
@@ -289,6 +289,9 @@ function requestAuthToken(req) {
   const protocolToken = protocol.split(",").map((item) => item.trim())
     .find((item) => item.startsWith("codmes.bearer."));
   if (protocolToken) return protocolToken.slice("codmes.bearer.".length);
+  if (url?.pathname === "/api/live") {
+    return String(url.searchParams.get("token") || "").trim();
+  }
   return "";
 }
 

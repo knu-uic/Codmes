@@ -155,7 +155,7 @@ async function evaluateSecurityAction(workspaceRoot, action, config) {
         action.type === "file.delete" ||
         action.type === "git.command" ||
         action.type === "shell.run" ||
-        action.type === "mcp.tool.call"
+        (action.type === "mcp.tool.call" && action.dangerous === true)
       ) {
         return {
           status: "approve",
