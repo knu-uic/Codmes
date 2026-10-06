@@ -25,7 +25,89 @@ const EDITOR_FIELD_ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
 const MCP_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
 export function pluginsDirectory(workspaceRoot) {
-  return path.join(workspaceRoot, ".codmes", "plugins");
+  const sharedRoot = String(process.env.CODMES_SHARED_PLUGIN_ROOT || "").trim();
+  return sharedRoot
+    ? path.join(path.resolve(sharedRoot), "plugins")
+    : path.join(workspaceRoot, ".codmes", "plugins");
+}
+
+// Existing profile installations remain on disk as recoverable backups. Only the
+// highest installed version is activated, and collection data stays per profile.
+export async function adoptWorkspacePluginPackages(workspaceRoots) {
+  if (!process.env.CODMES_SHARED_PLUGIN_ROOT) return { adopted: [] };
+  const marker = path.join(path.resolve(process.env.CODMES_SHARED_PLUGIN_ROOT), ".legacy-plugin-adoption-complete");
+  if (await fs.stat(marker).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  })) return { adopted: [] };
+  const candidates = new Map();
+  for (const workspaceRoot of [...new Set(workspaceRoots || [])]) {
+    const localDirectory = path.join(workspaceRoot, ".codmes", "plugins");
+    const entries = await fs.readdir(localDirectory, { withFileTypes: true }).catch((error) => {
+      if (error?.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      const source = path.join(localDirectory, entry.name);
+      const state = await readPluginInstallStateFile(source);
+      const manifestPath = state?.currentVersion
+        ? path.join(source, "versions", state.currentVersion, "plugin.json")
+        : path.join(source, "plugin.json");
+      const manifest = validatePluginManifest(JSON.parse(await fs.readFile(manifestPath, "utf8")));
+      if (manifest.id !== entry.name) throw new Error(`Legacy plugin directory '${entry.name}' has a different manifest id.`);
+      const group = candidates.get(manifest.id) || [];
+      group.push({ workspaceRoot, source, manifest, state });
+      candidates.set(manifest.id, group);
+    }
+  }
+  const adopted = [];
+  const directory = await ensurePluginsDirectory(workspaceRoots?.[0] || process.cwd());
+  for (const [pluginId, group] of candidates) {
+    const target = path.join(directory, pluginId);
+    if (await fs.stat(target).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    })) continue;
+    const publishers = new Set(group.map((item) => item.state?.source?.publisherId).filter(Boolean));
+    const permissionSets = new Set(group.map((item) => [...item.manifest.permissions].sort().join("\n")));
+    if (publishers.size > 1 || permissionSets.size > 1) {
+      throw new Error(`Legacy plugin '${pluginId}' differs across profiles in publisher or permissions; resolve those installations before sharing it.`);
+    }
+    const chosen = group.reduce((best, item) => comparePluginVersions(item.manifest.version, best.manifest.version) > 0 ? item : best);
+    const migrations = await Promise.all(group.map((item) => preparePluginDataMigration(
+      item.workspaceRoot,
+      item.manifest,
+      chosen.manifest,
+      item.state?.dataVersion || item.manifest.dataVersion
+    )));
+    const applied = [];
+    try {
+      for (const migration of migrations) {
+        await migration.apply();
+        applied.push(migration);
+      }
+      await fs.cp(chosen.source, target, { recursive: true, errorOnExist: true, force: false });
+      adopted.push({ pluginId, version: chosen.manifest.version, profiles: group.length });
+    } catch (error) {
+      for (const migration of applied.reverse()) await migration.rollback().catch(() => {});
+      await fs.rm(target, { recursive: true, force: true });
+      throw error;
+    }
+  }
+  await fs.mkdir(path.dirname(marker), { recursive: true });
+  await fs.writeFile(marker, JSON.stringify({ completedAt: new Date().toISOString(), adopted }) + "\n", { flag: "wx" });
+  return { adopted };
+}
+
+function comparePluginVersions(left, right) {
+  const numeric = (value) => String(value).split(/[+-]/, 1)[0].split(".").map(Number);
+  const a = numeric(left);
+  const b = numeric(right);
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] !== b[index]) return a[index] - b[index];
+  }
+  return String(left).localeCompare(String(right));
 }
 
 export async function ensurePluginsDirectory(workspaceRoot) {
@@ -437,6 +519,30 @@ export async function listInstalledPlugins(workspaceRoot) {
   return plugins.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+export async function synchronizeSharedPluginProfile(workspaceRoot) {
+  if (!process.env.CODMES_SHARED_PLUGIN_ROOT) return;
+  const plugins = await listInstalledPlugins(workspaceRoot);
+  const config = await readRuntimeConfig(workspaceRoot);
+  const settings = await fs.readFile(
+    path.join(workspaceRoot, ".codmes", "plugin-runtime", "settings.json"), "utf8"
+  ).then(JSON.parse).catch(() => ({}));
+  const installedIds = new Set(plugins.map((plugin) => plugin.id));
+  let next = (config.mcpServers || []).filter((server) => !server.pluginId || installedIds.has(server.pluginId));
+  for (const plugin of plugins) {
+    if (plugin.mcp && next.some((server) => server.name === plugin.mcp.name && server.pluginId !== plugin.id)) {
+      console.warn(`[codmes] plugin '${plugin.id}' MCP name conflicts in profile workspace ${workspaceRoot}`);
+      continue;
+    }
+    next = upsertPluginMcp(next, plugin);
+    if (settings[plugin.id]?.enabled === false) {
+      next = next.map((server) => server.pluginId === plugin.id ? { ...server, enabled: false } : server);
+    }
+  }
+  if (JSON.stringify(next) !== JSON.stringify(config.mcpServers || [])) {
+    await writeRuntimeConfig(workspaceRoot, { ...config, mcpServers: next });
+  }
+}
+
 export async function getInstalledPlugin(workspaceRoot, pluginId) {
   const id = normalizePluginId(pluginId);
   const root = path.join(pluginsDirectory(workspaceRoot), id);
@@ -503,12 +609,11 @@ export async function installPlugin(workspaceRoot, sourcePath, options = {}) {
   const previousDataVersion = Number(
     previousState?.dataVersion || previousManifest?.dataVersion || 1
   );
-  const dataMigration = await preparePluginDataMigration(
-    workspaceRoot,
-    previousManifest,
-    manifest,
-    previousDataVersion
-  );
+  const migrationRoots = [...new Set([workspaceRoot, ...(options.workspaceRoots || [])])];
+  const dataMigrations = await Promise.all(migrationRoots.map((root) => preparePluginDataMigration(
+    root, previousManifest, manifest, previousDataVersion
+  )));
+  const dataMigration = dataMigrations[0];
   const otherPlugins = (await listInstalledPlugins(workspaceRoot))
     .filter((plugin) => plugin.id !== manifest.id);
   if (["chat", "notes", "code", "planner"].includes(manifest.surface.id)
@@ -520,6 +625,14 @@ export async function installPlugin(workspaceRoot, sourcePath, options = {}) {
   );
   if (mcpConflict) {
     throw new Error(`MCP server name '${manifest.mcp.name}' is already in use.`);
+  }
+  if (manifest.mcp) {
+    for (const root of migrationRoots.filter((root) => root !== workspaceRoot)) {
+      const config = await readRuntimeConfig(root);
+      if (config.mcpServers.some((server) => server.name === manifest.mcp.name && server.pluginId !== manifest.id)) {
+        throw new Error(`MCP server name '${manifest.mcp.name}' is already in use in another profile.`);
+      }
+    }
   }
   await fs.mkdir(versions, { recursive: true });
   if (previousManifest && !previousState) {
@@ -544,7 +657,7 @@ export async function installPlugin(workspaceRoot, sourcePath, options = {}) {
     );
   }
   let replacedVersion = false;
-  let migrationApplied = false;
+  const appliedMigrations = [];
   try {
     try {
       await fs.rename(versionTarget, versionBackup);
@@ -553,8 +666,10 @@ export async function installPlugin(workspaceRoot, sourcePath, options = {}) {
       if (error?.code !== "ENOENT") throw error;
     }
     await fs.rename(staging, versionTarget);
-    await dataMigration.apply();
-    migrationApplied = true;
+    for (const migration of dataMigrations) {
+      await migration.apply();
+      appliedMigrations.push(migration);
+    }
     const nextState = {
       schemaVersion: 1,
       currentVersion: manifest.version,
@@ -589,7 +704,7 @@ export async function installPlugin(workspaceRoot, sourcePath, options = {}) {
       state: nextState
     };
   } catch (error) {
-    if (migrationApplied) await dataMigration.rollback().catch(() => {});
+    for (const migration of appliedMigrations.reverse()) await migration.rollback().catch(() => {});
     await fs.rm(versionTarget, { recursive: true, force: true });
     if (replacedVersion) await fs.rename(versionBackup, versionTarget).catch(() => {});
     if (previousState) {
@@ -664,7 +779,7 @@ export async function rollbackPlugin(workspaceRoot, pluginId, targetVersion = nu
   }
 }
 
-export async function removePlugin(workspaceRoot, pluginId) {
+export async function removePlugin(workspaceRoot, pluginId, options = {}) {
   const id = normalizePluginId(pluginId);
   if (isBuiltInPluginId(id)) {
     throw Object.assign(
@@ -686,7 +801,9 @@ export async function removePlugin(workspaceRoot, pluginId) {
       mcpServers: (previousConfig.mcpServers || []).filter((server) => server.pluginId !== id)
     });
     const { removePluginMcpToolConsent } = await import("./mcp-tool-consent.mjs");
-    await removePluginMcpToolConsent(workspaceRoot, id);
+    for (const root of new Set([workspaceRoot, ...(options.workspaceRoots || [])])) {
+      await removePluginMcpToolConsent(root, id);
+    }
     await fs.rm(staging, { recursive: true, force: true });
     return { removed: true, pluginId: id };
   } catch (error) {
@@ -698,6 +815,7 @@ export async function removePlugin(workspaceRoot, pluginId) {
 
 function upsertPluginMcp(servers, manifest) {
   if (!manifest.mcp) return servers.filter((server) => server.pluginId !== manifest.id);
+  const existing = servers.find((server) => server.pluginId === manifest.id);
   const mcp = {
     name: manifest.mcp.name,
     transport: manifest.mcp.transport,
@@ -707,7 +825,7 @@ function upsertPluginMcp(servers, manifest) {
     allowUnauthenticated: manifest.mcp.allowUnauthenticated,
     requiresApproval: manifest.mcp.requiresApproval,
     pluginId: manifest.id,
-    enabled: true
+    enabled: existing?.enabled !== false
   };
   return [...servers.filter((server) => server.pluginId !== manifest.id && server.name !== mcp.name), mcp];
 }

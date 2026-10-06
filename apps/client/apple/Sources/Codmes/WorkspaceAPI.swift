@@ -1,0 +1,1356 @@
+import Foundation
+
+enum WorkspaceAPIError: Error, LocalizedError {
+    case invalidURL
+    case badStatus(Int, String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL:
+            "Invalid workspace server URL."
+        case let .badStatus(status, body):
+            if status == 401 {
+                if let message = Self.responseMessage(from: body),
+                   !Self.isWorkspaceAuthorizationMessage(message) {
+                    message
+                } else {
+                    "서버 로그인 세션이 없거나 만료되었습니다. Codmes ID·비밀번호 또는 연결된 Google 계정으로 다시 로그인하세요."
+                }
+            } else if let message = Self.responseMessage(from: body) {
+                message
+            } else {
+                "Workspace server returned \(status): \(body)"
+            }
+        }
+    }
+
+    private static func responseMessage(from body: String) -> String? {
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        for key in ["detail", "error", "message"] {
+            if let value = object[key] as? String {
+                let message = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !message.isEmpty {
+                    return message
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func isWorkspaceAuthorizationMessage(_ message: String) -> Bool {
+        let normalized = message
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return normalized == "unauthorized"
+    }
+}
+
+struct WorkspaceAPI: WorkspaceSyncTransport {
+    var baseURL: URL
+    var authToken: String = ""
+    var session: URLSession = .shared
+
+    func syncManifest() async throws -> WorkspaceSyncManifest {
+        try await request(try components("/api/sync/manifest"))
+    }
+    func reportStoragePolicies(deviceId: String, policies: [WorkspaceDevicePolicy]) async throws {
+        struct Report: Encodable { let deviceId: String; let policies: [WorkspaceDevicePolicy] }
+        let _: EmptyResponse = try await request(try components("/api/sync/devices"), method: "POST", body: Report(deviceId: deviceId, policies: policies))
+    }
+    func moveSyncFile(_ move: WorkspaceSyncMove) async throws -> WorkspaceSyncResult {
+        try await request(try components("/api/sync/move"), method: "POST", body: move)
+    }
+    func applyDocumentBundle(fileChange: WorkspaceSyncChange, file: URL, annotationChange: WorkspaceSyncChange, annotations: URL) async throws -> WorkspaceSyncResult {
+        struct Header: Encodable { let fileChange: WorkspaceSyncChange; let annotationChange: WorkspaceSyncChange; let fileSize: Int; let annotationSize: Int }
+        let fileSize = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        let annotationSize = try annotations.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        let header = try JSONEncoder().encode(Header(fileChange: fileChange, annotationChange: annotationChange, fileSize: fileSize, annotationSize: annotationSize))
+        guard header.count <= 65536 else { throw LocalWorkspaceError.invalidManifest }
+        let staged = FileManager.default.temporaryDirectory.appendingPathComponent("codmes-bundle-\(UUID().uuidString)")
+        FileManager.default.createFile(atPath: staged.path, contents: nil)
+        defer { try? FileManager.default.removeItem(at: staged) }
+        let output = try FileHandle(forWritingTo: staged)
+        do {
+            var length = UInt32(header.count).bigEndian
+            try withUnsafeBytes(of: &length) { try output.write(contentsOf: Data($0)) }
+            try output.write(contentsOf: header)
+            for source in [file, annotations] {
+                let input = try FileHandle(forReadingFrom: source); defer { try? input.close() }
+                while let chunk = try input.read(upToCount: 1024 * 1024), !chunk.isEmpty { try Task.checkCancellation(); try output.write(contentsOf: chunk) }
+            }
+            try output.synchronize(); try output.close()
+        } catch { try? output.close(); throw error }
+        guard let url = try components("/api/sync/document").url else { throw WorkspaceAPIError.invalidURL }
+        var req = URLRequest(url: url); req.httpMethod = "PUT"; req.timeoutInterval = 300
+        req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type"); applyAuth(to: &req)
+        let (data, response) = try await session.upload(for: req, fromFile: staged)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw WorkspaceAPIError.badStatus((response as? HTTPURLResponse)?.statusCode ?? 0, String(decoding: data, as: UTF8.self)) }
+        return try JSONDecoder().decode(WorkspaceSyncResult.self, from: data)
+    }
+    func syncHistory(path: String, resource: String, offset: Int = 0) async throws -> WorkspaceHistoryPage {
+        var c = try components("/api/sync/history")
+        c.queryItems = [URLQueryItem(name: "path", value: path), URLQueryItem(name: "resource", value: resource), URLQueryItem(name: "offset", value: String(offset))]
+        return try await request(c)
+    }
+    func syncRecoveryIndex() async throws -> WorkspaceRecoveryIndex { try await request(try components("/api/sync/recovery")) }
+    func downloadHistoricalBlob(path: String, resource: String, version: String) async throws -> URL {
+        var c = try components("/api/sync/history/blob")
+        c.queryItems = [URLQueryItem(name: "path", value: path), URLQueryItem(name: "resource", value: resource), URLQueryItem(name: "version", value: version)]
+        guard let url = c.url else { throw WorkspaceAPIError.invalidURL }
+        var req = URLRequest(url: url); req.timeoutInterval = 300; applyAuth(to: &req)
+        let (file, response) = try await session.download(for: req)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let body = (try? String(contentsOf: file, encoding: .utf8)) ?? "History download failed"
+            try? FileManager.default.removeItem(at: file)
+            throw WorkspaceAPIError.badStatus((response as? HTTPURLResponse)?.statusCode ?? 0, body)
+        }
+        return file
+    }
+
+    func downloadSyncBlob(_ entry: WorkspaceSyncEntry) async throws -> URL {
+        var c = try components("/api/sync/blob")
+        c.queryItems = [URLQueryItem(name: "path", value: entry.path), URLQueryItem(name: "resource", value: entry.resource), URLQueryItem(name: "revision", value: entry.revision)]
+        guard let url = c.url else { throw WorkspaceAPIError.invalidURL }
+        var req = URLRequest(url: url); req.timeoutInterval = 300
+        applyAuth(to: &req)
+        let (file, response) = try await session.download(for: req)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let body = (try? String(contentsOf: file, encoding: .utf8)) ?? "Sync download failed"
+            try? FileManager.default.removeItem(at: file)
+            throw WorkspaceAPIError.badStatus((response as? HTTPURLResponse)?.statusCode ?? 0, body)
+        }
+        return file
+    }
+
+    func applySyncChange(_ change: WorkspaceSyncChange, file: URL?) async throws -> WorkspaceSyncResult {
+        guard let file, change.action == "put", change.resource != "folder" else {
+            return try await request(try components("/api/sync/change"), method: "POST", body: change)
+        }
+        var c = try components("/api/sync/blob")
+        c.queryItems = [URLQueryItem(name: "path", value: change.path), URLQueryItem(name: "resource", value: change.resource)]
+        guard let url = c.url else { throw WorkspaceAPIError.invalidURL }
+        var req = URLRequest(url: url); req.httpMethod = "PUT"; req.timeoutInterval = 300
+        req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        req.setValue(change.baseRevision ?? "missing", forHTTPHeaderField: "X-Codmes-Base-Revision")
+        req.setValue(change.conflictPolicy, forHTTPHeaderField: "X-Codmes-Conflict-Policy")
+        req.setValue(change.operationId, forHTTPHeaderField: "X-Codmes-Operation-ID")
+        req.setValue(change.deviceId, forHTTPHeaderField: "X-Codmes-Device-ID")
+        req.setValue(change.modifiedAt, forHTTPHeaderField: "X-Codmes-Modified-At")
+        req.setValue(change.baseVersion, forHTTPHeaderField: "X-Codmes-Base-Version")
+        req.setValue(change.fileId, forHTTPHeaderField: "X-Codmes-File-ID")
+        req.setValue(change.firstRegistration.map { $0 ? "true" : "false" }, forHTTPHeaderField: "X-Codmes-First-Registration")
+        req.setValue(change.expectedRevision, forHTTPHeaderField: "X-Codmes-Expected-Revision")
+        applyAuth(to: &req)
+        let (data, response) = try await session.upload(for: req, fromFile: file)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw WorkspaceAPIError.badStatus((response as? HTTPURLResponse)?.statusCode ?? 0, String(decoding: data, as: UTF8.self))
+        }
+        return try JSONDecoder().decode(WorkspaceSyncResult.self, from: data)
+    }
+
+    func signOutAccount() async throws {
+        let _: EmptyResponse = try await post("/api/auth/logout", body: [String: String]())
+    }
+
+    func googleAuthConfig() async throws -> GoogleAuthConfig {
+        try await get("/api/google-auth/config")
+    }
+
+    func googleClientLogin(idToken: String, deviceID: String, deviceName: String, username: String? = nil, password: String? = nil) async throws -> GoogleClientLoginResponse {
+        try await post("/api/google-auth/client/login", body: GoogleClientLoginRequest(idToken: idToken, deviceId: deviceID, deviceName: deviceName, username: username, password: password))
+    }
+
+    func codmesClientLogin(username: String, password: String, deviceID: String, register: Bool) async throws -> GoogleClientLoginResponse {
+        try await post(register ? "/api/auth/client/register" : "/api/auth/client/login", body: ["username": username, "password": password, "deviceId": deviceID, "deviceName": "Codmes Apple"])
+    }
+
+    func updateCodmesAccount(action: String, fields: [String: String]) async throws -> CodmesAccountResponse {
+        try await post("/api/auth/account/\(action)", body: fields)
+    }
+
+    func googleClientStatus(requestID: String, requestToken: String) async throws -> GoogleClientLoginResponse {
+        try await post("/api/google-auth/client/status", body: GoogleClientStatusRequest(requestId: requestID, requestToken: requestToken))
+    }
+
+    func profiles() async throws -> ServerProfilesResponse {
+        try await get("/api/profiles")
+    }
+
+    func ensureGoogleProfile() async throws -> GoogleClientProfileResponse {
+        try await post("/api/client/profile/register", body: [String: String]())
+    }
+
+    func openProfile(id: String, pin: String) async throws -> OpenServerProfileResponse {
+        try await post("/api/profiles/\(id)/open", body: OpenServerProfileRequest(pin: pin))
+    }
+
+    func changeProfilePIN(id: String, currentPin: String, pin: String) async throws {
+        let _: ServerProfilePINResponse = try await post("/api/profiles/\(id)/pin", body: ServerProfilePINRequest(currentPin: currentPin, pin: pin))
+    }
+
+    func archiveProfile(id: String, currentPin: String) async throws {
+        let _: ArchiveServerProfileResponse = try await post("/api/profiles/\(id)/archive", body: CurrentServerProfilePINRequest(currentPin: currentPin))
+    }
+
+    func workspace() async throws -> WorkspaceInfo {
+        try await get("/api/workspace")
+    }
+
+    func health() async throws -> HealthResponse {
+        try await get("/api/health")
+    }
+
+    func documentJobs() async throws -> [DocumentJob] {
+        let response: DocumentJobsResponse = try await get("/api/document-jobs")
+        return response.jobs
+    }
+
+    func tree(root: String, path: String = "", recursive: Bool = false) async throws -> TreeResponse {
+        var components = try components("/api/tree")
+        components.queryItems = [
+            URLQueryItem(name: "root", value: root),
+            URLQueryItem(name: "path", value: path),
+            URLQueryItem(name: "recursive", value: recursive ? "true" : "false")
+        ]
+        return try await request(components)
+    }
+
+    func file(path: String) async throws -> FileResponse {
+        var components = try components("/api/file")
+        components.queryItems = [URLQueryItem(name: "path", value: path)]
+        return try await request(components)
+    }
+
+    func rawURL(path: String) throws -> URL {
+        var components = try components("/api/raw")
+        components.queryItems = authQueryItems([URLQueryItem(name: "path", value: path)])
+        guard let url = components.url else { throw WorkspaceAPIError.invalidURL }
+        return url
+    }
+
+    func pdfThumbnailURL(
+        path: String,
+        page: Int,
+        crop: NormalizedBoundingBox? = nil,
+        highlightQuery: String? = nil,
+        scale: Double? = nil
+    ) throws -> URL {
+        var components = try components("/api/pdf-thumbnail")
+        var queryItems = [
+            URLQueryItem(name: "path", value: path),
+            URLQueryItem(name: "page", value: String(page)),
+            URLQueryItem(name: "renderVersion", value: "9")
+        ]
+        if let crop {
+            queryItems.append(contentsOf: [
+                URLQueryItem(name: "x", value: String(crop.x)),
+                URLQueryItem(name: "y", value: String(crop.y)),
+                URLQueryItem(name: "width", value: String(crop.width)),
+                URLQueryItem(name: "height", value: String(crop.height))
+            ])
+        }
+        if let highlightQuery, !highlightQuery.isEmpty {
+            queryItems.append(URLQueryItem(name: "highlight", value: highlightQuery))
+        }
+        if let scale {
+            queryItems.append(URLQueryItem(name: "scale", value: String(scale)))
+        }
+        components.queryItems = authQueryItems(queryItems)
+        guard let url = components.url else { throw WorkspaceAPIError.invalidURL }
+        return url
+    }
+
+    func pdfMetadata(path: String) async throws -> PDFMetadataResponse {
+        var components = try components("/api/pdf/metadata")
+        components.queryItems = [URLQueryItem(name: "path", value: path)]
+        return try await request(components)
+    }
+
+    func downloadPDFSkeleton(path: String, name: String) async throws -> URL {
+        var components = try components("/api/pdf/skeleton")
+        components.queryItems = [URLQueryItem(name: "path", value: path)]
+        guard let url = components.url else { throw WorkspaceAPIError.invalidURL }
+        return try await downloadFile(url: url, name: "skeleton-\(name)")
+    }
+
+    func downloadPDFPage(path: String, page: Int, name: String) async throws -> URL {
+        var components = try components("/api/pdf/page")
+        components.queryItems = [
+            URLQueryItem(name: "path", value: path),
+            URLQueryItem(name: "page", value: String(page))
+        ]
+        guard let url = components.url else { throw WorkspaceAPIError.invalidURL }
+        return try await downloadFile(url: url, name: "page-\(page)-\(name)")
+    }
+
+    func downloadRawFile(path: String, name: String) async throws -> URL {
+        let url = try rawURL(path: path)
+        return try await downloadFile(url: url, name: name)
+    }
+
+    private func downloadFile(url: URL, name: String) async throws -> URL {
+        var request = URLRequest(url: url)
+        request.setValue("*/*", forHTTPHeaderField: "accept")
+        applyAuth(to: &request)
+        let (downloadURL, response) = try await session.download(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            let body = (try? String(contentsOf: downloadURL, encoding: .utf8)) ?? ""
+            throw WorkspaceAPIError.badStatus(status, body)
+        }
+        let fileManager = FileManager.default
+        let temporaryDirectory = fileManager.temporaryDirectory
+            .appendingPathComponent("CodmesRawPreviews", isDirectory: true)
+        try fileManager.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        let fileURL = temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + "-" + name)
+        try fileManager.moveItem(at: downloadURL, to: fileURL)
+        return fileURL
+    }
+
+    func writeFile(path: String, content: String) async throws -> FileWriteResponse {
+        var components = try components("/api/file")
+        components.queryItems = [URLQueryItem(name: "path", value: path)]
+        let body = ["content": content]
+        return try await request(components, method: "PUT", body: body)
+    }
+
+    func createFile(path: String, content: String = "") async throws {
+        let body = [
+            "path": path,
+            "content": content
+        ]
+        let _: EmptyResponse = try await post("/api/file", body: body)
+    }
+
+    func createFolder(path: String) async throws {
+        let body = ["path": path]
+        let _: EmptyResponse = try await post("/api/folder", body: body)
+    }
+
+    func movePath(from: String, to: String) async throws {
+        let body = [
+            "from": from,
+            "to": to
+        ]
+        let _: EmptyResponse = try await request(try components("/api/file/move"), method: "PATCH", body: body)
+    }
+
+    func copyPath(from: String, to: String) async throws {
+        let body = [
+            "from": from,
+            "to": to
+        ]
+        let _: EmptyResponse = try await post("/api/file/copy", body: body)
+    }
+
+    func uploadFile(path: String, data: Data) async throws {
+        let body = [
+            "path": path,
+            "dataBase64": data.base64EncodedString()
+        ]
+        let _: EmptyResponse = try await post("/api/file/upload", body: body)
+    }
+
+    func replaceBinaryFile(path: String, data: Data) async throws {
+        let body = [
+            "path": path,
+            "dataBase64": data.base64EncodedString()
+        ]
+        let components = try components("/api/file/binary")
+        let _: EmptyResponse = try await request(components, method: "PUT", body: body)
+    }
+
+    func importCodmesPDF(path: String, pdfData: Data, codmesData: Data?) async throws -> CodmesPDFImportResponse {
+        try await post("/api/file/import-codmes-pdf", body: CodmesPDFImportBody(
+            path: path,
+            pdfDataBase64: pdfData.base64EncodedString(),
+            codmesDataBase64: codmesData?.base64EncodedString()
+        ))
+    }
+
+    func exportCodmesPDFPackage(name: String, pdfData: Data, codmesData: Data) async throws -> CodmesPDFExportResponse {
+        try await post("/api/file/export-codmes-pdf", body: CodmesPDFExportBody(
+            name: name,
+            pdfDataBase64: pdfData.base64EncodedString(),
+            codmesDataBase64: codmesData.base64EncodedString()
+        ))
+    }
+
+    func importCodmesPDFPackage(path: String, packageData: Data) async throws -> CodmesPDFImportResponse {
+        try await post("/api/file/import-codmes-pdf-package", body: CodmesPDFPackageImportBody(
+            path: path,
+            packageDataBase64: packageData.base64EncodedString()
+        ))
+    }
+
+    func startChunkedUpload(path: String, size: Int64) async throws -> UploadStartResponse {
+        try await post("/api/file/upload/start", body: ChunkedUploadStartBody(path: path, size: size))
+    }
+
+    func uploadChunk(uploadId: String, offset: Int64, data: Data) async throws -> UploadChunkResponse {
+        try await post("/api/file/upload/chunk", body: ChunkedUploadChunkBody(
+            uploadId: uploadId,
+            offset: offset,
+            dataBase64: data.base64EncodedString()
+        ))
+    }
+
+    func completeChunkedUpload(uploadId: String) async throws {
+        let _: EmptyResponse = try await post("/api/file/upload/complete", body: ChunkedUploadIDBody(uploadId: uploadId))
+    }
+
+    func cancelChunkedUpload(uploadId: String) async throws {
+        let _: EmptyResponse = try await post("/api/file/upload/cancel", body: ChunkedUploadIDBody(uploadId: uploadId))
+    }
+
+    func deletePath(path: String) async throws {
+        var components = try components("/api/file")
+        components.queryItems = [URLQueryItem(name: "path", value: path)]
+        let _: EmptyResponse = try await request(components, method: "DELETE")
+    }
+
+    func fileAnnotations(path: String) async throws -> PDFAnnotationDocument {
+        var components = try components("/api/file/annotations")
+        components.queryItems = [URLQueryItem(name: "path", value: path)]
+        return try await request(components)
+    }
+
+    func saveFileAnnotations(path: String, annotations: PDFAnnotationDocument) async throws -> PDFAnnotationDocument {
+        var components = try components("/api/file/annotations")
+        components.queryItems = [URLQueryItem(name: "path", value: path)]
+        return try await request(components, method: "PUT", body: annotations)
+    }
+
+    func renderMarkdown(markdown: String) async throws -> String {
+        let response: RenderedMarkdownResponse = try await post("/api/render/markdown", body: ["markdown": markdown])
+        return response.html
+    }
+
+    func renderCode(code: String, language: String?) async throws -> String {
+        var body = ["code": code]
+        if let language, !language.isEmpty {
+            body["language"] = language
+        }
+        let response: RenderedMarkdownResponse = try await post("/api/render/code", body: body)
+        return response.html
+    }
+
+    func search(query: String, scopePath: String) async throws -> SearchResponse {
+        let body = [
+            "query": query,
+            "scopePath": scopePath
+        ]
+        return try await post("/api/search", body: body)
+    }
+
+    func globalSearch(
+        query: String,
+        surface: String,
+        cursor: String? = nil,
+        limit: Int = 100
+    ) async throws -> GlobalSearchResponse {
+        var components = try components("/api/global-search")
+        var queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "surface", value: surface),
+            URLQueryItem(name: "limit", value: String(min(max(limit, 1), 100)))
+        ]
+        if let cursor, !cursor.isEmpty {
+            queryItems.append(URLQueryItem(name: "cursor", value: cursor))
+        }
+        components.queryItems = queryItems
+        return try await request(components)
+    }
+
+    func agentTasks(type: String? = "code", limit: Int = 50) async throws -> [AgentTaskSummary] {
+        var components = try components("/api/agent/tasks")
+        var queryItems = [URLQueryItem(name: "limit", value: String(limit))]
+        if let type, !type.isEmpty {
+            queryItems.insert(URLQueryItem(name: "type", value: type), at: 0)
+        }
+        components.queryItems = queryItems
+        let response: AgentTasksResponse = try await request(components)
+        return response.tasks
+    }
+
+    func agentTask(id: String) async throws -> CodeTaskRecord {
+        var components = try components("/api/agent/tasks/\(id)")
+        components.percentEncodedPath = "/api/agent/tasks/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)"
+        return try await request(components)
+    }
+
+    func approvals(status: String = "pending", limit: Int = 50) async throws -> [WorkspaceApproval] {
+        var components = try components("/api/agent/approvals")
+        components.queryItems = [
+            URLQueryItem(name: "status", value: status),
+            URLQueryItem(name: "limit", value: String(limit))
+        ]
+        let response: WorkspaceApprovalsResponse = try await request(components)
+        return response.approvals
+    }
+
+    func resumeAgentTask(id: String) async throws -> AgentTaskActionResponse {
+        var components = try components("/api/agent/tasks/\(id)/resume")
+        components.percentEncodedPath = "/api/agent/tasks/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)/resume"
+        return try await request(components, method: "POST", body: EmptyBody())
+    }
+
+    func cancelAgentTask(id: String, reason: String? = nil) async throws -> AgentTaskActionResponse {
+        var components = try components("/api/agent/tasks/\(id)/cancel")
+        components.percentEncodedPath = "/api/agent/tasks/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)/cancel"
+
+        struct CancelBody: Encodable {
+            let reason: String?
+        }
+
+        return try await request(components, method: "POST", body: CancelBody(reason: reason))
+    }
+
+    func respondToApproval(id: String, approved: Bool, runChecksAfterApply: Bool = false, checksApproved: Bool = false, reason: String? = nil) async throws -> WorkspaceApprovalRespondResponse {
+        var components = try components("/api/agent/approvals/\(id)/respond")
+        components.percentEncodedPath = "/api/agent/approvals/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)/respond"
+        
+        struct RespondBody: Encodable {
+            let approved: Bool
+            let runChecksAfterApply: Bool
+            let checksApproved: Bool
+            let reason: String?
+        }
+        
+        return try await request(components, method: "POST", body: RespondBody(
+            approved: approved,
+            runChecksAfterApply: runChecksAfterApply,
+            checksApproved: checksApproved,
+            reason: reason
+        ))
+    }
+
+    func createCodeTask(scopePath: String, instruction: String) async throws -> CodeTaskResponse {
+        try await post("/api/agent/code-task", body: CodeTaskCreateBody(
+            scopePath: scopePath,
+            instruction: instruction,
+            maxFiles: 160,
+            maxSearchResults: 10
+        ))
+    }
+
+    func applyCodePatch(taskId: String, proposalId: String, runChecksAfterApply: Bool = false) async throws -> CodePatchApplyResponse {
+        var components = try components("/api/agent/code-task/\(taskId)/patches/\(proposalId)/apply")
+        components.percentEncodedPath = "/api/agent/code-task/\(taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId)/patches/\(proposalId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? proposalId)/apply"
+        return try await request(components, method: "POST", body: PatchApplyBody(
+            approved: true,
+            runChecksAfterApply: runChecksAfterApply,
+            checksApproved: runChecksAfterApply
+        ))
+    }
+
+    func rejectCodePatch(taskId: String, proposalId: String, reason: String = "Rejected in Apple client.") async throws -> CodePatchRejectResponse {
+        var components = try components("/api/agent/code-task/\(taskId)/patches/\(proposalId)/reject")
+        components.percentEncodedPath = "/api/agent/code-task/\(taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId)/patches/\(proposalId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? proposalId)/reject"
+        return try await request(components, method: "POST", body: RejectPatchBody(reason: reason))
+    }
+
+    func runCodeChecks(taskId: String) async throws -> CodeChecksResponse {
+        var components = try components("/api/agent/code-task/\(taskId)/checks")
+        components.percentEncodedPath = "/api/agent/code-task/\(taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId)/checks"
+        return try await request(components, method: "POST", body: ApprovedBody(approved: true))
+    }
+
+    func hermesModelOptions() async throws -> [HermesModelOption] {
+        let data = try await dataRequest(try components("/api/models"))
+        let object = try JSONSerialization.jsonObject(with: data)
+        return extractHermesModels(from: object)
+    }
+
+    func runtimeProviders() async throws -> [RuntimeProviderOption] {
+        let response: RuntimeProvidersResponse = try await get("/api/providers")
+        return response.providers
+    }
+
+    func runtimeProviderModels(providerId: String) async throws -> RuntimeProviderModelsResponse {
+        var components = try components("/api/providers/\(providerId)/models")
+        components.percentEncodedPath = "/api/providers/\(providerId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? providerId)/models"
+        return try await request(components)
+    }
+
+    func updateRuntimeProviderAuth(providerId: String, values: [String: String]) async throws {
+        var components = try components("/api/auth/\(providerId)")
+        components.percentEncodedPath = "/api/auth/\(providerId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? providerId)"
+        let _: EmptyResponse = try await request(components, method: "POST", body: ["values": values])
+    }
+
+    func runtimeProviderAuth(providerId: String) async throws -> RuntimeProviderAuthResponse {
+        var components = try components("/api/auth/\(providerId)")
+        components.percentEncodedPath = "/api/auth/\(providerId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? providerId)"
+        return try await request(components)
+    }
+
+    func selectRuntimeProviderCredential(providerId: String, credentialId: String) async throws {
+        var components = try components("/api/auth/\(providerId)/select")
+        components.percentEncodedPath = "/api/auth/\(providerId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? providerId)/select"
+        let _: EmptyResponse = try await request(components, method: "POST", body: ["credentialId": credentialId])
+    }
+
+    func deleteRuntimeProviderCredential(providerId: String, credentialId: String) async throws {
+        var components = try components("/api/auth/\(providerId)/credentials/\(credentialId)")
+        components.percentEncodedPath = "/api/auth/\(providerId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? providerId)/credentials/\(credentialId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? credentialId)"
+        let _: EmptyResponse = try await request(components, method: "DELETE")
+    }
+
+    func deleteRuntimeProviderAuth(providerId: String) async throws {
+        var components = try components("/api/auth/\(providerId)")
+        components.percentEncodedPath = "/api/auth/\(providerId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? providerId)"
+        let _: EmptyResponse = try await request(components, method: "DELETE")
+    }
+
+    func startOpenAICodexLogin() async throws -> RuntimeOAuthLoginSession {
+        try await post("/api/auth/openai-codex/login/start", body: EmptyBody())
+    }
+
+    func runtimeOAuthLogin(providerId: String, sessionId: String) async throws -> RuntimeOAuthLoginSession {
+        var components = try components("/api/auth/\(providerId)/login/\(sessionId)")
+        components.percentEncodedPath = "/api/auth/\(providerId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? providerId)/login/\(sessionId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionId)"
+        return try await request(components)
+    }
+
+    func cancelRuntimeOAuthLogin(providerId: String, sessionId: String) async throws {
+        var components = try components("/api/auth/\(providerId)/login/\(sessionId)/cancel")
+        components.percentEncodedPath = "/api/auth/\(providerId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? providerId)/login/\(sessionId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionId)/cancel"
+        let _: EmptyResponse = try await request(components, method: "POST")
+    }
+
+    func runtimeDefaultModel() async throws -> RuntimeDefaultModel? {
+        let response: RuntimeDefaultModelResponse = try await get("/api/model/default")
+        return response.defaultModel
+    }
+
+    func setRuntimeDefaultModel(provider: String, model: String, baseUrl: String? = nil) async throws {
+        var body = ["provider": provider, "model": model]
+        if let baseUrl, !baseUrl.isEmpty { body["baseUrl"] = baseUrl }
+        let _: EmptyResponse = try await post("/api/model/default", body: body)
+    }
+
+    func conversationFolders() async throws -> [ConversationFolder] {
+        try await get("/api/conversation-folders")
+    }
+
+    func createConversationFolder(name: String) async throws -> ConversationFolder {
+        try await post("/api/conversation-folders", body: ["name": name])
+    }
+
+    func updateConversationFolder(folderId: String, name: String) async throws -> ConversationFolder {
+        var components = try components("/api/conversation-folders/\(folderId)")
+        components.percentEncodedPath = "/api/conversation-folders/\(folderId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? folderId)"
+        return try await request(components, method: "PATCH", body: ["name": name])
+    }
+
+    func deleteConversationFolder(folderId: String) async throws {
+        var components = try components("/api/conversation-folders/\(folderId)")
+        components.percentEncodedPath = "/api/conversation-folders/\(folderId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? folderId)"
+        let _: EmptyResponse = try await request(components, method: "DELETE")
+    }
+
+    func moveSession(
+        sessionId: String,
+        folderId: String?,
+        projectId: String?,
+        projectTitle: String?
+    ) async throws {
+        var components = try components("/api/sessions/\(sessionId)/move-to-folder")
+        components.percentEncodedPath = "/api/sessions/\(sessionId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionId)/move-to-folder"
+        let body: [String: String] = [
+            "folderId": folderId ?? "",
+            "projectId": projectId ?? "",
+            "projectTitle": projectTitle ?? ""
+        ]
+        let _: EmptyResponse = try await request(components, method: "POST", body: body)
+    }
+
+    func setHermesSessionPinned(sessionId: String, pinned: Bool) async throws {
+        var components = try components("/api/sessions/\(sessionId)/pin")
+        components.percentEncodedPath = "/api/sessions/\(sessionId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionId)/pin"
+        let _: EmptyResponse = try await request(components, method: "POST", body: ["pinned": pinned])
+    }
+
+    func runtimePlugins() async throws -> [RuntimePlugin] {
+        let response: RuntimePluginsResponse = try await get("/api/plugins")
+        return response.plugins
+    }
+
+    func marketplacePlugins() async throws -> [MarketplacePlugin] {
+        let response: MarketplacePluginsResponse = try await get("/api/marketplace/plugins")
+        return response.plugins
+    }
+
+    func installMarketplacePlugin(
+        pluginId: String,
+        version: String? = nil,
+        acceptedPermissions: [String] = []
+    ) async throws {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        let _: EmptyResponse = try await post(
+            "/api/marketplace/plugins/\(encoded)/install",
+            body: MarketplaceMutationBody(
+                version: version,
+                acceptedPermissions: acceptedPermissions
+            )
+        )
+    }
+
+    func updateMarketplacePlugin(
+        pluginId: String,
+        version: String? = nil,
+        acceptedPermissions: [String] = []
+    ) async throws {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        let _: EmptyResponse = try await post(
+            "/api/marketplace/plugins/\(encoded)/update",
+            body: MarketplaceMutationBody(
+                version: version,
+                acceptedPermissions: acceptedPermissions
+            )
+        )
+    }
+
+    func rollbackPlugin(pluginId: String, version: String? = nil) async throws {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        var body: [String: String] = [:]
+        if let version, !version.isEmpty { body["version"] = version }
+        let _: EmptyResponse = try await post("/api/plugins/\(encoded)/rollback", body: body)
+    }
+
+    func removePlugin(pluginId: String) async throws {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        let _: EmptyResponse = try await request(
+            try components("/api/plugins/\(encoded)"),
+            method: "DELETE"
+        )
+    }
+
+    func pluginViewDocument(pluginId: String, routeId: String? = nil) async throws -> PluginViewDocument {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        var components = try components("/api/plugins/\(encoded)/view-document")
+        if let routeId, !routeId.isEmpty {
+            components.queryItems = [URLQueryItem(name: "route", value: routeId)]
+        }
+        return try await request(components)
+    }
+
+    func createPluginCollectionItem<Item: Encodable>(
+        pluginId: String,
+        collectionId: String,
+        item: Item
+    ) async throws {
+        let path = pluginCollectionPath(pluginId: pluginId, collectionId: collectionId)
+        let _: EmptyResponse = try await post(path, body: PluginCollectionWriteBody(item: item))
+    }
+
+    func updatePluginCollectionItem<Item: Encodable>(
+        pluginId: String,
+        collectionId: String,
+        itemId: String,
+        item: Item
+    ) async throws {
+        let components = try components(pluginCollectionPath(
+            pluginId: pluginId,
+            collectionId: collectionId,
+            itemId: itemId
+        ))
+        let _: EmptyResponse = try await request(
+            components,
+            method: "PATCH",
+            body: PluginCollectionWriteBody(item: item)
+        )
+    }
+
+    func deletePluginCollectionItem(
+        pluginId: String,
+        collectionId: String,
+        itemId: String
+    ) async throws {
+        let _: EmptyResponse = try await request(
+            try components(pluginCollectionPath(
+                pluginId: pluginId,
+                collectionId: collectionId,
+                itemId: itemId
+            )),
+            method: "DELETE"
+        )
+    }
+
+    private func pluginCollectionPath(
+        pluginId: String,
+        collectionId: String,
+        itemId: String? = nil
+    ) -> String {
+        let plugin = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        let collection = collectionId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? collectionId
+        var path = "/api/plugins/\(plugin)/collections/\(collection)"
+        if let itemId {
+            let item = itemId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? itemId
+            path += "/\(item)"
+        }
+        return path
+    }
+
+    func pluginAuthStatus(pluginId: String) async throws -> PluginAuthStatus {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        return try await get("/api/plugins/\(encoded)/auth/status")
+    }
+
+    func loginPlugin(pluginId: String, username: String, password: String) async throws -> PluginAuthLoginResponse {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        return try await post(
+            "/api/plugins/\(encoded)/auth/login",
+            body: ["username": username, "password": password]
+        )
+    }
+
+    func logoutPlugin(pluginId: String) async throws -> PluginAuthLogoutResponse {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        return try await request(
+            try components("/api/plugins/\(encoded)/auth/logout"),
+            method: "DELETE"
+        )
+    }
+
+    func updatePluginConfiguration(
+        pluginId: String,
+        body: PluginConfigurationBody
+    ) async throws -> RuntimePlugin {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        var components = try components("/api/plugins/\(encoded)/configuration")
+        components.percentEncodedPath = "/api/plugins/\(encoded)/configuration"
+        return try await request(components, method: "POST", body: body)
+    }
+
+    func pluginMCPToolConsent(pluginId: String) async throws -> PluginMCPToolConsent {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        return try await get("/api/plugins/\(encoded)/mcp-tools")
+    }
+
+    func refreshPluginMCPTools(pluginId: String) async throws -> PluginMCPToolConsent {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        return try await post("/api/plugins/\(encoded)/mcp-tools/refresh", body: EmptyRequestBody())
+    }
+
+    func updatePluginMCPToolConsent(
+        pluginId: String,
+        approvedTools: [String]
+    ) async throws -> PluginMCPToolConsent {
+        let encoded = pluginId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pluginId
+        return try await post(
+            "/api/plugins/\(encoded)/mcp-tools/consent",
+            body: PluginMCPToolConsentBody(approvedTools: approvedTools)
+        )
+    }
+
+    func mcpServers() async throws -> [MCPServerConfig] {
+        let response: MCPServersResponse = try await get("/api/mcp")
+        return response.servers
+    }
+
+    func searchConfig() async throws -> SearchConfigResponse {
+        try await get("/api/search/config")
+    }
+
+    func updateSearchConfig(body: SearchConfigUpdateBody) async throws -> SearchConfigResponse {
+        try await post("/api/search/config", body: body)
+    }
+
+    func addMCPServer(body: MCPServerUpdateBody) async throws -> MCPServerConfig {
+        struct Response: Decodable {
+            let server: MCPServerConfig
+        }
+        let response: Response = try await post("/api/mcp", body: body)
+        return response.server
+    }
+
+    func updateMCPServer(name: String, body: MCPServerUpdateBody) async throws -> MCPServerConfig {
+        struct Response: Decodable {
+            let server: MCPServerConfig
+        }
+        var components = try components("/api/mcp/\(name)")
+        components.percentEncodedPath = "/api/mcp/\(name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name)"
+        let response: Response = try await request(components, method: "POST", body: body)
+        return response.server
+    }
+
+    func setMCPServerEnabled(name: String, enabled: Bool) async throws -> MCPServerConfig {
+        struct Response: Decodable {
+            let server: MCPServerConfig
+        }
+        let action = enabled ? "enable" : "disable"
+        var components = try components("/api/mcp/\(name)/\(action)")
+        components.percentEncodedPath = "/api/mcp/\(name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name)/\(action)"
+        let response: Response = try await request(components, method: "POST", body: EmptyBody())
+        return response.server
+    }
+
+    func deleteMCPServer(name: String) async throws {
+        var components = try components("/api/mcp/\(name)")
+        components.percentEncodedPath = "/api/mcp/\(name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name)"
+        let _: EmptyResponse = try await request(components, method: "DELETE")
+    }
+
+    func hermesSessions() async throws -> [HermesSessionSummary] {
+        let data = try await dataRequest(try components("/api/sessions"))
+        let object = try JSONSerialization.jsonObject(with: data)
+        return extractHermesSessions(from: object)
+    }
+
+    func chatHistoryStorage() async throws -> ChatHistoryStorage {
+        try await get("/api/sessions/storage")
+    }
+
+    func hermesSessionMessages(sessionId: String) async throws -> [HermesSessionMessage] {
+        var components = try components("/api/sessions/\(sessionId)/messages")
+        components.percentEncodedPath = "/api/sessions/\(sessionId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionId)/messages"
+        let response: HermesSessionMessagesResponse = try await request(components)
+        return response.messages
+    }
+
+    func deleteHermesSession(sessionId: String) async throws {
+        var components = try components("/api/sessions/\(sessionId)")
+        components.percentEncodedPath = "/api/sessions/\(sessionId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionId)"
+        let _: EmptyResponse = try await request(components, method: "DELETE")
+    }
+
+    func renameHermesSession(sessionId: String, title: String) async throws {
+        var components = try components("/api/sessions/\(sessionId)/rename")
+        components.percentEncodedPath = "/api/sessions/\(sessionId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionId)/rename"
+        let _: EmptyResponse = try await request(components, method: "POST", body: ["title": title])
+    }
+
+    private func get<T: Decodable>(_ path: String) async throws -> T {
+        try await request(try components(path))
+    }
+
+    private func post<T: Decodable, Body: Encodable>(_ path: String, body: Body) async throws -> T {
+        try await request(try components(path), method: "POST", body: body)
+    }
+
+    private func components(_ path: String) throws -> URLComponents {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            throw WorkspaceAPIError.invalidURL
+        }
+        components.path = path
+        return components
+    }
+
+    private func request<T: Decodable>(_ components: URLComponents, method: String = "GET", body: (some Encodable)? = Optional<String>.none) async throws -> T {
+        let data = try await dataRequest(components, method: method, body: body)
+        if T.self == EmptyResponse.self {
+            return EmptyResponse() as! T
+        }
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    private func dataRequest(_ components: URLComponents, method: String = "GET", body: (some Encodable)? = Optional<String>.none) async throws -> Data {
+        guard let url = components.url else { throw WorkspaceAPIError.invalidURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "accept")
+        applyAuth(to: &request)
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.httpBody = try JSONEncoder().encode(AnyEncodable(body))
+        }
+        let (data, response) = try await session.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            throw WorkspaceAPIError.badStatus(status, String(data: data, encoding: .utf8) ?? "")
+        }
+        return data
+    }
+
+    private func applyAuth(to request: inout URLRequest) {
+        let token = authToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { return }
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "authorization")
+    }
+
+    private func authQueryItems(_ items: [URLQueryItem]) -> [URLQueryItem] {
+        let token = authToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { return items }
+        return items + [URLQueryItem(name: "token", value: token)]
+    }
+}
+
+struct EmptyResponse: Codable {}
+
+struct GoogleAuthConfig: Decodable {
+    let enabled: Bool
+    let clientIds: GoogleOAuthClientIDs
+    let bootstrapRequired: Bool
+    let adminLinked: Bool
+    let approvalMode: String
+    let requiresSecureTransport: Bool
+
+    var appleClientID: String? {
+        #if os(iOS)
+        clientIds.ios
+        #else
+        clientIds.macos
+        #endif
+    }
+}
+struct GoogleOAuthClientIDs: Decodable {
+    let desktop: String?
+    let macos: String?
+    let ios: String?
+    let android: String?
+    let web: String?
+}
+struct GoogleClientLoginResponse: Decodable {
+    let status: String
+    let token: String?
+    let expiresAt: String?
+    let requestId: String?
+    let requestToken: String?
+    var user: GoogleAccountIdentity? = nil
+}
+struct GoogleAccountIdentity: Codable, Equatable {
+    let id: String
+    let email: String
+    let displayName: String
+    var username: String? = nil
+    var credentialsConfigured: Bool? = nil
+    var googleLinked: Bool? = nil
+}
+struct CodmesAccountResponse: Decodable { let user: GoogleAccountIdentity }
+struct GoogleClientProfileResponse: Decodable {
+    let user: GoogleAccountIdentity
+    let setupRequired: Bool
+    let profile: ServerProfile?
+}
+private struct GoogleClientLoginRequest: Encodable {
+    let idToken: String
+    let deviceId: String
+    let deviceName: String
+    let username: String?
+    let password: String?
+}
+private struct GoogleClientStatusRequest: Encodable {
+    let requestId: String
+    let requestToken: String
+}
+struct ServerProfile: Decodable, Identifiable {
+    let id: String
+    let name: String
+    let locked: Bool
+}
+struct ServerProfilesResponse: Decodable { let profiles: [ServerProfile] }
+struct ServerProfileResponse: Decodable { let profile: ServerProfile }
+struct OpenServerProfileResponse: Decodable { let token: String; let profile: ServerProfile }
+private struct ServerProfilePINResponse: Decodable { let locked: Bool }
+private struct ArchiveServerProfileResponse: Decodable { let deleted: Bool }
+
+private struct ServerProfileRequest: Encodable { let name: String; let pin: String }
+private struct OpenServerProfileRequest: Encodable { let pin: String }
+private struct ServerProfilePINRequest: Encodable { let currentPin: String; let pin: String }
+private struct CurrentServerProfilePINRequest: Encodable { let currentPin: String }
+
+private struct MarketplaceMutationBody: Encodable {
+    let version: String?
+    let acceptedPermissions: [String]
+}
+
+private struct EmptyRequestBody: Encodable {}
+
+private struct PluginMCPToolConsentBody: Encodable {
+    let approvedTools: [String]
+}
+
+private struct PluginCollectionWriteBody<Item: Encodable>: Encodable {
+    let item: Item
+}
+
+struct CodmesPDFImportResponse: Codable {
+    let ok: Bool
+    let path: String
+    let requestedPath: String
+    let renamed: Bool
+    let annotationsImported: Bool
+}
+
+struct CodmesPDFExportResponse: Codable {
+    let ok: Bool
+    let fileName: String
+    let dataBase64: String
+}
+
+private struct CodmesPDFImportBody: Encodable {
+    let path: String
+    let pdfDataBase64: String
+    let codmesDataBase64: String?
+}
+
+private struct CodmesPDFExportBody: Encodable {
+    let name: String
+    let pdfDataBase64: String
+    let codmesDataBase64: String
+}
+
+private struct CodmesPDFPackageImportBody: Encodable {
+    let path: String
+    let packageDataBase64: String
+}
+
+private struct ChunkedUploadStartBody: Encodable {
+    let path: String
+    let size: Int64
+}
+
+private struct ChunkedUploadChunkBody: Encodable {
+    let uploadId: String
+    let offset: Int64
+    let dataBase64: String
+}
+
+private struct ChunkedUploadIDBody: Encodable {
+    let uploadId: String
+}
+
+private struct CodeTaskCreateBody: Encodable {
+    let scopePath: String
+    let instruction: String
+    let maxFiles: Int
+    let maxSearchResults: Int
+}
+
+private struct ApprovedBody: Encodable {
+    let approved: Bool
+}
+
+private struct EmptyBody: Encodable {}
+
+private struct PatchApplyBody: Encodable {
+    let approved: Bool
+    let runChecksAfterApply: Bool
+    let checksApproved: Bool
+}
+
+private struct RejectPatchBody: Encodable {
+    let reason: String
+}
+
+struct AnyEncodable: Encodable {
+    let encodeBody: (Encoder) throws -> Void
+
+    init(_ value: some Encodable) {
+        encodeBody = value.encode
+    }
+
+    func encode(to encoder: Encoder) throws {
+        try encodeBody(encoder)
+    }
+}
+
+private func extractHermesModels(from object: Any) -> [HermesModelOption] {
+    var models: [HermesModelOption] = []
+    collectHermesModels(from: object, provider: nil, into: &models)
+    var seen = Set<String>()
+    return models.filter {
+        !$0.id.isEmpty
+            && $0.id != "<null>"
+            && !$0.model.isEmpty
+            && $0.model != "<null>"
+            && seen.insert($0.id).inserted
+    }
+}
+
+private func collectHermesModels(from object: Any, provider: String?, into models: inout [HermesModelOption]) {
+    if let value = stringValue(object) {
+        models.append(HermesModelOption(label: provider.map { "\($0) / \(value)" } ?? value, provider: provider, model: value))
+        return
+    }
+    if let array = object as? [Any] {
+        for item in array {
+            collectHermesModels(from: item, provider: provider, into: &models)
+        }
+        return
+    }
+    guard let dict = object as? [String: Any] else { return }
+    let rawProvider = stringValue(dict["provider"])
+        ?? stringValue(dict["provider_id"])
+        ?? stringValue(dict["providerId"])
+    let nameString = stringValue(dict["name"])
+    let hasModels = dict["models"] != nil
+    let providerFromName = hasModels ? nameString : nil
+    let nextProvider = rawProvider ?? providerFromName ?? provider
+
+    let rawModel = stringValue(dict["model"])
+        ?? stringValue(dict["model_id"])
+        ?? stringValue(dict["modelId"])
+    let idString = stringValue(dict["id"])
+    let modelFromId = !hasModels ? idString : nil
+
+    if let model = rawModel ?? modelFromId {
+        let rawLabel = stringValue(dict["label"])
+            ?? stringValue(dict["display_name"])
+            ?? stringValue(dict["displayName"])
+        let nameLabel = (nameString != nil && nameString != nextProvider) ? nameString : nil
+        let formattedFallback: String? = nextProvider.map { "\($0) / \(model)" }
+        let label: String = rawLabel ?? nameLabel ?? formattedFallback ?? model
+
+        models.append(HermesModelOption(label: label, provider: nextProvider, model: model))
+    }
+    for key in ["models", "options", "model_options", "modelOptions", "items", "providers"] {
+        if let nested = dict[key] {
+            collectHermesModels(from: nested, provider: nextProvider, into: &models)
+        }
+    }
+}
+
+private func extractHermesSessions(from object: Any) -> [HermesSessionSummary] {
+    var sessions: [HermesSessionSummary] = []
+    collectHermesSessions(from: object, into: &sessions)
+    var seen = Set<String>()
+    return sessions.filter {
+        !$0.id.isEmpty
+            && $0.id != "<null>"
+            && seen.insert($0.id).inserted
+    }
+}
+
+private func collectHermesSessions(from object: Any, into sessions: inout [HermesSessionSummary]) {
+    if let array = object as? [Any] {
+        for item in array {
+            collectHermesSessions(from: item, into: &sessions)
+        }
+        return
+    }
+    guard let dict = object as? [String: Any] else { return }
+    if let id = stringValue(dict["id"])
+        ?? stringValue(dict["session_id"])
+        ?? stringValue(dict["sessionId"])
+        ?? stringValue(dict["stored_session_id"])
+        ?? stringValue(dict["storedSessionId"]) {
+        if boolValue(dict["archived"]) == true {
+            return
+        }
+        let preview = stringValue(dict["preview"])
+        let messageCount = intValue(dict["message_count"]) ?? intValue(dict["messageCount"]) ?? 0
+        let explicitTitle = stringValue(dict["display_name"])
+            ?? stringValue(dict["displayName"])
+            ?? stringValue(dict["title"])
+            ?? stringValue(dict["name"])
+            ?? stringValue(dict["summary"])
+        let title = explicitTitle
+            ?? preview
+            ?? fallbackSessionTitle(model: stringValue(dict["model"]), id: id)
+        let updatedAt = stringValue(dict["updated_at"])
+            ?? stringValue(dict["updatedAt"])
+            ?? stringValue(dict["modified_at"])
+            ?? stringValue(dict["modifiedAt"])
+            ?? stringValue(dict["last_active"])
+            ?? stringValue(dict["lastActive"])
+        let projectObject = dict["project"] as? [String: Any]
+        let workspaceObject = dict["workspace"] as? [String: Any]
+        let projectIdCandidates: [Any?] = [
+            dict["project_id"], dict["projectId"], dict["workspace_id"], dict["workspaceId"],
+            projectObject?["id"], workspaceObject?["id"]
+        ]
+        let projectTitleCandidates: [Any?] = [
+            dict["project_title"], dict["projectTitle"], dict["workspace_title"], dict["workspaceTitle"],
+            dict["cwd"], dict["git_repo_root"], dict["gitRepoRoot"],
+            projectObject?["title"], projectObject?["name"], workspaceObject?["title"], workspaceObject?["name"]
+        ]
+        let projectId = projectIdCandidates.compactMap { stringValue($0) }.first
+        let projectTitle = projectTitleCandidates.compactMap { stringValue($0) }.first
+        let folderId = stringValue(dict["folder_id"]) ?? stringValue(dict["folderId"])
+        let folderTitle = stringValue(dict["folder_title"]) ?? stringValue(dict["folderTitle"])
+        let pinned = boolValue(dict["pinned"]) ?? false
+        let storageBytes = Int64(intValue(dict["storageBytes"]) ?? intValue(dict["storage_bytes"]) ?? 0)
+        if messageCount > 0 || preview != nil || explicitTitle != nil {
+            sessions.append(
+                HermesSessionSummary(
+                    id: id,
+                    title: title,
+                    updatedAt: updatedAt,
+                    provider: stringValue(dict["provider"])
+                        ?? stringValue(dict["provider_id"])
+                        ?? stringValue(dict["providerId"]),
+                    model: stringValue(dict["model"]),
+                    folderId: folderId,
+                    folderTitle: folderTitle,
+                    projectId: projectId,
+                    projectTitle: projectTitle,
+                    pinned: pinned,
+                    storageBytes: storageBytes
+                )
+            )
+        }
+    }
+    for key in ["sessions", "items", "data", "results"] {
+        if let nested = dict[key] {
+            collectHermesSessions(from: nested, into: &sessions)
+        }
+    }
+}
+
+private func stringValue(_ value: Any?) -> String? {
+    guard let value, !(value is NSNull) else { return nil }
+
+    if let value = value as? String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed == "<null>" ? nil : trimmed
+    }
+
+    if let value = value as? NSNumber {
+        return value.stringValue
+    }
+
+    return nil
+}
+
+private func intValue(_ value: Any?) -> Int? {
+    if let value = value as? Int { return value }
+    if let value = value as? NSNumber { return value.intValue }
+    if let value = stringValue(value) { return Int(value) }
+    return nil
+}
+
+private func boolValue(_ value: Any?) -> Bool? {
+    if let value = value as? Bool { return value }
+    if let value = value as? NSNumber { return value.boolValue }
+    if let value = stringValue(value) {
+        switch value.lowercased() {
+        case "true", "1", "yes": return true
+        case "false", "0", "no": return false
+        default: return nil
+        }
+    }
+    return nil
+}
+
+private func fallbackSessionTitle(model: String?, id: String) -> String {
+    if let model {
+        return "Chat with \(model)"
+    }
+    if let date = generatedSessionDate(id) {
+        return "Chat \(date)"
+    }
+    return "Untitled chat"
+}
+
+private func generatedSessionDate(_ id: String) -> String? {
+    let pattern = #"^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})_"#
+    guard let regex = try? NSRegularExpression(pattern: pattern),
+          let match = regex.firstMatch(in: id, range: NSRange(id.startIndex..., in: id)),
+          match.numberOfRanges >= 7 else {
+        return nil
+    }
+    let parts = (1..<7).compactMap { index -> String? in
+        guard let range = Range(match.range(at: index), in: id) else { return nil }
+        return String(id[range])
+    }
+    guard parts.count == 6 else { return nil }
+    return "\(parts[0])-\(parts[1])-\(parts[2]) \(parts[3]):\(parts[4])"
+}

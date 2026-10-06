@@ -14,6 +14,10 @@
 - 더 풍부한 text box 서식
 - 대규모 PDF의 thumbnail/cache 성능 측정과 개선
 - PDF 표준 annotation과의 선택적 round-trip
+- Android/Windows의 서버 없는 PDF 원본 렌더링과 PDF+필기 묶음의 독립 최초 등록·교체
+- Android/Windows 64 MiB 초과 파일의 스트리밍 읽기
+- 외부 declarative plugin의 upstream 첨부파일별 동기화 provider와 오프라인 편집
+- 대규모 파일 목록의 delta/pagination 동기화와 실제 저용량 기기 검증
 
 ## Code와 Runtime
 

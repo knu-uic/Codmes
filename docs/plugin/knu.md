@@ -309,7 +309,7 @@ curl http://127.0.0.1:8787/api/plugins
 ### Xcode: macOS 앱 실행
 
 ```sh
-open "$CODMES_REPO/client/apple/Codmes.xcodeproj"
+open "$CODMES_REPO/apps/client/apple/Codmes.xcodeproj"
 ```
 
 Xcode 상단에서 scheme을 고른 뒤 실행한다.

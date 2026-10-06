@@ -1,0 +1,23 @@
+.profile-manager-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.profile-create { margin-bottom: 16px; }
+.profile-list { display: grid; gap: 12px; }
+.profile-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.profile-controls input {
+  min-width: 150px;
+  flex: 1;
+  border: 1px solid #d5ded8;
+  border-radius: 9px;
+  padding: 10px 12px;
+  background: #fafcfb;
+  color: #17231d;
+}
+.profile-controls input[type="password"] { max-width: 170px; }
+.profile-item .list-head { margin-bottom: 12px; }
+.profile-item .list-head h3 { margin-bottom: 4px; }

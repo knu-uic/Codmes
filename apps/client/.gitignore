@@ -1,0 +1,12 @@
+builds/
+apple/.build/
+apple/Codmes.xcodeproj/project.xcworkspace/xcuserdata/
+apple/Codmes.xcodeproj/xcuserdata/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+windows/bin/
+windows/obj/
+windows/tests/bin/
+windows/tests/obj/

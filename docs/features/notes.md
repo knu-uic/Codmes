@@ -26,6 +26,82 @@ iOS/iPadOS와 macOS 차이를 구분한다.
    `- annotation-ocr/
 ```
 
+Apple 클라이언트(macOS/iOS/iPadOS)는 `Application Support/Codmes/LocalWorkspaces/v1`
+안에 원본·필기·파일 목록·전송 대기 journal을 영구 보관한다. 서버 없이도 생성,
+편집, 첨부, 이동, PDF 필기 및 `.codmespdf` 가져오기·내보내기가 가능하다. 서버
+연결 시 동일 Codmes 계정의 profile 저장소와 양방향 동기화한다. 다른 기기는 이
+서버 사본을 내려받아 사용할 수 있으며 오프라인 변경분은 연결 복구 후 재전송된다.
+양쪽 수정은 SHA-256 revision과 인과 versionId로 감지한다. 텍스트의 다른 줄·같은
+줄의 다른 단어 변경을 합친다. PDF 필기는 객체/필기 ID와 속성별로 합쳐 같은 박스의
+이동과 글자 수정도 함께 반영한다. 같은 단위 충돌만 최신 **로컬 수정**이 우선하며
+도착 순서가 기준이 아니다. 별도 충돌 파일이나 이력·복원 화면은 만들지 않는다.
+일반 편집기의 되돌리기·다시 실행을 제공하며, 되돌린 내용도 새 수정으로 자동 저장한다.
+최근 편집만 메모리에 제한적으로 유지한다. Apple/Android 텍스트와 공통 PDF 필기는
+최대 80단계·8 MiB, Windows 텍스트는 운영체제의 80단계 undo 버퍼를 사용한다.
+편집 세션을 닫거나 다른 기기에서 변경된 내용을 적용하면 기존 undo 기록을 비운다.
+PDF 원본 binary 교체·페이지 구조 변경은 원본 전체 단위로 처리한다.
+로그인 전 자료는 Connection에서 현재 계정으로 명시적으로 복사하며 원본을 유지한다.
+Apple의 전체 로컬 workspace와 Android/Windows의 기존 텍스트·PDF 필기 편집 경로는
+공통 `merge-modified-v2` 규격을 사용한다. Android/Windows에 별도 durable snapshot
+journal을 추가했으나 전체 파일 트리/원본 PDF 표시·기타 기능의 완전한 오프라인화까지
+구현한 것은 아니다. 자세한 제한 및 공통 규격은 `docs/server/api-contract.md`를 참고한다.
+
+### 기기별 선택 동기화
+
+Apple Notes/Code 파일·폴더 행 오른쪽의 저장 아이콘을 눌러 로컬 / 서버 / 동기화를
+선택한다. 저장 아이콘과 `...`는 행 오른쪽 끝에 정렬하고 드롭다운 아래 화살표는
+표시하지 않는다. 파일·폴더별 설정은 `...`/context menu에서도 변경할 수 있다.
+동기화 중에는 메뉴바와 문서 제목 오른쪽에 작은 로딩 표시만 보여 주고,
+본문과 상단에 별도의 동기화 상태 설명 바를 표시하지 않는다.
+파일·폴더 생성, 이름 변경, 복사 및 드래그 이동 실패는 동기화 상태와 별개의
+팝업으로 안내한다. 같은 이름이 있으면 `test(1).md`처럼 사용 가능한 이름을
+입력칸에 제안한다. 이름은 직접 수정할 수 있고 `예`를 누르면 해당 이름으로
+생성·이동·복사·이름 변경을 다시 실행한다. `아니오`는 작업을 취소한다.
+이동 시 들어오는 자료만 새 이름으로 옮기며 기존 자료는 덮어쓰지 않는다.
+여러 항목은 중복 검사를 모두 통과한 뒤 작업하며, 실패한 다중 선택은 유지한다.
+기본값은 동기화이며 Notes/Code 플러그인 설정, 폴더, 개별 파일 순으로
+더 작은 범위가 우선한다. `상위 설정 따르기`로 명시적 설정을 해제한다. 이동 시
+기존의 실효 모드를 파일 ID에 고정해 다른 폴더의 설정으로 바뀌지 않게 한다.
+
+- 로컬: 현재 기기에서 보관·편집하며 업로드/다운로드하지 않는다. 서버의 기존 사본을
+  삭제하지 않는다. 같은 경로에 독립적으로 가져온 동일 내용의 파일이 발견되면 서버
+  ID에 연결해 동기화로 전환한다. 자동 연결을 원하지 않으면 `로컬 유지`를 선택한다.
+- 서버: 목록은 표시하지만 본문은 필요할 때만 받는다. 열린 문서·미전송 수정은
+  보호하며, 수신 확인된 변경과 닫힌 자료만 로컬 payload 정리 대상이 된다.
+- 동기화: 현재 기기에 사본을 보관하고 오프라인 편집을 연결 복구 후 전송한다.
+
+모드는 기기별 journal에 저장하고 서버에는 인증된 기기의 마지막 보고 상태만
+기록한다. 다른 기기의 모드나 다운로드 파일을 바꾸지 않는다. 순서는 전체 metadata
+목록 반영 → 동명 파일 검사 → 순차 전송이다. 전송 중에는 spinner, 보류·충돌은 별도
+표시한다. 공간이 부족한 자료만 보류하고 다른 자료의 처리는 계속한다.
+
+같은 이름과 경로는 후보일 뿐 동일 파일의 증거가 아니다. SHA-256 원본과 PDF 필기
+fingerprint까지 같으면 공통 ID에 연결한다. 다르면 서버 버전 사용 / 서버 덮어쓰기 /
+직접 이름 변경 / 나중에 결정 중 사용자가 선택한다. 최초 PDF 등록과 명시적 PDF
+덮어쓰기는 원본과 필기를 한 transaction으로 전송하며 두 revision을 함께 검사한다.
+자동 충돌 사본은 만들지 않는다. 일반 편집의 서로 다른 변경은 기존 단위별 병합을
+계속 사용한다.
+
+이름 중복 안내는 실제 동명 파일·폴더 충돌일 때만 표시한다. 동기화 기준 이력 누락
+등은 이름 변경이 아닌 동기화 확인으로 안내한다. 이동으로 비워진 경로에 새 파일을
+만들거나 이름을 바꿔 넣을 때는 이전 파일의 synthetic move 이력을 물려받지 않는다.
+기존 클라이언트가 만든 잘못된 기준은 서버의 해당 경로가 비어 있고 아직 연결되지
+않은 생성 작업에 한해 복구하며, 로컬 내용과 수정 순서는 유지한다.
+
+Windows/Android는 저장 모드·목록 캐시·순차 전송·기존 텍스트/필기 journal에 연결했다.
+PDF 원본의 독립 등록/공동 덮어쓰기 및 완전한 로컬 PDF 렌더링은 아직 Apple에서만
+지원한다. 두 플랫폼의 기존 byte-array 다운로드는 64 MiB를 넘는 자료를 안전하게
+보류한다. KNU 같은 외부 declarative 플러그인은 계정별 읽기 전용 화면 snapshot을
+제한적으로 cache하며, 외부 첨부 파일이나 구조화된 source의 개별 동기화·오프라인
+편집까지 지원한다는 뜻은 아니다. 그 기능에는 해당 provider의 파일/변경 규격이
+필요하다. 서버 미연결 배지는 로컬 + slashed-cloud로 표시한다.
+
+로컬 저장소는 최신 파일과 미전송 변경을 보관하고, 수신 확인된 과거 사본을 정리한다.
+동일 내용은 중복 object를 만들지 않는다. 서버는 병합 기준을 공유된 압축 블록으로
+저장하므로 작은 수정마다 전체 PDF·노트를 다시 복제하지 않는다. 장기 오프라인
+기기의 수정에 필요한 기준 자료와 삭제 tombstone은 남긴다. 따라서 저장공간 증가를
+줄이는 구조이지, 데이터 양과 무관하게 항상 일정한 공간만 사용하는 구조는 아니다.
+
 `source/original.pdf`는 OCR binary 정규화가 실제로 필요했던 PDF에만 생성되는 최초
 업로드 binary 백업이다. 현재 Notes의 PDF 경로에는 검사·정규화가 끝난 적용본이
 있다.
@@ -59,7 +135,8 @@ document state의 `source/original.pdf`에서 보존한다.
 
 context menu와 `...` menu는 copy, rename, delete를 제공한다. 길게 눌러 여러
 항목을 선택할 수 있고 선택한 file을 folder 또는 상위/root drop target으로 drag해
-함께 이동할 수 있다. 실제 file 작업은 server API가 수행한다.
+함께 이동할 수 있다. Apple 클라이언트의 file 작업은 로컬 journal에 먼저 반영하고
+서버에 동기화한다. 그 외 클라이언트의 기존 server API 작업도 유지된다.
 
 ## PDF 표시와 배율
 
@@ -298,10 +375,10 @@ file이다. 현재 LLM이 이 Markdown file을 직접 읽지는 않는다.
 
 ## 관련 코드
 
-- PDF UI와 입력: `client/apple/Sources/Codmes/PDFWorkspaceView.swift`
-- annotation model: `client/apple/Sources/Codmes/Models.swift`
-- file tree: `client/apple/Sources/Codmes/FileSectionView.swift`
-- API client: `client/apple/Sources/Codmes/WorkspaceAPI.swift`
+- PDF UI와 입력: `apps/client/apple/Sources/Codmes/PDFWorkspaceView.swift`
+- annotation model: `apps/client/apple/Sources/Codmes/Models.swift`
+- file tree: `apps/client/apple/Sources/Codmes/FileSectionView.swift`
+- API client: `apps/client/apple/Sources/Codmes/WorkspaceAPI.swift`
 - annotation/file API: `server/index.mjs`
 - document state: `server/lib/document-ingest.mjs`
 - search: `server/lib/search-service.mjs`

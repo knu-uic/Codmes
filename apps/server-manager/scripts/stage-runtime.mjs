@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const managerRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(managerRoot, "../..");
-const stageRoot = path.join(managerRoot, "runtime");
+const stageRoot = path.join(managerRoot, "builds", "runtime");
 const appRoot = path.join(stageRoot, "codmes");
 const binRoot = path.join(stageRoot, "bin");
 const pythonBuildRoot = path.join(stageRoot, ".python-build");
@@ -141,7 +141,51 @@ async function stagePortablePostgres() {
   const destination = path.join(appRoot, "bundled", "postgres");
   await fs.rm(destination, { recursive: true, force: true });
   await fs.cp(resolvedSource, destination, { recursive: true, dereference: true });
+  if (process.platform === "darwin") {
+    await relocateMacPostgres(destination);
+    for (const executable of ["psql", "initdb", "createdb", "pg_dump"]) {
+      await run(path.join(destination, "bin", executable), ["--version"], appRoot);
+    }
+  }
   console.log(`[server-manager] staged PostgreSQL + pgvector + pg_trgm from ${resolvedSource}`);
+}
+
+async function relocateMacPostgres(root) {
+  const libraries = new Set(await fs.readdir(path.join(root, "lib")));
+  for (const directory of ["bin", "lib"]) {
+    for (const file of await listFiles(path.join(root, directory))) {
+      if (directory === "lib" && !/\.(?:dylib|so)$/.test(file)) continue;
+      const output = await runCaptureAllowFailure("otool", ["-L", file], appRoot);
+      if (!output) continue; // Scripts and data files are not Mach-O binaries.
+      const dependencies = output.split("\n").slice(1)
+        .map((line) => line.trim().split(" (")[0])
+        .filter(Boolean);
+      for (const dependency of dependencies) {
+        if (!path.isAbsolute(dependency) || dependency.startsWith("/usr/lib/") || dependency.startsWith("/System/Library/")) continue;
+        const library = path.basename(dependency);
+        if (!libraries.has(library)) {
+          throw new Error(`PostgreSQL binary has an unbundled library dependency: ${file} -> ${dependency}`);
+        }
+        const relative = path.relative(path.dirname(file), path.join(root, "lib", library));
+        const replacement = `@loader_path/${relative}`;
+        await run("install_name_tool", [file.endsWith(".dylib") && path.basename(file) === library ? "-id" : "-change", ...(
+          file.endsWith(".dylib") && path.basename(file) === library
+            ? [replacement, file]
+            : [dependency, replacement, file]
+        )], appRoot);
+      }
+    }
+  }
+}
+
+async function listFiles(directory) {
+  const files = [];
+  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await listFiles(entryPath));
+    else if (entry.isFile()) files.push(entryPath);
+  }
+  return files;
 }
 
 async function requireFile(filePath, label) {
@@ -165,5 +209,16 @@ function runCapture(command, args, cwd, env = process.env) {
     child.stdout.on("data", (chunk) => { output += chunk; });
     child.on("error", reject);
     child.on("exit", (code) => code === 0 ? resolve(output) : reject(new Error(`${command} exited with ${code}`)));
+  });
+}
+
+function runCaptureAllowFailure(command, args, cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd, stdio: ["ignore", "pipe", "ignore"] });
+    let output = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { output += chunk; });
+    child.on("error", reject);
+    child.on("exit", (code) => resolve(code === 0 ? output : ""));
   });
 }

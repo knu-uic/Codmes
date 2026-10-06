@@ -216,6 +216,7 @@ export async function installMarketplacePlugin(workspaceRoot, pluginId, options 
     }
     const result = await installPlugin(workspaceRoot, temporary, {
       packageSha256: digest,
+      workspaceRoots: options.workspaceRoots,
       acceptedPermissions: [...new Set([...acceptedBefore, ...plugin.permissions])],
       source: {
         type: "marketplace",

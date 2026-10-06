@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Server Manager isolated UI fixture</title></head>
+<body><div id="app"></div><script type="module">
+// Browser-only fixture. No native command, OAuth, real account or disk operation.
+import {mockIPC} from "@tauri-apps/api/mocks";
+const params=new URL(location.href).searchParams;
+const empty = params.has("empty");
+const snapshot={settings:{workspaceRoot:"/isolated/workspace",host:"127.0.0.1",port:8787,postgresPort:55432,startOnLaunch:true,launchAtLogin:false,showDockIcon:true,tlsCertPath:"",tlsKeyPath:""},status:{running:true,managed:true,pid:123,url:"http://127.0.0.1:8787",workspaceRoot:"/isolated/workspace",startedAt:0,message:"test fixture"},logs:[],runtimeReady:true,runtimeMessage:"isolated mock"};
+if(params.has("recovery")){snapshot.runtimeReady=false;snapshot.runtimeMessage="중단된 초기화가 있으나 서버 프로세스가 실행 중입니다. 해당 서버를 종료한 뒤 다시 실행하세요. 자료는 변경하지 않았습니다.";snapshot.status.managed=false;}
+mockIPC((cmd,payload)=>{
+  if(cmd==="manager_snapshot")return snapshot;
+  if(cmd==="manager_google_oauth_config")return {configured:true};
+  if(cmd==="manager_google_server_config")return {enabled:true,bootstrapRequired:empty};
+  if(cmd==="manager_server_setup")return {existingServer:!empty,maskedAccount:empty?null:{id:"t***69",email:"t***69@example.com"},resetAllowed:true,resetUnavailableReason:null};
+  if(cmd==="manager_fresh_start")throw new Error("UI fixture: 취소되었습니다. 실제 서버는 변경되지 않았습니다.");
+  if(cmd==="manager_google_cancel_sign_in")return;
+  throw new Error(`UI fixture blocks native command: ${cmd}`);
+});
+await import("../src/main.ts");
+</script></body></html>

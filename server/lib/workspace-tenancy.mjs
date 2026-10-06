@@ -27,13 +27,18 @@ export class WorkspaceTenancyStore {
     return path.join(this.dataRoot, "workspaces", storageKey, "files");
   }
 
-  async createWorkspace(user, { name, adoptLegacy = false }) {
+  async allWorkspaceRoots() {
+    const result = await this.database.query("SELECT storage_key, root_path FROM codmes_workspaces");
+    return [...new Set(result.rows.map((row) => this.workspaceRoot(row.storage_key, row.root_path)))];
+  }
+
+  async createWorkspace(user, { name, adoptLegacy = false }, queryClient = null) {
     const workspaceName = String(name || "").normalize("NFKC").trim().slice(0, 120);
     if (!workspaceName) throw Object.assign(new Error("Workspace name is required."), { status: 400 });
     const id = randomUUID();
     const storageKey = randomUUID();
     const rootPath = adoptLegacy && this.legacyWorkspaceRoot ? this.legacyWorkspaceRoot : null;
-    await this.database.transaction(async (client) => {
+    const insert = async (client) => {
       await client.query(
         `INSERT INTO codmes_workspaces(id, owner_user_id, name, storage_key, root_path)
          VALUES ($1, $2, $3, $4, $5)`,
@@ -44,20 +49,22 @@ export class WorkspaceTenancyStore {
          VALUES ($1, $2, 'owner')`,
         [id, user.id]
       );
-    });
+    };
+    if (queryClient) await insert(queryClient);
+    else await this.database.transaction(insert);
     const root = this.workspaceRoot(storageKey, rootPath);
     await Promise.all(WORKSPACE_DIRECTORIES.map((directory) => fs.mkdir(path.join(root, directory), { recursive: true })));
     return { id, name: workspaceName, role: "owner", root };
   }
 
-  async listForUser(userId) {
+  async listForUser(userId, { includeDeleted = false } = {}) {
     const result = await this.database.query(
-      `SELECT w.id, w.name, w.storage_key, w.root_path, m.role, w.created_at, w.updated_at
+      `SELECT w.id, w.name, w.storage_key, w.root_path, m.role, w.created_at, w.updated_at, w.deleted_at
          FROM codmes_workspace_members m
          JOIN codmes_workspaces w ON w.id = m.workspace_id
-        WHERE m.user_id = $1
+        WHERE m.user_id = $1 AND ($2::boolean OR w.deleted_at IS NULL)
         ORDER BY w.created_at, w.id`,
-      [userId]
+      [userId, includeDeleted]
     );
     return result.rows.map((row) => ({
       id: row.id,
@@ -65,16 +72,17 @@ export class WorkspaceTenancyStore {
       role: row.role,
       root: this.workspaceRoot(row.storage_key, row.root_path),
       createdAt: row.created_at,
-      updatedAt: row.updated_at
+      updatedAt: row.updated_at,
+      deletedAt: row.deleted_at
     }));
   }
 
-  async resolveForUser(userId, workspaceId, requiredRole = "viewer") {
-    const result = await this.database.query(
+  async resolveForUser(userId, workspaceId, requiredRole = "viewer", queryClient = this.database) {
+    const result = await queryClient.query(
       `SELECT w.id, w.name, w.storage_key, w.root_path, m.role
          FROM codmes_workspace_members m
          JOIN codmes_workspaces w ON w.id = m.workspace_id
-        WHERE m.user_id = $1 AND w.id = $2`,
+        WHERE m.user_id = $1 AND w.id = $2 AND w.deleted_at IS NULL`,
       [userId, workspaceId]
     );
     const row = result.rows[0];
@@ -91,7 +99,7 @@ export class WorkspaceTenancyStore {
 
   async resolveByIdInternal(workspaceId) {
     const result = await this.database.query(
-      "SELECT id, name, storage_key, root_path FROM codmes_workspaces WHERE id = $1",
+      "SELECT id, name, storage_key, root_path FROM codmes_workspaces WHERE id = $1 AND deleted_at IS NULL",
       [workspaceId]
     );
     const row = result.rows[0];

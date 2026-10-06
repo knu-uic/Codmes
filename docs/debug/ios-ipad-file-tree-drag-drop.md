@@ -29,6 +29,21 @@ drag preview가 보인다는 것은 출발점만 정상이라는 뜻이다. fold
 - toolbar/root 영역도 drop target으로 만들어 폴더 밖으로 이동할 수 있게 한다.
 - 선택 mode에서는 선택된 여러 path를 한 drag payload로 전달한다.
 
+### macOS 폴더 드롭 회귀 (2026-10-06)
+
+폴더의 drop handler가 파일명/아이콘 content에만 붙어 있어 펼침 버튼과 우측
+메뉴 영역은 drop 대상이 아니었다. context menu는 바깥 행에, drag source는
+안쪽 content에 붙어 별도의 interaction 계층도 겹쳤다. macOS는 전용 workspace
+payload를 등록하면서도 drop에서는 일반 UTF-8 text/NSString 변환에 의존했다.
+
+- context menu와 drag source는 같은 파일 content에 붙이고 폴더 행 전체를 drop
+  대상으로 만든다. 우측 저장 모드와 `...`의 정렬은 유지한다.
+- macOS folder/root는 모두 `com.codmes.workspace-item` data representation을
+  직접 decode하는 공통 delegate를 사용한다. 일반 text는 이동 요청으로 받지 않는다.
+- `dropUpdated`는 명시적으로 move를 제안하고, drop 완료 시 강조를 해제한다.
+- 전용 provider의 한글 PDF 경로·다중 경로 round trip 및 일반 text 거부를
+  `FileTreeDragTests`로 검사한다.
+
 ```text
 GET   /api/tree?root=notes&recursive=true
 PATCH /api/file/move
@@ -62,7 +77,7 @@ curl 'http://127.0.0.1:8787/api/tree?root=notes&recursive=true'
 
 코드 위치:
 
-- `client/apple/Sources/Codmes/FileSectionView.swift`
-- `client/apple/Sources/Codmes/WorkspaceStore.swift`
-- `client/apple/Sources/Codmes/WorkspaceAPI.swift`
+- `apps/client/apple/Sources/Codmes/FileSectionView.swift`
+- `apps/client/apple/Sources/Codmes/WorkspaceStore.swift`
+- `apps/client/apple/Sources/Codmes/WorkspaceAPI.swift`
 - `server/index.mjs`

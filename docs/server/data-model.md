@@ -45,6 +45,10 @@
 |- memory/
 |- skills/
 |- plugins/
+|- sync-catalog.json        canonical file IDs and per-device reported modes
+|- sync-bases/              shared/compressed immutable synchronization bases
+|- sync-v2/                 causal operation journals and projected state
+|- sync-history/            legacy bases, migrated lazily when read
 |- tool-modes/
 `- audit/
 ```
@@ -71,6 +75,22 @@
 `.codmes/index/thumbnails`의 파일명은 경로/query 문자열 자체가 아니라 SHA-256
 render identity다. 긴 한글 경로를 base64 파일명으로 직접 사용하면 macOS 파일명
 제한을 넘을 수 있으므로 되돌리지 않는다.
+
+## 클라이언트 원본과 계정
+
+Apple의 로컬 원본·필기·미전송 journal은
+`Application Support/Codmes/LocalWorkspaces/v1/<scope-hash>/` 아래
+`state.json`과 내용 해시 기반 `objects/`로 보관한다. 서버 URL·프로필 UUID별 저장소와
+비로그인 `device-local` 저장소를 분리한다. 로그인만으로 비로그인 자료를 다른
+계정에 자동 이전하지 않는다. 기기별 모드는 해당 journal이 기준이며 서버 catalog의
+device 상태는 마지막 보고값이다. 다른 기기의 선택으로 로컬 사본을 삭제하지 않는다.
+
+계정·프로필·기기 등록·승인·세션은 서버의 PostgreSQL에 저장한다. Codmes 계정 UUID가
+자료 소유자이고 Google `sub`는 연결 가능한 인증 수단이다. 평문 비밀번호는 보관하지
+않으며 검증용 scrypt 해시를 사용한다. 최신 파일과 미전송 변경은 원본이고, 장기
+오프라인 병합에 필요한 기준 자료도 임의 삭제하면 안 된다. 과거 전체 사본은 읽을 때
+검증 후 공유 블록 형식으로 이전한다. 사용자용 버전 브라우저는 없고 편집기의 제한된
+메모리 Undo/Redo를 사용한다.
 
 ## PDF annotation 핵심
 
