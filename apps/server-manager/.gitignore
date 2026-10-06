@@ -1,7 +1,4 @@
-dist/
-.tools/
-runtime/*
-!runtime/.gitkeep
+builds/
 src-tauri/target/
 src-tauri/gen/
 src-tauri/icons/android/

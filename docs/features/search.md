@@ -134,4 +134,4 @@ semantic reranking은 구현되지 않았다.
 - `server/workers/document-ingest/extract_document.py`
 - `server/workers/document-ingest/ocr_vision.swift`
 - `server/workers/document-ingest/normalize_pdf.py`
-- `client/apple/Sources/Codmes/SearchView.swift`
+- `apps/client/apple/Sources/Codmes/SearchView.swift`

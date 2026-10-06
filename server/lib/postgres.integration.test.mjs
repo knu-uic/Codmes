@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { createCodmesDatabase } from "./database.mjs";
 import { LocalAccountStore } from "./local-accounts.mjs";
 import { PostgresSearchStore } from "./postgres-search-store.mjs";
@@ -11,7 +12,7 @@ import { WorkspaceTenancyStore } from "./workspace-tenancy.mjs";
 
 const connectionString = process.env.CODMES_TEST_DATABASE_URL || "";
 
-test("PostgreSQL migrations, local accounts, and workspace isolation", {
+test("PostgreSQL migrations, Google sessions, and workspace isolation", {
   skip: !connectionString
 }, async () => {
   const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codmes-tenancy-"));
@@ -23,21 +24,15 @@ test("PostgreSQL migrations, local accounts, and workspace isolation", {
     assert.equal(health.pgvector, true);
 
     const accounts = new LocalAccountStore(database, { sessionTtlMs: 60_000 });
-    const admin = await accounts.bootstrapAdmin({
-      username: "admin",
-      displayName: "Administrator",
-      password: "test-password-123"
-    });
-    const family = await accounts.createUser(admin, {
-      username: "family",
-      displayName: "Family",
-      password: "family-password-123"
-    });
-    const loggedIn = await accounts.login({
-      username: "family",
-      password: "family-password-123",
-      deviceName: "test client"
-    });
+    const admin = (await database.query(
+      "INSERT INTO codmes_users(id, username_normalized, display_name, password_hash, role) VALUES ($1, 'admin', 'Administrator', 'google-only', 'admin') RETURNING *",
+      [randomUUID()]
+    )).rows[0];
+    const family = (await database.query(
+      "INSERT INTO codmes_users(id, username_normalized, display_name, password_hash, role) VALUES ($1, 'family', 'Family', 'google-only', 'user') RETURNING *",
+      [randomUUID()]
+    )).rows[0];
+    const loggedIn = await accounts.issueSession(family.id, { deviceName: "test client", authContext: "manager" });
     assert.equal(loggedIn.user.id, family.id);
     assert.equal((await accounts.resolveToken(loggedIn.token)).id, family.id);
 

@@ -1,0 +1,51 @@
+#app:has(.auth-stage) { display: block; overflow: auto; }
+.auth-stage { min-height: 100vh; display: grid; place-content: center; gap: 18px; padding: 30px; }
+.auth-brand { display: flex; align-items: center; gap: 12px; justify-content: center; color: #244232; }
+.auth-card { width: min(520px, calc(100vw - 64px)); padding: 32px; }
+.auth-card h1 { margin: 8px 0 10px; }
+.auth-card > .muted { line-height: 1.6; margin-bottom: 22px; }
+.auth-card .auth-form { display: grid; gap: 14px; }
+.auth-card .auth-form label { display: grid; gap: 7px; font-size: 13px; font-weight: 650; }
+.auth-card input { width: 100%; border: 1px solid #d5ded8; border-radius: 9px; padding: 11px 12px; background: #fafcfb; color: #17231d; }
+.auth-card .auth-status { min-height: 20px; margin: 18px 0 0; font-size: 12px; color: #63796b; }
+.auth-links { margin-top: 15px; }
+.text-button { padding: 4px 0; border: 0; background: none; color: #386e50; font-size: 12px; }
+.migration-steps { padding-left: 22px; color: #425a49; font-size: 13px; line-height: 1.8; }
+.client-list { margin-top: 15px; }
+.client-item .actions { margin-top: 0; }
+.client-item small { color: #819087; }
+.client-status { border-radius: 999px; padding: 5px 10px; background: #e9f1ec; color: #315f42; font-size: 11px; white-space: nowrap; }
+.client-status.pending { background: #fff3d7; color: #7b5a16; }
+.client-status.rejected { background: #fce6e2; color: #923e37; }
+.client-mode { max-width: none; }
+.client-mode .actions { align-items: center; }
+.tls-settings { display: grid; gap: 12px; padding: 16px; border: 1px solid #d5e3da; border-radius: 10px; background: #f6faf7; }
+.tls-settings h3 { margin: 0; }
+.tls-settings p { line-height: 1.6; }
+.account-actions { justify-content: flex-start; }
+.auth-loading { display: flex; align-items: center; gap: 12px; color: #425a49; font-size: 14px; }
+.auth-spinner { width: 24px; height: 24px; flex: 0 0 auto; border: 3px solid #dce9e1; border-top-color: #386e50; border-radius: 50%; animation: auth-spin 1s linear infinite; }
+@keyframes auth-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .auth-spinner { animation: none; } }
+.auth-error-details { margin-bottom: 20px; font-size: 13px; overflow-wrap: anywhere; }
+.account-confirmation { width: min(480px, calc(100vw - 48px)); border: 1px solid #d5e3da; border-radius: 16px; padding: 28px; color: #17231d; background: #fff; box-shadow: 0 16px 60px #10221933; }
+.account-confirmation::backdrop { background: #10221966; }
+.account-confirmation h2 { margin: 0 0 16px; font-size: 22px; }
+.account-confirmation p { line-height: 1.7; }
+.account-confirmation .actions { margin-top: 24px; justify-content: flex-end; }
+.security-warning { margin: 0; padding: 12px; border-radius: 9px; background: #fff3dc; color: #76501a; font-size: 12px; line-height: 1.5; }
+.google-sign-in-pending { position: fixed; z-index: 20; left: 50%; bottom: 24px; transform: translateX(-50%); display: flex; align-items: center; gap: 16px; max-width: calc(100vw - 48px); padding: 12px 14px 12px 20px; border: 1px solid #b6d9c3; border-radius: 12px; background: #fff; box-shadow: 0 10px 34px #10221933; color: #274135; font-size: 13px; }
+.google-sign-in-pending button { white-space: nowrap; }
+.server-choices { display: grid; gap: 14px; }
+.server-choice { display: grid; gap: 8px; width: 100%; padding: 20px; text-align: left; border: 1px solid #d5e3da; border-radius: 12px; background: #f4f8f5; color: #244232; }
+.server-choice strong { font-size: 17px; }
+.server-choice span { font-weight: 600; overflow-wrap: anywhere; }
+.server-choice small { font-weight: 400; line-height: 1.6; }
+.danger-choice { border-color: #e6c5bc; background: #fff5f1; color: #853b2a; }
+.auth-card button.danger { background: #a23f36; }
+.reset-warning { padding: 16px; margin-bottom: 20px; border: 1px solid #e6c5bc; border-radius: 12px; background: #fff5f1; color: #853b2a; font-size: 13px; line-height: 1.6; }
+.reset-warning ul { padding-left: 20px; }
+.reset-warning p { margin: 10px 0 0; }
+.auth-card .reset-acknowledgement { display: flex; align-items: flex-start; gap: 9px; line-height: 1.5; }
+.auth-card .reset-acknowledgement input { width: auto; margin-top: 3px; }
+.auth-card .text-button { margin-top: 20px; }

@@ -42,7 +42,7 @@ first responder를 가져가 search field가 keyboard를 잃었다.
 비슷한 문제에서는 화면에 보이는 field만 보지 말고 아래 호출을 전체 검색한다.
 
 ```bash
-rg 'becomeFirstResponder|resignFirstResponder|FocusState|focused' client/apple
+rg 'becomeFirstResponder|resignFirstResponder|FocusState|focused' apps/client/apple
 ```
 
 특히 `UIViewRepresentable.updateUIView`에서 사용자 action과 무관하게 responder를

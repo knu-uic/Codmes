@@ -24,6 +24,7 @@ jobs:
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      CODMES_BUNDLED_GOOGLE_MACOS_CLIENT_ID: ${{ vars.CODMES_GOOGLE_MACOS_CLIENT_ID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -63,6 +64,10 @@ jobs:
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Require official Google login ID for tagged client release
+        if: steps.release.outputs.tagged == 'true'
+        run: node apps/server-manager/scripts/check-bundled-google-oauth.mjs --require=macos
+
       - name: Import Developer ID certificate
         if: steps.release.outputs.tagged == 'true' && steps.signing.outputs.enabled == 'true'
         shell: bash
@@ -81,20 +86,24 @@ jobs:
           security find-identity -v -p codesigning "$keychain"
 
       - name: Test Apple client
-        working-directory: client/apple
+        working-directory: apps/client/apple
         run: swift test
 
       - name: Build macOS client
         shell: bash
         run: |
           set -euo pipefail
-          derived_data="$RUNNER_TEMP/CodmesDerivedData"
+          derived_data="$GITHUB_WORKSPACE/apps/client/builds/macos/DerivedData"
           settings=(
             MARKETING_VERSION="${{ steps.release.outputs.version }}"
             CURRENT_PROJECT_VERSION="${{ steps.release.outputs.build }}"
             ARCHS=arm64
             ONLY_ACTIVE_ARCH=NO
           )
+          if [[ -n "${CODMES_BUNDLED_GOOGLE_MACOS_CLIENT_ID:-}" ]]; then
+            scheme="$(node apps/server-manager/scripts/check-bundled-google-oauth.mjs --print-apple-scheme=macos)"
+            settings+=("CODMES_GOOGLE_URL_SCHEME=$scheme" "CODMES_GOOGLE_CLIENT_ID=$CODMES_BUNDLED_GOOGLE_MACOS_CLIENT_ID")
+          fi
           if [[ "${{ steps.release.outputs.tagged }}" == "true" && "${{ steps.signing.outputs.enabled }}" == "true" ]]; then
             settings+=(
               CODE_SIGN_STYLE=Manual
@@ -106,7 +115,7 @@ jobs:
             settings+=(CODE_SIGNING_ALLOWED=NO)
           fi
           xcodebuild \
-            -project client/apple/Codmes.xcodeproj \
+            -project apps/client/apple/Codmes.xcodeproj \
             -scheme Codmes \
             -configuration Release \
             -destination 'generic/platform=macOS' \
@@ -136,13 +145,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          stage="$RUNNER_TEMP/CodmesDmg"
+          stage="$GITHUB_WORKSPACE/apps/client/builds/macos/dmg-stage"
           suffix=""
           if [[ "${{ steps.release.outputs.tagged }}" == "true" && "${{ steps.signing.outputs.enabled }}" != "true" ]]; then
             suffix="_unsigned"
           fi
-          output="$RUNNER_TEMP/Codmes_${{ steps.release.outputs.version }}_macOS-arm64${suffix}.dmg"
+          output="$GITHUB_WORKSPACE/apps/client/builds/macos/latest/Codmes_${{ steps.release.outputs.version }}_macOS-arm64${suffix}.dmg"
           mkdir -p "$stage"
+          mkdir -p "$(dirname "$output")"
           ditto "$APP_PATH" "$stage/Codmes.app"
           ln -s /Applications "$stage/Applications"
           hdiutil create -volname "Codmes" -srcfolder "$stage" -ov -format UDZO "$output"

@@ -6,12 +6,15 @@ import {
   listBuiltInPlugins
 } from "./builtin-plugin-registry.mjs";
 import {
-  listInstalledPlugins
+  listInstalledPlugins,
+  synchronizeSharedPluginProfile
 } from "./plugin-registry.mjs";
+import { readRuntimeConfig, writeRuntimeConfig } from "./config-store.mjs";
 
 export async function ensurePluginRuntime(workspaceRoot) {
-  void workspaceRoot;
-  return await ensureBuiltInPluginState();
+  const builtIn = await ensureBuiltInPluginState();
+  await synchronizeSharedPluginProfile(workspaceRoot);
+  return builtIn;
 }
 
 export async function listRuntimePlugins(workspaceRoot) {
@@ -108,6 +111,15 @@ export async function savePluginConfiguration(workspaceRoot, id, config = {}) {
     ...(typeof config.enabled === "boolean" ? { enabled: config.enabled } : {})
   };
   await writePluginSettings(workspaceRoot, settings);
+  if (!plugin.builtIn && typeof config.enabled === "boolean") {
+    const runtime = await readRuntimeConfig(workspaceRoot);
+    const servers = runtime.mcpServers.map((server) => server.pluginId === plugin.id
+      ? { ...server, enabled: config.enabled }
+      : server);
+    if (servers.some((server, index) => server !== runtime.mcpServers[index])) {
+      await writeRuntimeConfig(workspaceRoot, { ...runtime, mcpServers: servers });
+    }
+  }
   return await getRuntimePlugin(workspaceRoot, plugin.id);
 }
 

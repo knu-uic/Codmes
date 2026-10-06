@@ -14,6 +14,11 @@ Code는 `<Workspace>/Code` 아래 project를 탐색하고 server의 code agent �
 - 승인된 check 및 제한된 Git command 실행
 - 현재 file/project context를 Chat에 전달
 
+파일 탐색·자동 저장·기기별 로컬/서버/동기화 정책은 Notes와 공통으로 사용한다.
+Apple은 서버 없이 로컬 파일을 편집할 수 있으며 Code Agent·검사·Git 실행은 서버
+연결이 필요하다. 로그인은 시작 화면이 아니라 `Settings → Connection`에서 한다.
+동기화·플랫폼별 제한은 [Notes 문서](notes.md)를 참고한다.
+
 ## Server 흐름
 
 ```text

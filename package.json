@@ -13,9 +13,14 @@
     "manager:check": "npm --prefix apps/server-manager run check",
     "manager:stage": "npm --prefix apps/server-manager run stage:runtime",
     "manager:build": "npm --prefix apps/server-manager run bundle",
+    "client:build:macos": "node scripts/build-client.mjs macos",
+    "client:build:ios": "node scripts/build-client.mjs ios-simulator",
+    "client:build:android": "node scripts/build-client.mjs android",
+    "client:build:windows": "node scripts/build-client.mjs windows",
+    "client:build:test": "node --test scripts/build-client.test.mjs",
     "test:document-rag": "node scripts/verify-document-rag.mjs",
     "benchmark:search": "node scripts/benchmark-postgres-search.mjs",
-    "check": "node --check bin/codmes.mjs && node --check server/index.mjs && node --check server/lib/path-utils.mjs && node --test server/*.test.mjs server/lib/*.test.mjs server/lib/runtime/*.test.mjs"
+    "check": "node --check bin/codmes.mjs && node --check server/index.mjs && node --check server/lib/path-utils.mjs && node --test scripts/*.test.mjs server/*.test.mjs server/lib/*.test.mjs server/lib/runtime/*.test.mjs"
   },
   "engines": {
     "node": ">=22"

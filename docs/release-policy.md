@@ -44,6 +44,15 @@ Distribution CLI는 Codmes plugin package, publisher 서명, manifest/Registry v
 
 ## GitHub Release 규칙
 
+로컬 클라이언트 빌드의 고정 위치는 `apps/client/builds/<platform>/latest/`이고
+직전 성공 빌드만 `previous/`에 보관한다. 루트 `npm run client:build:macos`,
+`client:build:ios`, `client:build:android`, `client:build:windows`를 사용한다.
+`local-releases/`에 날짜별 앱/DMG와 DerivedData를 중복 보관하지 않는다.
+Server Manager 설치본은 `apps/server-manager/builds/rust/release/bundle/`에 만든다.
+화면 결과·패키징 runtime·native 중간 산출물도 `apps/server-manager/builds/` 아래로
+모은다. 두 앱의 `builds/`만 제외하고 `apps/` 전체를 Git에서 제외하지 않는다.
+개발 빌드는 정식 서명·공증 배포를 대신하지 않는다.
+
 Codmes의 새 GitHub Release는 설치 가능한 제품에만 사용한다.
 
 - `codmes-server-vX.Y.Z`: Server Manager와 포함된 Workspace Server

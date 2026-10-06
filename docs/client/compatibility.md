@@ -17,7 +17,7 @@ tools, MCP servers, storage, credentials, and update state remain server-owned
 and are not filtered by client compatibility.
 
 The shared wire shape is documented in
-`client/shared/client-protocol.schema.json`. `ipados` is accepted only as a
+`apps/client/shared/client-protocol.schema.json`. `ipados` is accepted only as a
 legacy input and normalizes to `ios + tablet`. When an old record has no
 `formFactors`, its old platform names derive `macos -> desktop`, `ios -> phone`,
 and `ipados -> tablet`.

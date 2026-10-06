@@ -1,9 +1,12 @@
 import fs from "node:fs/promises";
 import { constants as fsConstants, createReadStream, watch } from "node:fs";
 import http from "node:http";
+import https from "node:https";
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { pipeline } from "node:stream/promises";
+import { withWorkspaceFileLock, syncManifest, syncDevicePolicies, applySyncMove, stageSyncBundle, applySyncBundle, discardSyncBundle, snapshotSyncBlob, stageSyncUpload, applySyncChange, discardStagedSyncUpload, syncHistory, snapshotHistoricalSyncBlob, syncRecoveryIndex, assertLegacyMutationAllowed, isVersionedDocument } from "./lib/workspace-sync.mjs";
 import {
   WORKSPACE_DIRS,
   fileKind,
@@ -72,6 +75,9 @@ import {
 import { discoverOllamaModels } from "./lib/runtime/provider-model-discovery.mjs";
 import { createCodmesDatabase, postgresConfigured } from "./lib/database.mjs";
 import { LocalAccountStore } from "./lib/local-accounts.mjs";
+import { GoogleIdTokenVerifier, googleOAuthClientIds } from "./lib/google-id-token.mjs";
+import { GoogleAuthStore } from "./lib/google-auth.mjs";
+import { ProfileAuthStore, validateProfilePin } from "./lib/profile-auth.mjs";
 import { createManagedBackup, startManagedPostgres, stopManagedPostgres } from "./lib/managed-postgres.mjs";
 import {
   activeWorkspaceRoot as requestWorkspaceRoot,
@@ -103,17 +109,31 @@ const PDF_STREAM_CACHE_LIMIT_BYTES = Math.max(
   256 * 1024 * 1024,
   Number.parseInt(process.env.CODMES_PDF_STREAM_CACHE_BYTES || String(8 * 1024 * 1024 * 1024), 10)
 );
-const searchWatchers = [];
-const pendingSearchUpdates = new Set();
-let searchUpdateTimer = null;
+const searchWatcherStates = new Map();
 let searchIndexUpdateChain = Promise.resolve();
+let pluginMutationChain = Promise.resolve();
 const pdfStreamArtifactTasks = new Map();
 let codmesDatabase = null;
 let localAccounts = null;
 let workspaceTenancy = null;
+let profileAuth = null;
+let googleAuth = null;
+let googleIdTokenVerifier = null;
 let managedPostgres = null;
 let postgresIngestQueue = null;
 const INGEST_WORKER_ID = `codmes-${process.pid}-${randomUUID()}`;
+
+async function serializePluginMutation(action) {
+  const previous = pluginMutationChain;
+  let release;
+  pluginMutationChain = new Promise((resolve) => { release = resolve; });
+  await previous;
+  try {
+    return await action();
+  } finally {
+    release();
+  }
+}
 
 function activeWorkspaceRoot() {
   return requestWorkspaceRoot(LEGACY_WORKSPACE_ROOT);
@@ -135,25 +155,55 @@ async function main() {
     codmesDatabase = createCodmesDatabase({ connectionString });
     await codmesDatabase.migrate();
     localAccounts = new LocalAccountStore(codmesDatabase);
+    googleAuth = new GoogleAuthStore(codmesDatabase, localAccounts);
+    googleIdTokenVerifier = new GoogleIdTokenVerifier({ audiences: googleOAuthClientIds().audiences });
     workspaceTenancy = new WorkspaceTenancyStore(codmesDatabase, CODMES_DATA_ROOT, {
       legacyWorkspaceRoot: LEGACY_WORKSPACE_ROOT
     });
+    process.env.CODMES_SHARED_PLUGIN_ROOT = path.join(CODMES_DATA_ROOT, "shared-plugins");
+    const { adoptWorkspacePluginPackages } = await import("./lib/runtime/plugin-registry.mjs");
+    await adoptWorkspacePluginPackages(await workspaceTenancy.allWorkspaceRoots());
+    profileAuth = new ProfileAuthStore(codmesDatabase, localAccounts, workspaceTenancy);
     postgresIngestQueue = new PostgresIngestQueue(codmesDatabase);
     await postgresIngestQueue.recoverStale(1);
     await fs.mkdir(CODMES_DATA_ROOT, { recursive: true });
   } else {
     await ensureWorkspace();
   }
-  const server = http.createServer((req, res) => withRequestContext(
+  const tlsCertPath = String(process.env.CODMES_TLS_CERT || "").trim();
+  const tlsKeyPath = String(process.env.CODMES_TLS_KEY || "").trim();
+  if (Boolean(tlsCertPath) !== Boolean(tlsKeyPath)) {
+    throw new Error("CODMES_TLS_CERT and CODMES_TLS_KEY must be configured together.");
+  }
+  let tlsOptions = null;
+  if (tlsCertPath) {
+    if (!path.isAbsolute(tlsCertPath) || !path.isAbsolute(tlsKeyPath)) {
+      throw new Error("CODMES_TLS_CERT and CODMES_TLS_KEY must be absolute PEM file paths.");
+    }
+    const [certificate, privateKey] = await Promise.all([
+      fs.stat(tlsCertPath), fs.stat(tlsKeyPath)
+    ]);
+    if (!certificate.isFile() || !privateKey.isFile()) {
+      throw new Error("CODMES_TLS_CERT and CODMES_TLS_KEY must be regular files.");
+    }
+    tlsOptions = {
+      cert: await fs.readFile(tlsCertPath),
+      key: await fs.readFile(tlsKeyPath)
+    };
+  }
+  const requestHandler = (req, res) => withRequestContext(
     { workspaceRoot: LEGACY_WORKSPACE_ROOT, user: null, workspace: null },
     () => handleRequest(req, res)
-  ));
+  );
+  const server = tlsOptions
+    ? https.createServer(tlsOptions, requestHandler)
+    : http.createServer(requestHandler);
   server.on("upgrade", (req, socket) => withRequestContext(
     { workspaceRoot: LEGACY_WORKSPACE_ROOT, user: null, workspace: null },
     () => handleUpgrade(req, socket)
   ));
   server.listen(DEFAULT_PORT, WORKSPACE_HOST, () => {
-    console.log(`[codmes] listening on http://${WORKSPACE_HOST}:${DEFAULT_PORT}`);
+    console.log(`[codmes] listening on ${tlsOptions ? "https" : "http"}://${WORKSPACE_HOST}:${DEFAULT_PORT}`);
     console.log(`[codmes] root ${activeWorkspaceRoot()}`);
     if (postgresIngestQueue) setImmediate(() => resumePendingIngestJobs().catch((error) => {
       console.warn(`[codmes] ingest recovery failed: ${error?.message || error}`);
@@ -177,6 +227,7 @@ async function main() {
 async function handleUpgrade(req, socket) {
   try {
     const url = new URL(req.url || "/", "http://localhost");
+    requireSecureApiTransport(req, url);
     if (url.pathname !== "/api/live") {
       socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
       socket.destroy();
@@ -244,9 +295,46 @@ function createAgentEngine() {
 function isPublicRequest(req, url) {
   if (req.method === "GET" && url.pathname === "/api/health") return true;
   if (!MULTIUSER_ENABLED) return false;
-  return (req.method === "GET" && url.pathname === "/api/local-auth/bootstrap")
-    || (req.method === "POST" && url.pathname === "/api/local-auth/bootstrap")
-    || (req.method === "POST" && url.pathname === "/api/local-auth/login");
+  return (req.method === "GET" && url.pathname === "/api/google-auth/config")
+    || (req.method === "POST" && new Set([
+      "/api/google-auth/admin/bootstrap",
+      "/api/google-auth/admin/login",
+      "/api/google-auth/client/login",
+      "/api/google-auth/client/status"
+      ,"/api/auth/admin/bootstrap", "/api/auth/admin/login", "/api/auth/client/register", "/api/auth/client/login"
+    ]).has(url.pathname));
+}
+
+function isLoopbackRequest(req) {
+  return ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress);
+}
+
+function requireSecureGoogleTransport(req) {
+  if (!req.socket.encrypted && !isLoopbackRequest(req)) {
+    throw Object.assign(new Error("Google sign-in requires HTTPS for connections from another device."), { status: 403 });
+  }
+}
+
+function requireSecureApiTransport(req, url) {
+  if (!MULTIUSER_ENABLED || req.socket.encrypted || isLoopbackRequest(req)) return;
+  if (req.method === "GET" && ["/api/health", "/api/google-auth/config"].includes(url.pathname)) return;
+  throw Object.assign(new Error("HTTPS is required for Codmes API connections from another device."), { status: 403 });
+}
+
+function requireManagerSecret(req) {
+  if (!isLoopbackRequest(req)) {
+    throw Object.assign(new Error("Server Manager access is local only."), { status: 403 });
+  }
+  const expected = String(process.env.CODMES_MANAGER_BOOTSTRAP_SECRET || "");
+  if (expected.length < 32) {
+    throw Object.assign(new Error("Server Manager Google sign-in is not configured."), { status: 503 });
+  }
+  const actual = String(req.headers["x-codmes-manager-secret"] || "");
+  const expectedBuffer = Buffer.from(expected);
+  const actualBuffer = Buffer.from(actual);
+  if (actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer)) {
+    throw Object.assign(new Error("Server Manager authorization is required."), { status: 403 });
+  }
 }
 
 function isAuthorized(req, url) {
@@ -260,11 +348,22 @@ function isAuthorized(req, url) {
 
 async function authorizeRequest(req, url) {
   if (!MULTIUSER_ENABLED) return isAuthorized(req, url);
-  const user = await localAccounts.resolveToken(requestAuthToken(req, url));
+  const token = requestAuthToken(req, url);
+  const profileSession = await profileAuth.resolve(token);
+  if (profileSession && requestDoesNotRequireWorkspace(url)) return false;
+  const accountSession = profileSession ? null : await localAccounts.resolveSession(token);
+  const user = profileSession?.user || accountSession?.user;
   if (!user) return false;
-  updateRequestContext({ user });
+  updateRequestContext({ user, syncDeviceId: profileSession?.deviceId || accountSession?.sessionId || null });
   if (requestDoesNotRequireWorkspace(url)) return true;
+  if (accountSession?.authContext === "client") {
+    throw Object.assign(new Error("Open your Google account profile first."), { status: 403 });
+  }
   let workspaceId = String(req.headers["x-codmes-workspace-id"] || url.searchParams.get("workspaceId") || "").trim();
+  if (profileSession) {
+    if (workspaceId && workspaceId !== profileSession.workspaceId) return false;
+    workspaceId = profileSession.workspaceId;
+  }
   if (!workspaceId) {
     const workspaces = await workspaceTenancy.listForUser(user.id);
     if (workspaces.length === 1) workspaceId = workspaces[0].id;
@@ -274,6 +373,10 @@ async function authorizeRequest(req, url) {
   }
   const requiredRole = new Set(["GET", "HEAD"]).has(req.method) ? "viewer" : "editor";
   const workspace = await workspaceTenancy.resolveForUser(user.id, workspaceId, requiredRole);
+  if (!profileSession) {
+    const locked = (await profileAuth.list(user.id)).find((profile) => profile.id === workspaceId)?.locked;
+    if (locked) throw Object.assign(new Error("Open this profile with its PIN first."), { status: 403 });
+  }
   await ensureWorkspaceAtRoot(workspace.root);
   updateRequestContext({ workspaceRoot: workspace.root, workspace });
   return true;
@@ -289,17 +392,26 @@ function requestAuthToken(req, url = null) {
   const protocolToken = protocol.split(",").map((item) => item.trim())
     .find((item) => item.startsWith("codmes.bearer."));
   if (protocolToken) return protocolToken.slice("codmes.bearer.".length);
-  if (url?.pathname === "/api/live") {
+  if (["/api/live", "/api/raw", "/api/pdf-thumbnail"].includes(url?.pathname)) {
     return String(url.searchParams.get("token") || "").trim();
   }
   return "";
 }
 
 function requestDoesNotRequireWorkspace(url) {
-  return url.pathname === "/api/local-auth/logout"
-    || url.pathname === "/api/local-auth/me"
-    || url.pathname === "/api/local-users"
-    || url.pathname === "/api/workspaces";
+  return url.pathname.startsWith("/api/auth/")
+    || url.pathname === "/api/auth/me"
+    || url.pathname === "/api/client/profile"
+    || url.pathname === "/api/client/profile/register"
+    || url.pathname === "/api/workspaces"
+    || url.pathname === "/api/profiles"
+    || url.pathname === "/api/admin/profiles"
+    || url.pathname === "/api/admin/plugins"
+    || url.pathname.startsWith("/api/google-auth/")
+    || url.pathname.startsWith("/api/admin/client-registrations")
+    || /^\/api\/profiles\/[^/]+\/(open|pin|archive)$/.test(url.pathname)
+    || /^\/api\/admin\/profiles\/[^/]+\/(rename|pin|archive|restore)$/.test(url.pathname)
+    || /^\/api\/admin\/plugins\/[^/]+\/(install|update)$/.test(url.pathname);
 }
 
 function publicWorkspace(workspace) {
@@ -410,25 +522,58 @@ async function handleRequest(req, res) {
     const url = new URL(req.url || "/", "http://localhost");
     if (req.method === "OPTIONS") return sendNoContent(res);
     setCors(res);
-    if (MULTIUSER_ENABLED && req.method === "GET" && url.pathname === "/api/local-auth/bootstrap") {
-      return sendJson(res, { required: !await localAccounts.hasUsers() });
+    requireSecureApiTransport(req, url);
+    if (MULTIUSER_ENABLED && req.method === "GET" && url.pathname === "/api/auth/admin/setup") {
+      requireManagerSecret(req);
+      return sendJson(res, await localAccounts.managerSetupSummary());
     }
-    if (MULTIUSER_ENABLED && req.method === "POST" && url.pathname === "/api/local-auth/bootstrap") {
+    if (MULTIUSER_ENABLED && req.method === "GET" && url.pathname === "/api/google-auth/config") {
+      const { clientIds, audiences } = googleOAuthClientIds();
+      return sendJson(res, {
+        enabled: audiences.length > 0,
+        passwordEnabled: true,
+        clientIds,
+        bootstrapRequired: !await localAccounts.hasUsers(),
+        adminLinked: await googleAuth.hasAdminLink(),
+        approvalMode: await googleAuth.approvalMode(),
+        requiresSecureTransport: true,
+        managerSecretConfigured: String(process.env.CODMES_MANAGER_BOOTSTRAP_SECRET || "").length >= 32
+      });
+    }
+    if (MULTIUSER_ENABLED && req.method === "POST" && url.pathname === "/api/google-auth/admin/bootstrap") {
+      requireManagerSecret(req);
       const body = await readJsonBody(req);
-      const user = await localAccounts.bootstrapAdmin(body);
-      const workspace = await workspaceTenancy.createWorkspace(user, {
-        name: body.workspaceName || "My Workspace",
-        adoptLegacy: body.adoptLegacy !== false
-      });
-      const login = await localAccounts.login({
-        username: body.username,
-        password: body.password,
-        deviceName: body.deviceName || "First device"
-      });
-      return sendJson(res, { ...login, workspace: publicWorkspace(workspace) }, 201);
+      const identity = await googleIdTokenVerifier.verify(body.idToken);
+      return sendJson(res, await googleAuth.bootstrapAdmin(identity, body, workspaceTenancy, profileAuth), 201);
     }
-    if (MULTIUSER_ENABLED && req.method === "POST" && url.pathname === "/api/local-auth/login") {
-      return sendJson(res, await localAccounts.login(await readJsonBody(req)));
+    if (MULTIUSER_ENABLED && req.method === "POST" && url.pathname === "/api/google-auth/admin/login") {
+      requireManagerSecret(req);
+      const body = await readJsonBody(req);
+      const identity = await googleIdTokenVerifier.verify(body.idToken);
+      return sendJson(res, await googleAuth.loginAdmin(identity, body.deviceName));
+    }
+    if (MULTIUSER_ENABLED && req.method === "POST" && url.pathname === "/api/google-auth/client/login") {
+      requireSecureGoogleTransport(req);
+      const body = await readJsonBody(req);
+      if (body.username || body.password) localAccounts.registrationBudget(req.socket.remoteAddress);
+      const identity = await googleIdTokenVerifier.verify(body.idToken);
+      return sendJson(res, await googleAuth.loginClient(identity, body));
+    }
+    if (MULTIUSER_ENABLED && req.method === "POST" && url.pathname === "/api/google-auth/client/status") {
+      requireSecureGoogleTransport(req);
+      return sendJson(res, await googleAuth.clientStatus(await readJsonBody(req)));
+    }
+    if (MULTIUSER_ENABLED && req.method === "POST" && ["/api/auth/admin/bootstrap", "/api/auth/admin/login"].includes(url.pathname)) {
+      requireManagerSecret(req);
+      const body = await readJsonBody(req);
+      if (url.pathname.endsWith("bootstrap")) return sendJson(res, await googleAuth.bootstrapAdmin(null, body, workspaceTenancy), 201);
+      const user = await localAccounts.authenticate(body.username, body.password, req.socket.remoteAddress);
+      if (user.role !== "admin") throw Object.assign(new Error("관리자 계정으로 로그인하세요."), { status: 403 });
+      return sendJson(res, await localAccounts.issuePasswordSession(user, { authContext: "manager", deviceName: "Server Manager" }));
+    }
+    if (MULTIUSER_ENABLED && req.method === "POST" && ["/api/auth/client/register", "/api/auth/client/login"].includes(url.pathname)) {
+      if (url.pathname.endsWith("register")) localAccounts.registrationBudget(req.socket.remoteAddress);
+      return sendJson(res, await googleAuth.passwordClient(await readJsonBody(req), url.pathname.endsWith("register"), req.socket.remoteAddress));
     }
     if (!isPublicRequest(req, url) && !await authorizeRequest(req, url)) {
       return sendJson(res, { ok: false, error: "Unauthorized." }, 401);
@@ -439,25 +584,164 @@ async function handleRequest(req, res) {
         ok: true,
         service: "codmes",
         authRequired: MULTIUSER_ENABLED || Boolean(SERVER_TOKEN),
-        multiuser: MULTIUSER_ENABLED
+        multiuser: MULTIUSER_ENABLED,
+        secureTransport: Boolean(req.socket.encrypted)
       });
     }
-    if (MULTIUSER_ENABLED && req.method === "GET" && url.pathname === "/api/local-auth/me") {
+    if (MULTIUSER_ENABLED && req.method === "GET" && url.pathname === "/api/auth/me") {
       return sendJson(res, { user: currentRequestContext().user });
     }
-    if (MULTIUSER_ENABLED && req.method === "POST" && url.pathname === "/api/local-auth/logout") {
+    if (MULTIUSER_ENABLED && req.method === "POST" && url.pathname === "/api/auth/logout") {
       return sendJson(res, await localAccounts.logout(requestAuthToken(req)));
     }
-    if (MULTIUSER_ENABLED && req.method === "GET" && url.pathname === "/api/local-users") {
-      return sendJson(res, { users: await localAccounts.listUsers(currentRequestContext().user) });
+    if (MULTIUSER_ENABLED && url.pathname.startsWith("/api/auth/account")) {
+      const session = await localAccounts.resolveSession(requestAuthToken(req));
+      if (!session) throw Object.assign(new Error("Codmes 계정으로 로그인하세요."), { status: 401 });
+      const account = await localAccounts.accountInfo(session.user.id);
+      if (account.role === "admin") {
+        requireManagerSecret(req);
+        if (session.authContext !== "manager") throw Object.assign(new Error("관리자 계정 변경은 Server Manager에서 진행하세요."), { status: 403 });
+      }
+      if (req.method === "GET" && url.pathname === "/api/auth/account") return sendJson(res, { user: account });
+      if (req.method === "POST") {
+        const body = await readJsonBody(req);
+        if (url.pathname === "/api/auth/account/credentials") return sendJson(res, await localAccounts.configureCredentials(account.id, body, session));
+        if (url.pathname === "/api/auth/account/password") return sendJson(res, await localAccounts.changePassword(session, body, req.socket.remoteAddress));
+        if (url.pathname === "/api/auth/account/google/unlink") return sendJson(res, await googleAuth.unlinkGoogle(session, body.currentPassword, req.socket.remoteAddress));
+        if (url.pathname === "/api/auth/account/google/link") {
+          const identity = await googleIdTokenVerifier.verify(body.idToken);
+          return sendJson(res, await googleAuth.linkGoogle(session, identity, body.currentPassword, req.socket.remoteAddress));
+        }
+      }
     }
-    if (MULTIUSER_ENABLED && req.method === "POST" && url.pathname === "/api/local-users") {
-      const user = await localAccounts.createUser(currentRequestContext().user, await readJsonBody(req));
-      return sendJson(res, { user }, 201);
+    if (MULTIUSER_ENABLED && req.method === "POST" && url.pathname === "/api/google-auth/admin/change") {
+      requireManagerSecret(req);
+      const session = await localAccounts.resolveSession(requestAuthToken(req));
+      if (session?.authContext !== "manager" || session.user.role !== "admin") {
+        throw Object.assign(new Error("Google administrator sign-in is required."), { status: 403 });
+      }
+      const body = await readJsonBody(req);
+      const identity = await googleIdTokenVerifier.verify(body.idToken);
+      return sendJson(res, await googleAuth.linkGoogle(session, identity, body.currentPassword, req.socket.remoteAddress));
+    }
+    if (MULTIUSER_ENABLED && ["/api/client/profile", "/api/client/profile/register"].includes(url.pathname)) {
+      const session = await localAccounts.resolveSession(requestAuthToken(req));
+      if (session?.authContext !== "client") {
+        throw Object.assign(new Error("An approved Google client sign-in is required."), { status: 403 });
+      }
+      if (req.method === "GET" && url.pathname === "/api/client/profile") {
+        return sendJson(res, await googleAuth.clientProfile(session.user.id));
+      }
+      if (req.method === "POST" && url.pathname === "/api/client/profile/register") {
+        await readJsonBody(req);
+        return sendJson(res, await googleAuth.ensureClientProfile(session.user, workspaceTenancy));
+      }
+    }
+    if (MULTIUSER_ENABLED && url.pathname.startsWith("/api/admin/client-registrations")) {
+      requireManagerSecret(req);
+      const session = await localAccounts.resolveSession(requestAuthToken(req));
+      if (!session || session.user.role !== "admin" || session.authContext === "client") {
+        throw Object.assign(new Error("Server administrator access is required."), { status: 403 });
+      }
+      if (req.method === "GET" && url.pathname === "/api/admin/client-registrations") {
+        return sendJson(res, await googleAuth.listRegistrations());
+      }
+      if (req.method === "PUT" && url.pathname === "/api/admin/client-registrations/mode") {
+        return sendJson(res, await googleAuth.setApprovalMode((await readJsonBody(req)).mode));
+      }
+      const action = url.pathname.match(/^\/api\/admin\/client-registrations\/([^/]+)\/(approve|reject|remove)$/);
+      if (req.method === "POST" && action) {
+        return sendJson(res, await googleAuth.respondToRegistration(decodeURIComponent(action[1]), action[2]));
+      }
     }
     if (MULTIUSER_ENABLED && req.method === "GET" && url.pathname === "/api/workspaces") {
+      if (currentRequestContext().user.role !== "admin") {
+        const state = await googleAuth.clientProfile(currentRequestContext().user.id);
+        return sendJson(res, { workspaces: state.setupRequired ? [] : [state.profile] });
+      }
       const workspaces = await workspaceTenancy.listForUser(currentRequestContext().user.id);
       return sendJson(res, { workspaces: workspaces.map(publicWorkspace) });
+    }
+    if (MULTIUSER_ENABLED && req.method === "GET" && url.pathname === "/api/profiles") {
+      if (currentRequestContext().user.role !== "admin") {
+        const state = await googleAuth.clientProfile(currentRequestContext().user.id);
+        return sendJson(res, { profiles: state.setupRequired ? [] : [state.profile] });
+      }
+      const profiles = await profileAuth.list(currentRequestContext().user.id);
+      return sendJson(res, { profiles: profiles.map((profile) => ({ ...publicWorkspace(profile), locked: profile.locked })) });
+    }
+    if (MULTIUSER_ENABLED && req.method === "POST" && url.pathname === "/api/profiles") {
+      if ((await localAccounts.resolveSession(requestAuthToken(req)))?.authContext !== "manager") {
+        throw Object.assign(new Error("Your profile is created automatically after Google sign-in."), { status: 403 });
+      }
+      const body = await readJsonBody(req);
+      validateProfilePin(body.pin);
+      const profile = await workspaceTenancy.createWorkspace(currentRequestContext().user, { name: body.name });
+      await profileAuth.setInitialPin(currentRequestContext().user, profile.id, body.pin);
+      return sendJson(res, { profile: { ...publicWorkspace(profile), locked: true } }, 201);
+    }
+    const profileAction = MULTIUSER_ENABLED ? url.pathname.match(/^\/api\/profiles\/([^/]+)\/(open|pin|archive)$/) : null;
+    if (profileAction && req.method === "POST") {
+      const profileId = decodeURIComponent(profileAction[1]);
+      const body = await readJsonBody(req);
+      if (profileAction[2] === "open") {
+        return sendJson(res, await profileAuth.open(requestAuthToken(req), profileId, body.pin));
+      }
+      if (profileAction[2] === "archive") {
+        return sendJson(res, await profileAuth.archive(currentRequestContext().user, profileId, body));
+      }
+      return sendJson(res, await profileAuth.changePin(currentRequestContext().user, profileId, body));
+    }
+    if (MULTIUSER_ENABLED && url.pathname.startsWith("/api/admin/profiles")) {
+      requireManagerSecret(req);
+      if ((await localAccounts.resolveSession(requestAuthToken(req)))?.authContext !== "manager") {
+        throw Object.assign(new Error("Server Manager authorization is required."), { status: 403 });
+      }
+      if (currentRequestContext().user.role !== "admin"
+        || !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress)) {
+        throw Object.assign(new Error("Local server administrator access is required."), { status: 403 });
+      }
+      if (req.method === "GET" && url.pathname === "/api/admin/profiles") {
+        return sendJson(res, { profiles: await profileAuth.listAllForAdmin(currentRequestContext().user) });
+      }
+      if (req.method === "POST" && url.pathname === "/api/admin/profiles") {
+        const body = await readJsonBody(req);
+        validateProfilePin(body.pin);
+        const profile = await workspaceTenancy.createWorkspace(currentRequestContext().user, { name: body.name });
+        await profileAuth.setInitialPin(currentRequestContext().user, profile.id, body.pin);
+        return sendJson(res, { profile: { ...publicWorkspace(profile), locked: true } }, 201);
+      }
+      const adminAction = url.pathname.match(/^\/api\/admin\/profiles\/([^/]+)\/(rename|pin|archive|restore)$/);
+      if (req.method === "POST" && adminAction) {
+        const profileId = decodeURIComponent(adminAction[1]);
+        const body = await readJsonBody(req);
+        if (adminAction[2] === "rename") return sendJson(res, await profileAuth.adminRename(currentRequestContext().user, profileId, body.name));
+        if (adminAction[2] === "pin") return sendJson(res, await profileAuth.adminSetPin(currentRequestContext().user, profileId, body.pin));
+        if (adminAction[2] === "archive") return sendJson(res, await profileAuth.adminArchive(currentRequestContext().user, profileId));
+        return sendJson(res, await profileAuth.adminRestore(currentRequestContext().user, profileId));
+      }
+    }
+    if (MULTIUSER_ENABLED && url.pathname.startsWith("/api/admin/plugins")) {
+      if (currentRequestContext().user.role !== "admin"
+        || !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress)) {
+        throw Object.assign(new Error("Local server administrator access is required."), { status: 403 });
+      }
+      if (req.method === "GET" && url.pathname === "/api/admin/plugins") {
+        const { listMarketplacePlugins } = await import("./lib/runtime/plugin-marketplace.mjs");
+        return sendJson(res, await listMarketplacePlugins(LEGACY_WORKSPACE_ROOT));
+      }
+      const action = url.pathname.match(/^\/api\/admin\/plugins\/([^/]+)\/(install|update)$/);
+      if (req.method === "POST" && action) {
+        const body = await readJsonBody(req);
+        const { installMarketplacePlugin } = await import("./lib/runtime/plugin-marketplace.mjs");
+        return sendJson(res, await serializePluginMutation(async () => installMarketplacePlugin(
+          LEGACY_WORKSPACE_ROOT, decodeURIComponent(action[1]), {
+            version: body.version || null,
+            acceptedPermissions: Array.isArray(body.acceptedPermissions) ? body.acceptedPermissions : [],
+            workspaceRoots: await workspaceTenancy.allWorkspaceRoots()
+          }
+        )), action[2] === "install" ? 201 : 200);
+      }
     }
     if (MULTIUSER_ENABLED && req.method === "POST" && url.pathname === "/api/workspaces") {
       const body = await readJsonBody(req);
@@ -486,7 +770,9 @@ async function handleRequest(req, res) {
     if (req.method === "POST" && url.pathname === "/api/plugins/install") {
       const body = await readJsonBody(req);
       const { installPlugin } = await import("./lib/runtime/plugin-registry.mjs");
-      return sendJson(res, await installPlugin(activeWorkspaceRoot(), body.path), 201);
+      return sendJson(res, await serializePluginMutation(async () => installPlugin(activeWorkspaceRoot(), body.path, {
+        workspaceRoots: MULTIUSER_ENABLED ? await workspaceTenancy.allWorkspaceRoots() : undefined
+      })), 201);
     }
     const pluginConfigurationMatch = url.pathname.match(
       /^\/api\/plugins\/([^/]+)\/configuration$/
@@ -539,33 +825,32 @@ async function handleRequest(req, res) {
     if (req.method === "POST" && marketplaceInstallMatch) {
       const body = await readJsonBody(req);
       const { installMarketplacePlugin } = await import("./lib/runtime/plugin-marketplace.mjs");
-      return sendJson(res, await installMarketplacePlugin(
+      return sendJson(res, await serializePluginMutation(async () => installMarketplacePlugin(
         activeWorkspaceRoot(),
         decodeURIComponent(marketplaceInstallMatch[1]),
         {
           version: body.version || null,
           acceptedPermissions: Array.isArray(body.acceptedPermissions)
             ? body.acceptedPermissions
-            : []
+            : [],
+          workspaceRoots: MULTIUSER_ENABLED ? await workspaceTenancy.allWorkspaceRoots() : undefined
         }
-      ), marketplaceInstallMatch[2] === "install" ? 201 : 200);
+      )), marketplaceInstallMatch[2] === "install" ? 201 : 200);
     }
     const pluginRollbackMatch = url.pathname.match(/^\/api\/plugins\/([^/]+)\/rollback$/);
     if (req.method === "POST" && pluginRollbackMatch) {
       const body = await readJsonBody(req);
       const { getPluginInstallState, rollbackPlugin } = await import("./lib/runtime/plugin-registry.mjs");
       const pluginId = decodeURIComponent(pluginRollbackMatch[1]);
-      const state = await getPluginInstallState(activeWorkspaceRoot(), pluginId);
-      const version = body.version || state?.previousVersion || null;
-      if (state?.source?.type === "marketplace" && version) {
-        const { assertMarketplaceVersionAllowed } = await import("./lib/runtime/plugin-marketplace.mjs");
-        await assertMarketplaceVersionAllowed(pluginId, version);
-      }
-      return sendJson(res, await rollbackPlugin(
-        activeWorkspaceRoot(),
-        pluginId,
-        version
-      ));
+      return sendJson(res, await serializePluginMutation(async () => {
+        const state = await getPluginInstallState(activeWorkspaceRoot(), pluginId);
+        const version = body.version || state?.previousVersion || null;
+        if (state?.source?.type === "marketplace" && version) {
+          const { assertMarketplaceVersionAllowed } = await import("./lib/runtime/plugin-marketplace.mjs");
+          await assertMarketplaceVersionAllowed(pluginId, version);
+        }
+        return await rollbackPlugin(activeWorkspaceRoot(), pluginId, version);
+      }));
     }
     const pluginCollectionMatch = url.pathname.match(/^\/api\/plugins\/([^/]+)\/collections\/([^/]+)$/);
     if (req.method === "GET" && pluginCollectionMatch) {
@@ -606,7 +891,11 @@ async function handleRequest(req, res) {
     const pluginRemoveMatch = url.pathname.match(/^\/api\/plugins\/([^/]+)$/);
     if (req.method === "DELETE" && pluginRemoveMatch) {
       const { removePlugin } = await import("./lib/runtime/plugin-registry.mjs");
-      return sendJson(res, await removePlugin(activeWorkspaceRoot(), decodeURIComponent(pluginRemoveMatch[1])));
+      return sendJson(res, await serializePluginMutation(async () => removePlugin(
+        activeWorkspaceRoot(), decodeURIComponent(pluginRemoveMatch[1]), {
+          workspaceRoots: MULTIUSER_ENABLED ? await workspaceTenancy.allWorkspaceRoots() : undefined
+        }
+      )));
     }
     const pluginViewDocumentMatch = url.pathname.match(/^\/api\/plugins\/([^/]+)\/view-document$/);
     if (req.method === "GET" && pluginViewDocumentMatch) {
@@ -632,6 +921,83 @@ async function handleRequest(req, res) {
         return sendJson(res, await logoutPlugin(pluginId));
       }
     }
+    if (req.method === "GET" && url.pathname === "/api/sync/manifest") {
+      return sendJson(res, await withWorkspaceFileLock(activeWorkspaceRoot(), () => syncManifest(activeWorkspaceRoot())));
+    }
+    if (url.pathname === "/api/sync/devices" && ["GET", "POST"].includes(req.method)) {
+      const body = req.method === "POST" ? await readJsonBody(req) : null;
+      const deviceId = currentRequestContext()?.syncDeviceId || (!MULTIUSER_ENABLED ? body?.deviceId : null);
+      if (body && !deviceId) throw Object.assign(new Error("An authenticated device session is required."), { status: 403 });
+      return sendJson(res, await withWorkspaceFileLock(activeWorkspaceRoot(), () => syncDevicePolicies(activeWorkspaceRoot(), deviceId, body?.policies)));
+    }
+    if (req.method === "POST" && url.pathname === "/api/sync/move") {
+      const change = await readJsonBody(req);
+      const result = await withWorkspaceFileLock(activeWorkspaceRoot(), () => applySyncMove(activeWorkspaceRoot(), change));
+      if (result.status === "applied") await refreshSearchIndexPaths([change.from, change.to]);
+      return sendJson(res, result);
+    }
+    if (req.method === "GET" && url.pathname === "/api/sync/history") {
+      return sendJson(res, await withWorkspaceFileLock(activeWorkspaceRoot(), () => syncHistory(activeWorkspaceRoot(), requireQuery(url, "path"), url.searchParams.get("resource") || "file", Number(url.searchParams.get("offset") || 0))));
+    }
+    if (req.method === "GET" && url.pathname === "/api/sync/history/blob") {
+      const snapshot = await withWorkspaceFileLock(activeWorkspaceRoot(), () => snapshotHistoricalSyncBlob(activeWorkspaceRoot(), requireQuery(url, "path"), url.searchParams.get("resource") || "file", requireQuery(url, "version")));
+      try { res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": snapshot.size, "Cache-Control": "no-store" }); await pipeline(createReadStream(snapshot.file), res); }
+      catch { res.destroy(); }
+      finally { await discardStagedSyncUpload(snapshot); }
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/sync/recovery") {
+      return sendJson(res, await withWorkspaceFileLock(activeWorkspaceRoot(), () => syncRecoveryIndex(activeWorkspaceRoot())));
+    }
+    if (req.method === "GET" && url.pathname === "/api/sync/blob") {
+      const snapshot = await withWorkspaceFileLock(activeWorkspaceRoot(), () => snapshotSyncBlob(activeWorkspaceRoot(), requireQuery(url, "path"), url.searchParams.get("resource") || "file", requireQuery(url, "revision")));
+      try {
+        res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": snapshot.size, "Cache-Control": "no-store" });
+        await pipeline(createReadStream(snapshot.file), res);
+      } catch { res.destroy(); }
+      finally { await discardStagedSyncUpload(snapshot); }
+      return;
+    }
+    if (req.method === "PUT" && url.pathname === "/api/sync/document") {
+      const bundle = await stageSyncBundle(activeWorkspaceRoot(), req);
+      try {
+        const result = await withWorkspaceFileLock(activeWorkspaceRoot(), () => applySyncBundle(activeWorkspaceRoot(), bundle));
+        if (result.status === "applied") {
+          const target = resolveWorkspacePath(activeWorkspaceRoot(), bundle.header.fileChange.path);
+          await ensureDocumentStateManifest(activeWorkspaceRoot(), target.relativePath);
+          const job = await queueUploadedNotesPdfProcessing(target.relativePath, target.absolutePath);
+          if (!job) await refreshSearchIndexPaths([target.relativePath]);
+        }
+        return sendJson(res, result);
+      } finally { await discardSyncBundle(bundle); }
+    }
+    if (req.method === "PUT" && url.pathname === "/api/sync/blob") {
+      const staged = await stageSyncUpload(activeWorkspaceRoot(), req);
+      try {
+        const header = req.headers["x-codmes-base-revision"];
+        const change = { path: requireQuery(url, "path"), resource: url.searchParams.get("resource") || "file", baseRevision: header === "missing" ? null : header, conflictPolicy: req.headers["x-codmes-conflict-policy"], operationId: req.headers["x-codmes-operation-id"], deviceId: req.headers["x-codmes-device-id"], modifiedAt: req.headers["x-codmes-modified-at"], baseVersion: req.headers["x-codmes-base-version"] || null };
+        change.fileId = req.headers["x-codmes-file-id"];
+        change.firstRegistration = req.headers["x-codmes-first-registration"] === "true";
+        change.expectedRevision = req.headers["x-codmes-expected-revision"];
+        const result = await withWorkspaceFileLock(activeWorkspaceRoot(), () => applySyncChange(activeWorkspaceRoot(), change, staged));
+        if (result.status === "applied" && result.entry && change.resource === "file") {
+          const target = resolveWorkspacePath(activeWorkspaceRoot(), change.path);
+          const job = await queueUploadedNotesPdfProcessing(target.relativePath, target.absolutePath);
+          if (!job) await refreshSearchIndexPaths([target.relativePath]);
+        }
+        if (result.status === "applied" && result.entry && change.resource === "annotations") {
+          await ensureDocumentStateManifest(activeWorkspaceRoot(), change.path);
+          await refreshSearchIndexPaths([change.path]);
+        }
+        return sendJson(res, result);
+      } finally { await discardStagedSyncUpload(staged); }
+    }
+    if (req.method === "POST" && url.pathname === "/api/sync/change") {
+      const change = await readJsonBody(req);
+      const result = await withWorkspaceFileLock(activeWorkspaceRoot(), () => applySyncChange(activeWorkspaceRoot(), change));
+      if (result.status === "applied") await refreshSearchIndexPaths([change.path]);
+      return sendJson(res, result);
+    }
     if (req.method === "GET" && url.pathname === "/api/tree") {
       return sendJson(res, await readTree(url));
     }
@@ -654,34 +1020,34 @@ async function handleRequest(req, res) {
       return streamPdfPage(res, url);
     }
     if (req.method === "PUT" && url.pathname === "/api/file") {
-      return sendJson(res, await writeTextFile(req, url));
+      return sendJson(res, await withWorkspaceFileLock(activeWorkspaceRoot(), () => writeTextFile(req, url)));
     }
     if (req.method === "POST" && url.pathname === "/api/file") {
-      return sendJson(res, await createFile(req), 201);
+      return sendJson(res, await withWorkspaceFileLock(activeWorkspaceRoot(), () => createFile(req)), 201);
     }
     if (req.method === "POST" && url.pathname === "/api/folder") {
-      return sendJson(res, await createFolder(req), 201);
+      return sendJson(res, await withWorkspaceFileLock(activeWorkspaceRoot(), () => createFolder(req)), 201);
     }
     if (req.method === "PATCH" && url.pathname === "/api/file/move") {
-      return sendJson(res, await movePath(req));
+      return sendJson(res, await withWorkspaceFileLock(activeWorkspaceRoot(), () => movePath(req)));
     }
     if (req.method === "POST" && url.pathname === "/api/file/copy") {
-      return sendJson(res, await copyPath(req), 201);
+      return sendJson(res, await withWorkspaceFileLock(activeWorkspaceRoot(), () => copyPath(req)), 201);
     }
     if (req.method === "POST" && url.pathname === "/api/file/upload") {
-      return sendJson(res, await uploadFile(req), 201);
+      return sendJson(res, await withWorkspaceFileLock(activeWorkspaceRoot(), () => uploadFile(req)), 201);
     }
     if (req.method === "PUT" && url.pathname === "/api/file/binary") {
-      return sendJson(res, await replaceBinaryFile(req));
+      return sendJson(res, await withWorkspaceFileLock(activeWorkspaceRoot(), () => replaceBinaryFile(req)));
     }
     if (req.method === "POST" && url.pathname === "/api/file/import-codmes-pdf") {
-      return sendJson(res, await importCodmesPdf(req), 201);
+      return sendJson(res, await withWorkspaceFileLock(activeWorkspaceRoot(), () => importCodmesPdf(req)), 201);
     }
     if (req.method === "POST" && url.pathname === "/api/file/export-codmes-pdf") {
       return sendJson(res, await exportCodmesPdfPackage(req));
     }
     if (req.method === "POST" && url.pathname === "/api/file/import-codmes-pdf-package") {
-      return sendJson(res, await importCodmesPdfPackage(req), 201);
+      return sendJson(res, await withWorkspaceFileLock(activeWorkspaceRoot(), () => importCodmesPdfPackage(req)), 201);
     }
     if (req.method === "POST" && url.pathname === "/api/file/upload/start") {
       return sendJson(res, await startChunkedUpload(req), 201);
@@ -690,13 +1056,13 @@ async function handleRequest(req, res) {
       return sendJson(res, await appendUploadChunk(req));
     }
     if (req.method === "POST" && url.pathname === "/api/file/upload/complete") {
-      return sendJson(res, await completeChunkedUpload(req), 201);
+      return sendJson(res, await withWorkspaceFileLock(activeWorkspaceRoot(), () => completeChunkedUpload(req)), 201);
     }
     if (req.method === "POST" && url.pathname === "/api/file/upload/cancel") {
       return sendJson(res, await cancelChunkedUpload(req));
     }
     if (req.method === "DELETE" && url.pathname === "/api/file") {
-      return sendJson(res, await deletePath(url));
+      return sendJson(res, await withWorkspaceFileLock(activeWorkspaceRoot(), () => deletePath(url)));
     }
     if (req.method === "GET" && url.pathname === "/api/file/metadata") {
       return sendJson(res, await fileMetadata(url));
@@ -705,7 +1071,7 @@ async function handleRequest(req, res) {
       return sendJson(res, await readFileAnnotations(url));
     }
     if (req.method === "PUT" && url.pathname === "/api/file/annotations") {
-      return sendJson(res, await writeFileAnnotations(req, url));
+      return sendJson(res, await withWorkspaceFileLock(activeWorkspaceRoot(), () => writeFileAnnotations(req, url)));
     }
     if (req.method === "POST" && url.pathname === "/api/context") {
       return sendJson(res, await resolveContext(req));
@@ -1697,6 +2063,7 @@ async function writeTextFile(req, url) {
   const body = await readJsonBody(req);
   const content = typeof body.content === "string" ? body.content : "";
   const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), filePath);
+  await assertLegacyMutationAllowed(activeWorkspaceRoot(), relativePath);
   await fs.mkdir(path.dirname(absolutePath), { recursive: true });
   await fs.writeFile(absolutePath, content, "utf8");
   await refreshSearchIndexPaths([relativePath]);
@@ -1714,6 +2081,7 @@ async function createFile(req) {
   const filePath = body.path;
   if (!filePath) throw Object.assign(new Error("Missing file path."), { status: 400 });
   const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), filePath);
+  await assertLegacyMutationAllowed(activeWorkspaceRoot(), relativePath);
   await fs.mkdir(path.dirname(absolutePath), { recursive: true });
   await fs.writeFile(absolutePath, typeof body.content === "string" ? body.content : "", { flag: "wx" });
   await refreshSearchIndexPaths([relativePath]);
@@ -1724,6 +2092,7 @@ async function createFolder(req) {
   const body = await readJsonBody(req);
   if (!body.path) throw Object.assign(new Error("Missing folder path."), { status: 400 });
   const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), body.path);
+  await assertLegacyMutationAllowed(activeWorkspaceRoot(), relativePath);
   await fs.mkdir(absolutePath, { recursive: true });
   await refreshSearchIndexPaths([relativePath]);
   return { ok: true, path: relativePath };
@@ -1734,6 +2103,8 @@ async function movePath(req) {
   if (!body.from || !body.to) throw Object.assign(new Error("Missing from or to path."), { status: 400 });
   const from = resolveWorkspacePath(activeWorkspaceRoot(), body.from);
   const to = resolveWorkspacePath(activeWorkspaceRoot(), body.to);
+  await assertLegacyMutationAllowed(activeWorkspaceRoot(), from.relativePath);
+  await assertLegacyMutationAllowed(activeWorkspaceRoot(), to.relativePath);
   const movedDocuments = await collectDocumentStateTransitions(from.relativePath, to.relativePath);
   await fs.mkdir(path.dirname(to.absolutePath), { recursive: true });
   await fs.rename(from.absolutePath, to.absolutePath);
@@ -1751,6 +2122,7 @@ async function copyPath(req) {
   if (!body.from || !body.to) throw Object.assign(new Error("Missing from or to path."), { status: 400 });
   const from = resolveWorkspacePath(activeWorkspaceRoot(), body.from);
   const to = resolveWorkspacePath(activeWorkspaceRoot(), body.to);
+  await assertLegacyMutationAllowed(activeWorkspaceRoot(), to.relativePath);
   const copiedDocuments = await collectDocumentStateTransitions(from.relativePath, to.relativePath);
   await fs.mkdir(path.dirname(to.absolutePath), { recursive: true });
   await fs.cp(from.absolutePath, to.absolutePath, {
@@ -1770,6 +2142,7 @@ async function uploadFile(req) {
     throw Object.assign(new Error("Missing file data."), { status: 400 });
   }
   const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), body.path);
+  await assertLegacyMutationAllowed(activeWorkspaceRoot(), relativePath);
   await assertPathAvailable(absolutePath);
   await fs.mkdir(path.dirname(absolutePath), { recursive: true });
   await fs.writeFile(absolutePath, Buffer.from(body.dataBase64, "base64"), { flag: "wx" });
@@ -1785,6 +2158,7 @@ async function replaceBinaryFile(req) {
     throw Object.assign(new Error("Missing file data."), { status: 400 });
   }
   const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), body.path);
+  await assertLegacyMutationAllowed(activeWorkspaceRoot(), relativePath);
   const stat = await fs.stat(absolutePath);
   if (stat.isDirectory()) throw Object.assign(new Error("Cannot replace a folder."), { status: 400 });
   await fs.writeFile(absolutePath, Buffer.from(body.dataBase64, "base64"));
@@ -1801,6 +2175,7 @@ async function importCodmesPdf(req) {
   }
   const requested = resolveWorkspacePath(activeWorkspaceRoot(), body.path);
   const target = await availableWorkspaceFilePath(requested.relativePath);
+  await assertLegacyMutationAllowed(activeWorkspaceRoot(), target.relativePath);
   await fs.mkdir(path.dirname(target.absolutePath), { recursive: true });
   await fs.writeFile(target.absolutePath, Buffer.from(body.pdfDataBase64, "base64"), { flag: "wx" });
 
@@ -1863,6 +2238,7 @@ async function importCodmesPdfPackage(req) {
   const requestedName = body.path || `Documents/${codmesPdfBaseName(packageContents.manifest.title)}.pdf`;
   const requested = resolveWorkspacePath(activeWorkspaceRoot(), ensurePdfExtension(requestedName));
   const target = await availableWorkspaceFilePath(requested.relativePath);
+  await assertLegacyMutationAllowed(activeWorkspaceRoot(), target.relativePath);
   const stateDirectory = documentStateDirectory(activeWorkspaceRoot(), target.relativePath);
   let documentJob = null;
   try {
@@ -1911,6 +2287,7 @@ async function startChunkedUpload(req) {
     throw Object.assign(new Error("Missing or invalid file size."), { status: 400 });
   }
   const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), body.path);
+  await assertLegacyMutationAllowed(activeWorkspaceRoot(), relativePath);
   await assertPathAvailable(absolutePath);
   await fs.mkdir(uploadTempDir(), { recursive: true });
   const uploadId = randomUUID();
@@ -1964,6 +2341,7 @@ async function completeChunkedUpload(req) {
     throw Object.assign(new Error(`Upload incomplete. Received ${meta.received} of ${meta.size} bytes.`), { status: 400 });
   }
   const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), meta.path);
+  await assertLegacyMutationAllowed(activeWorkspaceRoot(), relativePath);
   await assertPathAvailable(absolutePath);
   await fs.mkdir(path.dirname(absolutePath), { recursive: true });
   await fs.copyFile(uploadTempPath(uploadId), absolutePath, fsConstants.COPYFILE_EXCL);
@@ -2014,7 +2392,15 @@ async function runDocumentIngestJob({ job, persistent, workspace, absolutePath =
   return await withRequestContext({ workspaceRoot: workspace.root, workspace, user: null }, async () => {
     const sourcePath = absolutePath || resolveWorkspacePath(workspace.root, job.path).absolutePath;
     try {
+      const originalStat = await fs.stat(sourcePath);
       const result = await normalizePdfBinaryTextLayer(workspace.root, sourcePath, job.path, {
+        commitReplacement: (temporaryPath) => withWorkspaceFileLock(workspace.root, async () => {
+          if (await isVersionedDocument(workspace.root, job.path)) return false;
+          const latestStat = await fs.stat(sourcePath);
+          if (latestStat.size !== originalStat.size || latestStat.mtimeMs !== originalStat.mtimeMs) return false;
+          await fs.rename(temporaryPath, sourcePath);
+          return true;
+        }),
         onProgress: (progress) => {
           updateDocumentJob(job.id, progress);
           if (persistent) postgresIngestQueue.progress(job.id, INGEST_WORKER_ID, progress.progress).catch(() => {});
@@ -2062,6 +2448,7 @@ async function cancelChunkedUpload(req) {
 async function deletePath(url) {
   const filePath = requireQuery(url, "path");
   const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), filePath);
+  await assertLegacyMutationAllowed(activeWorkspaceRoot(), relativePath);
   const deletedDocuments = await collectDocumentPathsForState(relativePath);
   await fs.rm(absolutePath, { recursive: true, force: false });
   await removeDocumentStateFiles(deletedDocuments);
@@ -2108,6 +2495,7 @@ async function availableWorkspaceFilePath(relativePath) {
 async function writeFileAnnotations(req, url) {
   const filePath = requireQuery(url, "path");
   const { relativePath, absolutePath } = resolveWorkspacePath(activeWorkspaceRoot(), filePath);
+  await assertLegacyMutationAllowed(activeWorkspaceRoot(), relativePath);
   const stat = await fs.stat(absolutePath);
   if (stat.isDirectory()) throw Object.assign(new Error("Cannot annotate a folder."), { status: 400 });
   const body = await readJsonBody(req);
@@ -2581,6 +2969,10 @@ function normalizeSearchRoots(roots) {
 }
 
 async function startSearchWatchers() {
+  const context = currentRequestContext();
+  const key = context?.workspace?.id || "legacy";
+  const state = searchWatcherStates.get(key) || { watchers: [], pending: new Set(), timer: null };
+  searchWatcherStates.set(key, state);
   const config = await readSearchConfig().catch(() => null);
   if (!config) return;
   for (const root of normalizeSearchRoots(config.roots)) {
@@ -2589,13 +2981,15 @@ async function startSearchWatchers() {
     if (!stat?.isDirectory()) continue;
     try {
       const watcher = watch(absolute, { recursive: true }, (_eventType, filename) => {
-        if (!filename) {
-          queueSearchIndexUpdate(root);
-          return;
-        }
-        queueSearchIndexUpdate(path.join(root, String(filename)).replace(/\\/g, "/"));
+        withRequestContext(context, () => {
+          if (!filename) {
+            queueSearchIndexUpdate(root);
+            return;
+          }
+          queueSearchIndexUpdate(path.join(root, String(filename)).replace(/\\/g, "/"));
+        });
       });
-      searchWatchers.push(watcher);
+      state.watchers.push(watcher);
       console.log(`[codmes] watching search root ${root || "."}`);
     } catch (error) {
       console.warn(`[codmes] search watcher unavailable for ${root || "."}: ${error?.message || error}`);
@@ -2604,7 +2998,9 @@ async function startSearchWatchers() {
 }
 
 async function restartSearchWatchers() {
-  for (const watcher of searchWatchers.splice(0)) {
+  const key = currentRequestContext()?.workspace?.id || "legacy";
+  const state = searchWatcherStates.get(key);
+  for (const watcher of state?.watchers.splice(0) || []) {
     try { watcher.close(); } catch {}
   }
   await startSearchWatchers();
@@ -2613,12 +3009,16 @@ async function restartSearchWatchers() {
 function queueSearchIndexUpdate(relativePath) {
   const clean = String(relativePath || "").replace(/\\/g, "/").replace(/^\/+/, "");
   if (!clean || clean.startsWith(".codmes/index/")) return;
-  pendingSearchUpdates.add(documentPathForAnnotationStatePath(clean) || clean);
-  clearTimeout(searchUpdateTimer);
-  searchUpdateTimer = setTimeout(async () => {
-    const changed = Array.from(pendingSearchUpdates);
-    pendingSearchUpdates.clear();
-    await refreshSearchIndexPaths(changed);
+  const context = currentRequestContext();
+  const key = context?.workspace?.id || "legacy";
+  const state = searchWatcherStates.get(key) || { watchers: [], pending: new Set(), timer: null };
+  searchWatcherStates.set(key, state);
+  state.pending.add(documentPathForAnnotationStatePath(clean) || clean);
+  clearTimeout(state.timer);
+  state.timer = setTimeout(async () => {
+    const changed = Array.from(state.pending);
+    state.pending.clear();
+    await withRequestContext(context, () => refreshSearchIndexPaths(changed));
   }, 750);
 }
 
@@ -2629,13 +3029,14 @@ async function refreshSearchIndexPaths(pathsToRefresh) {
   if (!paths.length) return null;
   const workspaceRoot = activeWorkspaceRoot();
   const workspaceId = currentRequestContext()?.workspace?.id;
-  const run = async () => {
+  const context = currentRequestContext();
+  const run = () => withRequestContext(context, async () => {
     const config = await readSearchConfig().catch(() => null);
     return await updateSearchIndex(workspaceRoot, paths, {
       ...searchIndexOptions(config || {}),
       workspaceId
     });
-  };
+  });
   const next = searchIndexUpdateChain.then(run, run).catch((error) => {
     console.warn(`[codmes] search partial index update failed: ${error?.message || error}`);
     return null;
@@ -3923,7 +4324,15 @@ function validatePluginViewDocument(document) {
 
 async function readJsonBody(req) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+  const accountRequest = /^\/api\/(auth|google-auth)(\/|\?)/.test(req.url || "");
+  const syncRequest = (req.url || "").startsWith("/api/sync/");
+  let received = 0;
+  for await (const chunk of req) {
+    received += chunk.length;
+    if (accountRequest && received > 16384) throw Object.assign(new Error("Account request is too large."), { status: 413 });
+    if (syncRequest && received > 16384) throw Object.assign(new Error("Sync metadata request is too large."), { status: 413 });
+    chunks.push(chunk);
+  }
   const text = Buffer.concat(chunks).toString("utf8");
   if (!text.trim()) return {};
   try {
@@ -3969,7 +4378,7 @@ function sendError(res, error) {
 function setCors(res) {
   res.setHeader("access-control-allow-origin", "*");
   res.setHeader("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  res.setHeader("access-control-allow-headers", "content-type, authorization, x-codmes-token, x-codmes-workspace-id");
+  res.setHeader("access-control-allow-headers", "content-type, authorization, x-codmes-token, x-codmes-workspace-id, x-codmes-manager-secret");
 }
 
 function contentTypeForPath(filePath) {

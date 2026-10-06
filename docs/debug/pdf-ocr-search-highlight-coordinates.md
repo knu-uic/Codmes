@@ -121,5 +121,5 @@ upload는 client가 binary를 읽고 전송하는 작업이다. PDF 검사, OCR,
 - `server/index.mjs`
 - `server/workers/document-ingest/ocr_vision.swift`
 - `server/workers/document-ingest/normalize_pdf.py`
-- `client/apple/Sources/Codmes/RootView.swift`
-- `client/apple/Sources/Codmes/PDFWorkspaceView.swift`
+- `apps/client/apple/Sources/Codmes/RootView.swift`
+- `apps/client/apple/Sources/Codmes/PDFWorkspaceView.swift`

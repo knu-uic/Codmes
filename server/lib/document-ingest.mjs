@@ -359,7 +359,12 @@ export async function normalizePdfBinaryTextLayer(workspaceRoot, absolutePath, r
         });
       }
     }
-    await fs.rename(temporaryPath, absolutePath);
+    if (options.commitReplacement) {
+      if (!await options.commitReplacement(temporaryPath)) {
+        await fs.rm(temporaryPath, { force: true });
+        return { normalized: false, reason: "original-preserved-for-sync", pages: result.normalizedPages || [] };
+      }
+    } else await fs.rename(temporaryPath, absolutePath);
     await fs.rm(documentIngestCacheDirectory(workspaceRoot, relativePath), { recursive: true, force: true });
     await ensureDocumentStateManifest(workspaceRoot, relativePath);
     options.onProgress?.({

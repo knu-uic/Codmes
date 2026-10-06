@@ -1,0 +1,539 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10C0D010000000000000001 /* LocalWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10C0D000000000000000001 /* LocalWorkspace.swift */; };
+		A10C0D010000000000000002 /* CodmesPDFArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10C0D000000000000000002 /* CodmesPDFArchive.swift */; };
+		A10C0D020000000000000002 /* CodmesPDFArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10C0D000000000000000002 /* CodmesPDFArchive.swift */; };
+		A10C0D020000000000000001 /* LocalWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10C0D000000000000000001 /* LocalWorkspace.swift */; };
+		0A45D103ADE640998C377118 /* HeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5241C0E1854D4E939201DB3F /* HeaderView.swift */; };
+		1400B54060904EF097CD05EB /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEC5F343050B4BFFA665B914 /* SearchView.swift */; };
+		182914B2EEE94CCEB66C0433 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C7EC532D8964FC2B78C9C43 /* Models.swift */; };
+		366FEBDCA8B64981A2D1586B /* FileSectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F506A7A90DC499192582AC9 /* FileSectionView.swift */; };
+		3E8DC8B1723C4A2FA10A1594 /* WorkspaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29CB2E54F6EF47EEA71CC126 /* WorkspaceStore.swift */; };
+		3FA1A001A0B14A6F9B99C001 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FA1A000A0B14A6F9B99C001 /* KeychainStore.swift */; };
+		3FA1A001A0B14A6F9B99C101 /* GoogleSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FA1A000A0B14A6F9B99C101 /* GoogleSignIn.swift */; };
+		99A0E6B3E90E492CBD0DD601 /* ApprovalsInboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99A0E6B3E90E492CBD0DD600 /* ApprovalsInboxView.swift */; };
+		9C0D50310000000000000001 /* PDFShapeExemplarBank.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C0D50300000000000000001 /* PDFShapeExemplarBank.swift */; };
+		9C0D50210000000000000001 /* PDFShapeSampleStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C0D50200000000000000001 /* PDFShapeSampleStore.swift */; };
+		9C0D50110000000000000001 /* PDFShapeRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C0D50100000000000000001 /* PDFShapeRecognizer.swift */; };
+		9C0D50010000000000000001 /* PDFWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C0D50000000000000000001 /* PDFWorkspaceView.swift */; };
+
+		43FBD23C9D0E4947AA3E9A42 /* LiveChatClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73779B0EDE9A4F3B9DFC6517 /* LiveChatClient.swift */; };
+		48FB524AFD6743849FBE6AFC /* WorkspaceAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14787F32F0304A32B7916672 /* WorkspaceAPI.swift */; };
+		767D4168CD28417085839C03 /* CodmesApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B976F60DF13B494FABD55609 /* CodmesApp.swift */; };
+		79EA66C9DB23470A813D2399 /* ChatHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8708198D47F24EFCA25FA2FF /* ChatHomeView.swift */; };
+		7B972FFE56D7499B83ACAAEE /* FileSectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F506A7A90DC499192582AC9 /* FileSectionView.swift */; };
+		82D33833400243A1BA45C06B /* LiveChatClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73779B0EDE9A4F3B9DFC6517 /* LiveChatClient.swift */; };
+		B15EE4FF94EB4FFDB66F99E3 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C7EC532D8964FC2B78C9C43 /* Models.swift */; };
+		C053B1D066564AAF9EB163CF /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC742CBD01884A2190D55DA2 /* RootView.swift */; };
+		DC869511E1264A16B71CDAFA /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC742CBD01884A2190D55DA2 /* RootView.swift */; };
+		E879AE0FECD14F2A802E6117 /* HeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5241C0E1854D4E939201DB3F /* HeaderView.swift */; };
+		ED59859B6FF64593824B30A9 /* CodmesApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B976F60DF13B494FABD55609 /* CodmesApp.swift */; };
+		EE28A7064EBA4B50AFDDD034 /* ChatHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8708198D47F24EFCA25FA2FF /* ChatHomeView.swift */; };
+		F29F27586DE64EA98831454D /* WorkspaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29CB2E54F6EF47EEA71CC126 /* WorkspaceStore.swift */; };
+		3FA1A002A0B14A6F9B99C001 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FA1A000A0B14A6F9B99C001 /* KeychainStore.swift */; };
+		3FA1A002A0B14A6F9B99C101 /* GoogleSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FA1A000A0B14A6F9B99C101 /* GoogleSignIn.swift */; };
+		99A0E6B3E90E492CBD0DD602 /* ApprovalsInboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99A0E6B3E90E492CBD0DD600 /* ApprovalsInboxView.swift */; };
+		9C0D50320000000000000001 /* PDFShapeExemplarBank.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C0D50300000000000000001 /* PDFShapeExemplarBank.swift */; };
+		9C0D50220000000000000001 /* PDFShapeSampleStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C0D50200000000000000001 /* PDFShapeSampleStore.swift */; };
+		9C0D50120000000000000001 /* PDFShapeRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C0D50100000000000000001 /* PDFShapeRecognizer.swift */; };
+		9C0D50020000000000000001 /* PDFWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C0D50000000000000000001 /* PDFWorkspaceView.swift */; };
+
+		F31DF70215D54266A71EBB1F /* WorkspaceAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14787F32F0304A32B7916672 /* WorkspaceAPI.swift */; };
+		F488F3C3652B4841B7979628 /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEC5F343050B4BFFA665B914 /* SearchView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A10C0D000000000000000001 /* LocalWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalWorkspace.swift; sourceTree = "<group>"; };
+		A10C0D000000000000000002 /* CodmesPDFArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodmesPDFArchive.swift; sourceTree = "<group>"; };
+		14787F32F0304A32B7916672 /* WorkspaceAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceAPI.swift; sourceTree = "<group>"; };
+		21FD49723DF6427A8FAD2A1B /* iOS-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "iOS-Info.plist"; sourceTree = "<group>"; };
+		29CB2E54F6EF47EEA71CC126 /* WorkspaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceStore.swift; sourceTree = "<group>"; };
+		3FA1A000A0B14A6F9B99C001 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		3FA1A000A0B14A6F9B99C101 /* GoogleSignIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleSignIn.swift; sourceTree = "<group>"; };
+		99A0E6B3E90E492CBD0DD600 /* ApprovalsInboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalsInboxView.swift; sourceTree = "<group>"; };
+
+		2C7EC532D8964FC2B78C9C43 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		4F506A7A90DC499192582AC9 /* FileSectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSectionView.swift; sourceTree = "<group>"; };
+		5241C0E1854D4E939201DB3F /* HeaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeaderView.swift; sourceTree = "<group>"; };
+		73779B0EDE9A4F3B9DFC6517 /* LiveChatClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveChatClient.swift; sourceTree = "<group>"; };
+		8708198D47F24EFCA25FA2FF /* ChatHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHomeView.swift; sourceTree = "<group>"; };
+		9C0D50300000000000000001 /* PDFShapeExemplarBank.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFShapeExemplarBank.swift; sourceTree = "<group>"; };
+		9C0D50200000000000000001 /* PDFShapeSampleStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFShapeSampleStore.swift; sourceTree = "<group>"; };
+		9C0D50100000000000000001 /* PDFShapeRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFShapeRecognizer.swift; sourceTree = "<group>"; };
+		9C0D50000000000000000001 /* PDFWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFWorkspaceView.swift; sourceTree = "<group>"; };
+		92BE9EF47DFF4ADF85510D52 /* Codmes.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Codmes.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		93AF95165A8A426592CD258C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		98E55E8ED6A747FAA233CC3D /* Codmes iOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Codmes iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		B976F60DF13B494FABD55609 /* CodmesApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodmesApp.swift; sourceTree = "<group>"; };
+		CC742CBD01884A2190D55DA2 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		CEC5F343050B4BFFA665B914 /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		58A0E6B3E90E492CBD0DD607 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5BC7A03A248545EBAA29BD61 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		942FCD05B4354DE1A639EB4B /* Sources/Codmes */ = {
+			isa = PBXGroup;
+			children = (
+				B976F60DF13B494FABD55609 /* CodmesApp.swift */,
+				99A0E6B3E90E492CBD0DD600 /* ApprovalsInboxView.swift */,
+				8708198D47F24EFCA25FA2FF /* ChatHomeView.swift */,
+				4F506A7A90DC499192582AC9 /* FileSectionView.swift */,
+				5241C0E1854D4E939201DB3F /* HeaderView.swift */,
+				3FA1A000A0B14A6F9B99C001 /* KeychainStore.swift */,
+				3FA1A000A0B14A6F9B99C101 /* GoogleSignIn.swift */,
+				73779B0EDE9A4F3B9DFC6517 /* LiveChatClient.swift */,
+				2C7EC532D8964FC2B78C9C43 /* Models.swift */,
+				9C0D50300000000000000001 /* PDFShapeExemplarBank.swift */,
+				9C0D50200000000000000001 /* PDFShapeSampleStore.swift */,
+				9C0D50100000000000000001 /* PDFShapeRecognizer.swift */,
+				9C0D50000000000000000001 /* PDFWorkspaceView.swift */,
+				CC742CBD01884A2190D55DA2 /* RootView.swift */,
+				CEC5F343050B4BFFA665B914 /* SearchView.swift */,
+				14787F32F0304A32B7916672 /* WorkspaceAPI.swift */,
+				29CB2E54F6EF47EEA71CC126 /* WorkspaceStore.swift */,
+				A10C0D000000000000000001 /* LocalWorkspace.swift */,
+				A10C0D000000000000000002 /* CodmesPDFArchive.swift */,
+			);
+			path = Sources/Codmes;
+			sourceTree = "<group>";
+		};
+		B79BF811975F4639B2201F03 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				92BE9EF47DFF4ADF85510D52 /* Codmes.app */,
+				98E55E8ED6A747FAA233CC3D /* Codmes iOS.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		C28DE4E4D68A44FE969FA614 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				93AF95165A8A426592CD258C /* Info.plist */,
+				21FD49723DF6427A8FAD2A1B /* iOS-Info.plist */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		E29D89C40D4A4A72AC62A3E8 = {
+			isa = PBXGroup;
+			children = (
+				C28DE4E4D68A44FE969FA614 /* App */,
+				942FCD05B4354DE1A639EB4B /* Sources/Codmes */,
+				B79BF811975F4639B2201F03 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		17EC45DFCB1349F793E8B926 /* Codmes */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A147E9AE16C0417786C98A67 /* Build configuration list for PBXNativeTarget "Codmes" */;
+			buildPhases = (
+				58A0E6B3E90E492CBD0DD606 /* Sources */,
+				58A0E6B3E90E492CBD0DD607 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Codmes;
+			productName = "Codmes";
+			productReference = 92BE9EF47DFF4ADF85510D52 /* Codmes.app */;
+			productType = "com.apple.product-type.application";
+		};
+		32297155EC3C4ED885C414E7 /* Codmes iOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 46D5117D83574EE8960E551B /* Build configuration list for PBXNativeTarget "Codmes iOS" */;
+			buildPhases = (
+				58A0E6B3E90E492CBD0DD608 /* Sources */,
+				5BC7A03A248545EBAA29BD61 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "Codmes iOS";
+			productName = "Codmes iOS";
+			productReference = 98E55E8ED6A747FAA233CC3D /* Codmes iOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E6ABE1140E1841239A0E31C0 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2660;
+				LastUpgradeCheck = 2660;
+				TargetAttributes = {
+					17EC45DFCB1349F793E8B926 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					32297155EC3C4ED885C414E7 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+				};
+			};
+			buildConfigurationList = 4BEECF56E6DC4D0F9F511D44 /* Build configuration list for PBXProject "Codmes" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = E29D89C40D4A4A72AC62A3E8;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = B79BF811975F4639B2201F03 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				17EC45DFCB1349F793E8B926 /* Codmes */,
+				32297155EC3C4ED885C414E7 /* Codmes iOS */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		58A0E6B3E90E492CBD0DD606 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10C0D010000000000000001 /* LocalWorkspace.swift in Sources */,
+				A10C0D010000000000000002 /* CodmesPDFArchive.swift in Sources */,
+				767D4168CD28417085839C03 /* CodmesApp.swift in Sources */,
+				EE28A7064EBA4B50AFDDD034 /* ChatHomeView.swift in Sources */,
+				7B972FFE56D7499B83ACAAEE /* FileSectionView.swift in Sources */,
+				0A45D103ADE640998C377118 /* HeaderView.swift in Sources */,
+				3FA1A001A0B14A6F9B99C001 /* KeychainStore.swift in Sources */,
+				3FA1A001A0B14A6F9B99C101 /* GoogleSignIn.swift in Sources */,
+				82D33833400243A1BA45C06B /* LiveChatClient.swift in Sources */,
+				182914B2EEE94CCEB66C0433 /* Models.swift in Sources */,
+				9C0D50310000000000000001 /* PDFShapeExemplarBank.swift in Sources */,
+				9C0D50210000000000000001 /* PDFShapeSampleStore.swift in Sources */,
+				9C0D50110000000000000001 /* PDFShapeRecognizer.swift in Sources */,
+				9C0D50010000000000000001 /* PDFWorkspaceView.swift in Sources */,
+				C053B1D066564AAF9EB163CF /* RootView.swift in Sources */,
+				F488F3C3652B4841B7979628 /* SearchView.swift in Sources */,
+				48FB524AFD6743849FBE6AFC /* WorkspaceAPI.swift in Sources */,
+				3E8DC8B1723C4A2FA10A1594 /* WorkspaceStore.swift in Sources */,
+				99A0E6B3E90E492CBD0DD601 /* ApprovalsInboxView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		58A0E6B3E90E492CBD0DD608 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10C0D020000000000000001 /* LocalWorkspace.swift in Sources */,
+				A10C0D020000000000000002 /* CodmesPDFArchive.swift in Sources */,
+				ED59859B6FF64593824B30A9 /* CodmesApp.swift in Sources */,
+				79EA66C9DB23470A813D2399 /* ChatHomeView.swift in Sources */,
+				366FEBDCA8B64981A2D1586B /* FileSectionView.swift in Sources */,
+				E879AE0FECD14F2A802E6117 /* HeaderView.swift in Sources */,
+				3FA1A002A0B14A6F9B99C001 /* KeychainStore.swift in Sources */,
+				3FA1A002A0B14A6F9B99C101 /* GoogleSignIn.swift in Sources */,
+				43FBD23C9D0E4947AA3E9A42 /* LiveChatClient.swift in Sources */,
+				B15EE4FF94EB4FFDB66F99E3 /* Models.swift in Sources */,
+				9C0D50320000000000000001 /* PDFShapeExemplarBank.swift in Sources */,
+				9C0D50220000000000000001 /* PDFShapeSampleStore.swift in Sources */,
+				9C0D50120000000000000001 /* PDFShapeRecognizer.swift in Sources */,
+				9C0D50020000000000000001 /* PDFWorkspaceView.swift in Sources */,
+				DC869511E1264A16B71CDAFA /* RootView.swift in Sources */,
+				1400B54060904EF097CD05EB /* SearchView.swift in Sources */,
+				F31DF70215D54266A71EBB1F /* WorkspaceAPI.swift in Sources */,
+				F29F27586DE64EA98831454D /* WorkspaceStore.swift in Sources */,
+				99A0E6B3E90E492CBD0DD602 /* ApprovalsInboxView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		355E91B52D194A24AF2832F8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CODMES_GOOGLE_CLIENT_ID = "272235300599-prbjtj6rqme8m2tar8b0v71fp43u0ds3.apps.googleusercontent.com";
+				CODMES_GOOGLE_URL_SCHEME = com.googleusercontent.apps.272235300599-prbjtj6rqme8m2tar8b0v71fp43u0ds3;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_ASSET_PATHS = "";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.codmes.app;
+				PRODUCT_NAME = "Codmes";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				VERSIONING_SYSTEM = "apple-generic";
+			};
+			name = Debug;
+		};
+		531656AFBE294B8697002488 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		7D068B03325749CF916DBB2C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CODMES_GOOGLE_URL_SCHEME = com.googleusercontent.apps.unconfigured;
+				CODMES_GOOGLE_CLIENT_ID = "";
+				DEVELOPMENT_ASSET_PATHS = "";
+				DEVELOPMENT_TEAM = CA2SLACCLZ;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "App/iOS-Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.codmes.app.ios;
+				PRODUCT_NAME = "Codmes iOS";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VERSIONING_SYSTEM = "apple-generic";
+			};
+			name = Release;
+		};
+		860B26C20484418C907A90B6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		B9D3F8FBAC6C4707A170DEA9 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CODMES_GOOGLE_URL_SCHEME = com.googleusercontent.apps.unconfigured;
+				CODMES_GOOGLE_CLIENT_ID = "";
+				DEVELOPMENT_ASSET_PATHS = "";
+				DEVELOPMENT_TEAM = CA2SLACCLZ;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "App/iOS-Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.codmes.app.ios;
+				PRODUCT_NAME = "Codmes iOS";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VERSIONING_SYSTEM = "apple-generic";
+			};
+			name = Debug;
+		};
+		F935731E27F64009BDD3D451 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CODMES_GOOGLE_CLIENT_ID = "272235300599-prbjtj6rqme8m2tar8b0v71fp43u0ds3.apps.googleusercontent.com";
+				CODMES_GOOGLE_URL_SCHEME = com.googleusercontent.apps.272235300599-prbjtj6rqme8m2tar8b0v71fp43u0ds3;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_ASSET_PATHS = "";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.codmes.app;
+				PRODUCT_NAME = "Codmes";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				VERSIONING_SYSTEM = "apple-generic";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		46D5117D83574EE8960E551B /* Build configuration list for PBXNativeTarget "Codmes iOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B9D3F8FBAC6C4707A170DEA9 /* Debug */,
+				7D068B03325749CF916DBB2C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		4BEECF56E6DC4D0F9F511D44 /* Build configuration list for PBXProject "Codmes" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				531656AFBE294B8697002488 /* Debug */,
+				860B26C20484418C907A90B6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A147E9AE16C0417786C98A67 /* Build configuration list for PBXNativeTarget "Codmes" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				355E91B52D194A24AF2832F8 /* Debug */,
+				F935731E27F64009BDD3D451 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = E6ABE1140E1841239A0E31C0 /* Project object */;
+}

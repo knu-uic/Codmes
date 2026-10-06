@@ -122,7 +122,7 @@ def main() -> int:
     parser.add_argument("--input", required=True)
     parser.add_argument(
         "--output",
-        default="client/apple/Sources/Codmes/PDFShapeExemplarBank.swift",
+        default="apps/client/apple/Sources/Codmes/PDFShapeExemplarBank.swift",
     )
     args = parser.parse_args()
     records = load_records(Path(args.input))
