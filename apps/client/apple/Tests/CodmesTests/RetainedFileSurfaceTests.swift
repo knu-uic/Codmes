@@ -50,6 +50,10 @@ final class RetainedFileSurfaceTests: XCTestCase {
         try await settle(host)
         let originalBounds = original.bounds
         let bookmark = try XCTUnwrap(PDFReadingState.capture(original))
+        // In continuous layout the viewport anchor can lie on the preceding
+        // page while currentPage identifies the predominantly visible page.
+        let visiblePageIndex = originalDocument.index(for: try XCTUnwrap(original.currentPage))
+        XCTAssertEqual(visiblePageIndex, 2)
 
         XCTAssertTrue(store.prepareForFileSurface("code"))
         host.rootView = Surfaces(store: store, active: "code")
@@ -59,7 +63,7 @@ final class RetainedFileSurfaceTests: XCTestCase {
         XCTAssertTrue(original.document === originalDocument)
         XCTAssertEqual(original.bounds, originalBounds, "Keyboard in Code must not resize the hidden PDF")
         XCTAssertEqual(original.scaleFactor, bookmark.scale, accuracy: 0.001)
-        XCTAssertEqual(originalDocument.index(for: try XCTUnwrap(original.currentPage)), bookmark.pageIndex)
+        XCTAssertEqual(originalDocument.index(for: try XCTUnwrap(original.currentPage)), visiblePageIndex)
 
         host.frame.size.height = 600
         XCTAssertTrue(store.prepareForFileSurface("notes"))
@@ -72,6 +76,7 @@ final class RetainedFileSurfaceTests: XCTestCase {
         host.rootView = Surfaces(store: store, active: "code")
         try await settle(host)
         let beforeEviction = try XCTUnwrap(PDFReadingState.capture(original))
+        let visiblePageBeforeEviction = originalDocument.index(for: try XCTUnwrap(original.currentPage))
         store.releaseInactiveFileSurfaces()
         try await settle(host)
         XCTAssertNil(pdfView(in: host))
@@ -84,8 +89,9 @@ final class RetainedFileSurfaceTests: XCTestCase {
         let restored = try XCTUnwrap(pdfView(in: host))
         XCTAssertFalse(restored === original)
         XCTAssertEqual(restored.scaleFactor, beforeEviction.scale, accuracy: 0.001)
-        XCTAssertEqual(restored.document?.index(for: try XCTUnwrap(restored.currentPage)), beforeEviction.pageIndex)
+        XCTAssertEqual(restored.document?.index(for: try XCTUnwrap(restored.currentPage)), visiblePageBeforeEviction)
         let restoredPosition = try XCTUnwrap(PDFReadingState.capture(restored))
+        XCTAssertEqual(restoredPosition.pageIndex, beforeEviction.pageIndex)
         XCTAssertEqual(restoredPosition.x, beforeEviction.x, accuracy: 2)
         XCTAssertEqual(restoredPosition.y, beforeEviction.y, accuracy: 2)
     }

@@ -18,6 +18,32 @@ async function put(root, content, baseRevision = null, file = "Notes/book.md", r
   finally { await discardStagedSyncUpload(staged); }
 }
 
+test("writer retries when the previous owner releases its directory before inspection", async (t) => {
+  const root = await fixture(t);
+  const directory = path.join(root, ".codmes", "sync-writer-lock");
+  const ownerPath = path.join(directory, "owner.json");
+  await fs.mkdir(directory, { recursive: true });
+  const readFile = fs.readFile.bind(fs);
+  let released = false;
+  t.mock.method(fs, "readFile", async (...args) => {
+    if (args[0] === ownerPath && !released) {
+      // The waiter saw EEXIST, then the owner finished before its owner/stat reads.
+      released = true;
+      await fs.rmdir(directory);
+    }
+    return readFile(...args);
+  });
+  let actions = 0;
+  assert.equal(await withWorkspaceFileLock(root, async () => {
+    actions += 1;
+    assert.equal(JSON.parse(await fs.readFile(ownerPath, "utf8")).pid, process.pid);
+    return "applied";
+  }), "applied");
+  assert.equal(released, true);
+  assert.equal(actions, 1);
+  await assert.rejects(fs.stat(directory), { code: "ENOENT" });
+});
+
 test("two devices exchange Notes and retry writes without overwriting a conflict", async (t) => {
   const root = await fixture(t);
   const created = await put(root, "phone version");

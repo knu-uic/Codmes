@@ -39,7 +39,14 @@ export async function withWorkspaceFileLock(root, action) {
           try { process.kill(owner.pid, 0); } catch (probe) { stale = probe.code === "ESRCH"; }
         } catch (probe) {
           if (probe.code !== "ENOENT") throw probe;
-          stale = Date.now() - (await fs.stat(directory)).mtimeMs > 10000;
+          // The owner may release the lock after mkdir reported EEXIST but
+          // before these reads. A missing directory means retry acquisition,
+          // not a synchronization failure or a stale lock to delete.
+          const info = await fs.stat(directory).catch(error => {
+            if (error.code === "ENOENT") return null;
+            throw error;
+          });
+          stale = info != null && Date.now() - info.mtimeMs > 10000;
         }
         if (stale) {
           // Multiple processes may discover the same dead owner. Recheck after
