@@ -1,11 +1,30 @@
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { prepareNativeCheck } from '../scripts/prepare-native-check.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = file => readFileSync(path.join(root, file), 'utf8');
+
+test('native checks prepare an empty generated resource root and preserve staged files', () => {
+  const temporary = mkdtempSync(path.join(os.tmpdir(), 'codmes-native-check-'));
+  try {
+    prepareNativeCheck(temporary);
+    const resources = path.join(temporary, 'builds', 'runtime');
+    assert.deepEqual(readdirSync(resources), []);
+    const staged = path.join(resources, 'staged-fixture');
+    writeFileSync(staged, 'keep existing staged runtime');
+    prepareNativeCheck(temporary);
+    assert.equal(readFileSync(staged, 'utf8'), 'keep existing staged runtime');
+    assert.match(JSON.parse(read('package.json')).scripts.check,
+      /prepare-native-check\.mjs\s*&&\s*cargo test/);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
 
 test('frontend, native output and runtime staging live under the ignored build root', () => {
   const config = JSON.parse(read('src-tauri/tauri.conf.json'));

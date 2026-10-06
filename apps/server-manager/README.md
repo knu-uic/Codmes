@@ -57,6 +57,11 @@ npm run manager:dev
 npm run manager:build
 ```
 
+`manager:check`는 깨끗한 checkout에서도 Rust 검사를 컴파일할 수 있도록
+Tauri가 참조하는 `builds/runtime/`의 빈 루트만 준비한다. 기존 staged runtime은
+덮어쓰지 않는다. 이 준비는 설치본에 필요한 Node/Python/PostgreSQL을 구성하는
+`stage:runtime --require-postgres`를 대체하지 않는다.
+
 실제 초기화·실패 복원 테스트는 앱 데이터가 아닌 임시 서버를 사용한다.
 
 ```sh
